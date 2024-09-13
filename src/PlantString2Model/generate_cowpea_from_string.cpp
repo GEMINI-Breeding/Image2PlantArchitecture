@@ -1,0 +1,189 @@
+#include "PlantArchitecture.h"
+#include "Visualizer.h"
+#include <fstream>
+#include <sstream>
+#include <iostream>
+#include <cstdlib> // For setenv
+using namespace helios;
+
+int main(int argc, char* argv[]){
+    // Export DISLAY=:10.0 to env variable
+    // Set the environment variable. The third argument is non-zero to overwrite the value if it exists.
+    // if (setenv("DISPLAY", ":10.0", 1) != 0) {
+    //     std::cerr << "Failed to set environment variable" << std::endl;
+    // }
+
+    if (argc < 2) {
+        std::cerr << "Usage: " << argv[0] << " <plant_string_file>" << std::endl;
+        // Use default plant model file
+        argv[1] = "plantstring.txt";
+    }
+
+
+    std::ifstream file(argv[1]);
+    if (!file.is_open()) {
+        std::cerr << "Could not open file: " << argv[1] << std::endl;
+        return 1;
+    }
+
+    // Check if the rotation view flag is set
+    bool rotation_view = false;
+    if (argc > 2) {
+        if (std::string(argv[2]) == "rotation") {
+            rotation_view = true;
+        }
+    }
+
+    // Check if the grow flag is set
+    bool grow = false;
+    if (argc > 3) {
+        if (std::string(argv[3]) == "grow") {
+            grow = true;
+        }
+    }
+
+    // Check if the -d flag is set
+    bool debug = false;
+    if (argc > 4) {
+        if (std::string(argv[4]) == "debug") {
+            debug = true;
+        }
+    }
+
+
+    // Create a save directory if it does not exist
+    std::string save_dir = "output";
+    std::string command = "mkdir -p " + save_dir;
+
+    if (system(command.c_str()) == -1) {
+        std::cerr << "Error creating save directory: " << save_dir << std::endl;
+        return 1;
+    }
+
+
+
+    std::stringstream buffer;
+    buffer << file.rdbuf();
+    std::string plantstring = buffer.str();
+    
+    // Remove plant ID if start with <int> and end with " "
+    if (plantstring[0] >= '0' && plantstring[0] <= '9') {
+        size_t pos = plantstring.find(" ");
+        plantstring.erase(0, pos + 1);
+    }
+    // Print input plant string
+    // std::cout << "Plant string: \n" << plantstring << std::endl;
+    // Print input file name
+    std::cout << "Plant string file: " << argv[1] << std::endl;
+
+
+    Context context;
+
+    context.seedRandomGenerator(60);
+    
+    // Add a ground surface with a center position of (0,0,0) and size of row_spacing x plant_spacing
+    std::vector<uint> UUIDs_ground = context.addTile(make_vec3(0, 0, 0), make_vec2(2, 2), nullrotation, make_int2(2,2),"plugins/visualizer/textures/dirt.jpg");
+    //std::vector<uint> UUIDs_ground = context.addTile(make_vec3(0, 0, 0), make_vec2(2, 2), nullrotation, make_int2(1,1),"dirt3.jpg");
+
+    PlantArchitecture plantarchitecture(&context);
+
+    plantarchitecture.loadPlantModelFromLibrary("cowpea");
+    plantarchitecture.buildPlantInstanceFromLibrary(nullorigin, 0);
+    std::map<std::string,ShootParameters> shoot_parameters = plantarchitecture.getCurrentShootParameters();
+    std::map<std::string, PhytomerParameters> phytomer_parameters;
+    phytomer_parameters["unifoliate"] = shoot_parameters.at("unifoliate").phytomer_parameters;
+    phytomer_parameters["trifoliate"] = shoot_parameters.at("trifoliate").phytomer_parameters;
+
+    //plantarchitecture.generatePlantFromString(plantstring, phytomer_parameters, nullorigin); 
+    plantarchitecture.generatePlantFromString(plantstring, phytomer_parameters); 
+
+    Visualizer vis(1200);
+    vis.buildContextGeometry(&context);
+    vis.hideWatermark();
+    vis.disableMessages();
+    vis.setLightingModel(Visualizer::LIGHTING_PHONG);
+
+    float x = 0;
+    float y = 0;
+    float z = 1.0;
+    vis.setCameraPosition(make_vec3(x,y,z), make_vec3(0, 0, 0));
+    // Bug: Have to update twice to get the image
+    vis.plotUpdate(true);
+    vis.plotUpdate(true);
+    //vis.plotDepthMap();
+
+    std::stringstream framefile;
+    // Generate output file name by replacing .txt with .jpeg
+    std::string plant_model_file(argv[1]);
+    // Get the file name only
+    std::string name_only = plant_model_file.substr(plant_model_file.find_last_of("/\\") + 1);
+    name_only = name_only.substr(0, name_only.size() - 4); // Remove .txt and add .jpeg
+    std::string save_name = name_only + "_top.jpeg"; // Remove .txt and add "_top.jpeg");    
+    // Save to save dir
+    std::string save_path = save_dir + "/" + save_name;
+    vis.printWindow(save_path.c_str());
+    
+
+    if (rotation_view)
+    {
+        // Assuming you want to rotate the camera around the origin (0,0,0) in a circular path
+        // and save images for each position. Let's do this for a full 360 degrees rotation.
+        const float min_radius = 0.3;               // Minimum distance from the origin (closest zoom) 0.5
+        const float max_radius = 1.0;               // Maximum distance from the origin (farthest zoom) 1.2
+        const float view_angle = 30;                // Field of view angle in degrees, 60
+        const int num_steps = 72;                   // Number of steps in the rotation, adjust for more/less images
+        const float step_angle = 360.0 / num_steps; // Angle step in degrees
+
+        for (int i = 0; i < num_steps; ++i)
+        {
+            float angle = step_angle * i * (M_PI / 180.0); // Convert angle to radians
+            // Dynamically adjust the radius to zoom in and out
+            // Using a sine function to smoothly transition the radius for a cyclic zoom effect
+            float radius = min_radius + (sin(angle * 2) + 1) / 2 * (max_radius - min_radius);
+
+            // Calculate x, y, z positions on a circle around the origin at the current radius
+            float x = radius * cos(angle);
+            float y = radius * sin(angle);
+            float z = radius * 1.2; // Adjust z based on the radius to maintain perspective
+
+            vis.setCameraPosition(make_vec3(x, y, z), make_vec3(0, 0, 0));
+            vis.plotUpdate(true);
+            vis.plotUpdate(true); // Update twice due to the mentioned bug
+
+            // Generate output file name by replacing .txt with _angle.jpeg to differentiate between images
+            std::stringstream framefile;
+            framefile << name_only << "_" << i << ".jpeg"; // Append angle index to filename
+
+            // Save to save dir
+            std::string save_path = save_dir + "/" + framefile.str();
+            vis.printWindow(save_path.c_str());
+        }
+    }
+
+    if (grow) {
+        // PlantArchitecture plantarchitecture_grow(&context);
+        // plantarchitecture_grow.loadPlantModelFromLibrary("cowpea");
+        // plantarchitecture_grow.buildPlantInstanceFromLibrary(nullorigin, 0);
+        // Grow the plant for 10 days
+        for (int i = 0; i < 20; ++i) {
+            plantarchitecture.advanceTime(2);
+            vis.buildContextGeometry(&context);
+            vis.plotUpdate(true);
+            vis.plotUpdate(true); // Update twice due to the mentioned bug
+            
+            // Generate output file name by replacing .txt with _angle.jpeg to differentiate between images
+            std::stringstream framefile;
+            framefile << name_only << "_day" << i << ".jpeg"; // Append angle index to filename
+
+            // Save to save dir
+            std::string save_path = save_dir + "/" + framefile.str();
+            vis.printWindow(save_path.c_str());
+        }
+    }
+
+    if (debug) {
+        vis.plotInteractive();
+    }
+
+    return 0;
+}
