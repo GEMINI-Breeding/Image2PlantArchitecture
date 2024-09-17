@@ -6,11 +6,14 @@ from torchvision import transforms
 from PIL import Image
 import cv2
 from tqdm import tqdm
+import os
+
+
 
 '''
-bbox_plants: class, x, y, w, h. 식물은 0, 잡초는 1, x,y는 bounding box의 센터. 보이는 식물만 표시
-plantstring: Plot 내의 모든 식물 표시. 맨 앞의 번호가 Plant ID
-plantIDmap: 식물의 ID를 표시
+bbox_plants: class, x, y, w, h. Plants are 0, weeds are 1. x and y are the center of the bounding box. Only visible plants are marked.
+plantstring: Displays all plants within the plot. The number at the front is the Plant ID.
+plantIDmap: Displays the ID of the plant.
 '''
 def generate_color_palette(num_colors):
 
@@ -337,6 +340,9 @@ def draw_bbox(img, bbox, selected_labels="all"):
         
 
     return img
+
+
+
 
 
 if __name__ == '__main__':
