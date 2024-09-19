@@ -12,7 +12,7 @@ from string_to_xml_to_vec import string2vec, vec2string, vec2xml, pretty_print_x
 
 
 class PlantDataset(Dataset):
-    def __init__(self, root_dir, plot=None, stages=None, transform=None, img_size=224, use_depth=True, preload=True, dry_run=False):
+    def __init__(self, root_dir, plot=None, stages=None, transform=None, img_size=224, use_depth=True, preload=True, dry_run=False, process_leaf=False):
 
         self.root_dir = root_dir
         self.use_depth = use_depth          
@@ -47,6 +47,8 @@ class PlantDataset(Dataset):
                 
         self.transform = transform
 
+        self.process_leaf = process_leaf
+
         print(f"Total {len(self.image_paths)} images and plant strings loaded")
         
         if self.preload:
@@ -70,10 +72,13 @@ class PlantDataset(Dataset):
         except:
             print(f"Error loading {self.image_paths[idx]}")
             return None, None, None
-        # Preprocess image
-        leaf_area, plant_width, plant_height, leaf_img, (x,y,w,h) = process_leaf_image(np.array(image), 
-                                                                            normalize=True, debug=False, sqaure_crop=True)
-        leaf_img = cv2.resize(leaf_img, (224, 224))
+        if self.process_leaf:
+            # Preprocess image
+            leaf_area, plant_width, plant_height, leaf_img, (x,y,w,h) = process_leaf_image(np.array(image), 
+                                                                                normalize=True, debug=False, sqaure_crop=True)
+            leaf_img = cv2.resize(leaf_img, (224, 224))
+        else:
+            leaf_img = cv2.resize(np.array(image), (224, 224))
 
         if self.use_depth:
             # Convert depth to grayscale
@@ -81,9 +86,10 @@ class PlantDataset(Dataset):
             depth = np.array(depth)
             depth = cv2.cvtColor(depth, cv2.COLOR_BGR2GRAY)
 
-            # Crop the depth image
-            depth = depth[y:y+h, x:x+w]
-
+            if self.process_leaf:
+                # Crop the depth image
+                depth = depth[y:y+h, x:x+w]
+                
             # Normalize depth image to 0-255
             depth = (depth - depth.min()) / (depth.max() - depth.min()) * 255
             depth = depth.astype(np.uint8)

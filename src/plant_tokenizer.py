@@ -1,9 +1,6 @@
 import numpy as np
 import math
 
-SOS_token = 40
-EOS_token = 41
-PAD_token = 42
 
 # Create a dict convert plant structure to token
 # Structure | Token
@@ -25,6 +22,10 @@ PAD_token = 42
 # EOS token | 41
 # PAD token | 42 
 
+SOS_token = 40
+EOS_token = 41
+PAD_token = 42
+
 if 0:
     params_SOS_token_padded = np.ones(15)*SOS_token
     params_EOS_token_padded = np.ones(15)*EOS_token
@@ -37,14 +38,14 @@ else:
 
 
 
-def vec2token(vec):
+def vec2token(vec, n_params=15):
     tokens = []
     for x in vec:
         depth_organ = x[0]*4 + x[1]
         if 1:
-            token = np.zeros(15) # padding zeros to match the desired length
+            token = np.zeros(n_params) # padding zeros to match the desired length
         else:
-            token = np.ones(15) * PAD_token
+            token = np.ones(n_params) * PAD_token
 
         token[0] = depth_organ
         
@@ -110,7 +111,7 @@ def token2vec(tokens):
             elif j == 2:
                 # Petiole
                 params_padded[0] = token[9] / 100 # petiole_length
-                params_padded[1] = 0.0005 # TODO petiole radius is not given
+                params_padded[1] = 0.001 # TODO petiole radius is not given
                 params_padded[2] = token[10] * 180 / math.pi # petiole_pitch
             elif j == 3:
                 # Leaf
@@ -124,3 +125,60 @@ def token2vec(tokens):
             # Make 1x6 array with i, j and params
             vec.append(np.concatenate(([i, j], params_padded),axis=0))
     return np.array(vec)
+
+
+
+"""
+PhytomerParameters::PhytomerParameters( std::minstd_rand0 *generator ) {
+
+    //--- internode ---//
+    internode.pitch.initialize( 20, generator );
+    internode.phyllotactic_angle.initialize(137.5, generator );
+    internode.color = RGB::forestgreen;
+    internode.length_segments = 1;
+    internode.radial_subdivisions = 7;
+
+    //--- petiole ---//
+    petiole.petioles_per_internode = 1;
+    petiole.pitch.initialize( 90, generator );
+    petiole.radius.initialize( 0.001, generator );
+    petiole.length.initialize( 0.05, generator );
+    petiole.curvature.initialize(0, generator);
+    petiole.taper.initialize( 0, generator );
+    petiole.color = RGB::forestgreen;
+    petiole.length_segments = 1;
+    petiole.radial_subdivisions = 7;
+
+    //--- leaf ---//
+    leaf.leaves_per_petiole.initialize( 1, generator);
+    leaf.pitch.initialize( 0, generator );
+    leaf.yaw.initialize( 0, generator );
+    leaf.roll.initialize( 0, generator );
+    leaf.leaflet_offset.initialize( 0, generator );
+    leaf.leaflet_scale = 1;
+    leaf.prototype_scale.initialize(0.05,generator);
+    leaf.subdivisions = 1;
+    leaf.unique_prototypes = 1;
+
+    //--- peduncle ---//
+    peduncle.length.initialize(0.05,generator);
+    peduncle.radius.initialize(0.001, generator);
+    peduncle.pitch.initialize(0,generator);
+    peduncle.roll.initialize(0,generator);
+    peduncle.curvature.initialize(0,generator);
+    peduncle.length_segments = 3;
+    peduncle.radial_subdivisions = 7;
+
+    //--- inflorescence ---//
+    inflorescence.flowers_per_rachis.initialize(1, generator);
+    inflorescence.flower_offset.initialize(0, generator);
+    inflorescence.flower_arrangement_pattern = "alternate";
+    inflorescence.pitch.initialize(0,generator);
+    inflorescence.roll.initialize(0,generator);
+    inflorescence.flower_prototype_scale.initialize(0.0075,generator);
+    inflorescence.fruit_prototype_scale.initialize(0.0075,generator);
+    inflorescence.fruit_gravity_factor_fraction.initialize(0, generator);
+    inflorescence.unique_prototypes = 1;
+
+}
+"""

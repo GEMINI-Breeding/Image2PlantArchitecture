@@ -16,7 +16,7 @@ def hist_eq(img):
     img = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
     return img
 
-def calcExG(img, normalize=False, debug=False):
+def calcExG(img, normalize=False, debug=False, thr = 0.1):
     
     # Normalize image histogram
     img = hist_eq(img)
@@ -24,7 +24,6 @@ def calcExG(img, normalize=False, debug=False):
     # Convert to float
     img = img.astype(np.float32)
 
-    
     # Calculate ExG
     rgb_sum = img[:, :, 0] + img[:, :, 1] + img[:, :, 2]
     r = img[:, :, 0] 
@@ -38,7 +37,7 @@ def calcExG(img, normalize=False, debug=False):
         plt.show()
     
     # Calculate the threshold
-    threshold = np.mean(ExG) + 0.1*np.std(ExG)
+    threshold = np.mean(ExG) + thr*np.std(ExG)
     # Threshold the image
     mask = ExG > threshold
     ExG = ExG * mask
@@ -54,9 +53,9 @@ def calcExG(img, normalize=False, debug=False):
 
     return ExG
 
-def process_leaf_image(leaf_img, normalize=True, debug=False, sqaure_crop=False):
+def process_leaf_image(leaf_img, normalize=True, debug=False, sqaure_crop=False, thr=0.1):
     # Calc ExG
-    ExG = calcExG(leaf_img, normalize=normalize, debug=debug)
+    ExG = calcExG(leaf_img, normalize=normalize, debug=debug, thr=thr)
     # Convert to CV_8UC1
     ExG = ExG.astype(np.uint8)
 

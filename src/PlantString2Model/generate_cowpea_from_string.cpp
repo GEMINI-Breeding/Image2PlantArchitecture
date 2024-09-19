@@ -6,49 +6,51 @@
 #include <cstdlib> // For setenv
 using namespace helios;
 
-int main(int argc, char* argv[]){
-    // Export DISLAY=:10.0 to env variable
-    // Set the environment variable. The third argument is non-zero to overwrite the value if it exists.
-    // if (setenv("DISPLAY", ":10.0", 1) != 0) {
-    //     std::cerr << "Failed to set environment variable" << std::endl;
-    // }
 
-    if (argc < 2) {
-        std::cerr << "Usage: " << argv[0] << " <plant_string_file>" << std::endl;
-        // Use default plant model file
-        argv[1] = "plantstring.txt";
+void printUsage(const char* programName) {
+    std::cerr << "Usage: " << programName << " -[r] [-g] [-d] [-h <height_m>][-tile <file>] <plant_string_file>" << std::endl;
+}
+
+int main(int argc, char* argv[]){
+    std::string plant_string_file = "plantstring.txt";
+    bool debug = false;
+    bool grow = false;
+    bool rotation_view = false;
+    float height = 0;
+    std::string tile_file = "plugins/visualizer/textures/dirt.jpg";
+
+    // Parse command-line arguments
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg =="-r") {
+            rotation_view = true;
+        } else if (arg == "-g") {
+            grow = true;
+        } else if (arg == "-d") {
+            debug = true;
+        } else if (arg == "-h" && i + 1 < argc) {
+            height = std::stof(argv[i+1]);
+        } else if (arg == "-tile" && i + 1 < argc) {
+            tile_file = argv[i+1];
+        } else {
+            plant_string_file = arg;
+        }
     }
 
-
-    std::ifstream file(argv[1]);
+    std::ifstream file(plant_string_file);
     if (!file.is_open()) {
-        std::cerr << "Could not open file: " << argv[1] << std::endl;
+        std::cerr << "Could not open file: " << plant_string_file << std::endl;
         return 1;
     }
 
-    // Check if the rotation view flag is set
-    bool rotation_view = false;
-    if (argc > 2) {
-        if (std::string(argv[2]) == "rotation") {
-            rotation_view = true;
-        }
+    // Output the parsed flags for debugging purposes
+    std::cout << "Debug: " << (debug ? "true" : "false") << std::endl;
+    std::cout << "Grow: " << (grow ? "true" : "false") << std::endl;
+    std::cout << "View height" << height << "m" << std::endl;
+    if (!tile_file.empty()) {
+        std::cout << "Tile file: " << tile_file << std::endl;
     }
-
-    // Check if the grow flag is set
-    bool grow = false;
-    if (argc > 3) {
-        if (std::string(argv[3]) == "grow") {
-            grow = true;
-        }
-    }
-
-    // Check if the -d flag is set
-    bool debug = false;
-    if (argc > 4) {
-        if (std::string(argv[4]) == "debug") {
-            debug = true;
-        }
-    }
+    std::cout << "Plant string file: " << plant_string_file << std::endl;
 
 
     // Create a save directory if it does not exist
@@ -72,18 +74,16 @@ int main(int argc, char* argv[]){
         plantstring.erase(0, pos + 1);
     }
     // Print input plant string
-    // std::cout << "Plant string: \n" << plantstring << std::endl;
-    // Print input file name
-    std::cout << "Plant string file: " << argv[1] << std::endl;
-
-
     Context context;
 
     context.seedRandomGenerator(60);
     
     // Add a ground surface with a center position of (0,0,0) and size of row_spacing x plant_spacing
-    std::vector<uint> UUIDs_ground = context.addTile(make_vec3(0, 0, 0), make_vec2(2, 2), nullrotation, make_int2(2,2),"plugins/visualizer/textures/dirt.jpg");
-    //std::vector<uint> UUIDs_ground = context.addTile(make_vec3(0, 0, 0), make_vec2(2, 2), nullrotation, make_int2(1,1),"dirt3.jpg");
+    // Check if tile_file is not none
+    if(tile_file != "none"){
+        std::vector<uint> UUIDs_ground = context.addTile(make_vec3(0, 0, 0), make_vec2(2, 2), nullrotation, make_int2(2,2),tile_file.c_str());
+    }
+    
 
     PlantArchitecture plantarchitecture(&context);
 
@@ -106,6 +106,10 @@ int main(int argc, char* argv[]){
     float x = 0;
     float y = 0;
     float z = 1.0;
+
+    if(height > 0){
+        z = height;
+    }
     vis.setCameraPosition(make_vec3(x,y,z), make_vec3(0, 0, 0));
     // Bug: Have to update twice to get the image
     vis.plotUpdate(true);
@@ -114,9 +118,8 @@ int main(int argc, char* argv[]){
 
     std::stringstream framefile;
     // Generate output file name by replacing .txt with .jpeg
-    std::string plant_model_file(argv[1]);
     // Get the file name only
-    std::string name_only = plant_model_file.substr(plant_model_file.find_last_of("/\\") + 1);
+    std::string name_only = plant_string_file.substr(plant_string_file.find_last_of("/\\") + 1);
     name_only = name_only.substr(0, name_only.size() - 4); // Remove .txt and add .jpeg
     std::string save_name = name_only + "_top.jpeg"; // Remove .txt and add "_top.jpeg");    
     // Save to save dir
