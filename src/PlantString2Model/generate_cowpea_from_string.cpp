@@ -46,7 +46,7 @@ int main(int argc, char* argv[]){
     // Output the parsed flags for debugging purposes
     std::cout << "Debug: " << (debug ? "true" : "false") << std::endl;
     std::cout << "Grow: " << (grow ? "true" : "false") << std::endl;
-    std::cout << "View height" << height << "m" << std::endl;
+    std::cout << "View height: " << height << "m" << std::endl;
     if (!tile_file.empty()) {
         std::cout << "Tile file: " << tile_file << std::endl;
     }
@@ -81,7 +81,7 @@ int main(int argc, char* argv[]){
     // Add a ground surface with a center position of (0,0,0) and size of row_spacing x plant_spacing
     // Check if tile_file is not none
     if(tile_file != "none"){
-        std::vector<uint> UUIDs_ground = context.addTile(make_vec3(0, 0, 0), make_vec2(2, 2), nullrotation, make_int2(2,2),tile_file.c_str());
+        std::vector<uint> UUIDs_ground = context.addTile(make_vec3(0, 0, 0), make_vec2(3, 3), nullrotation, make_int2(3,3),tile_file.c_str());
     }
     
 

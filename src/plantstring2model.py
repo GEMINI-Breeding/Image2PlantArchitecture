@@ -2,7 +2,7 @@ import os
 import shutil
 class plantstring2model:
 
-    def __init__(self, program_path, program_name, background_path=None, display=":10.0"):
+    def __init__(self, program_path, program_name, background_path=None, display=":10.0", height=2.0):
 
         self.program_path = program_path
         self.program_name = program_name
@@ -10,7 +10,7 @@ class plantstring2model:
         self.display = display
 
         self.background_path = background_path
-
+        self.height = height
         os.environ["DISPLAY"] = self.display
 
     def run(self, plantstring_path):
@@ -31,9 +31,12 @@ class plantstring2model:
             # Copy the background tile to build
             command += f"-tile {file_name} "
             
+        # Add height
+        command += f"-h {self.height} "
+
         command += f"{plantstring_path}"
         # Run the command using os.system
-        os.system(command)
+        os.system(f"{command} > log.txt 2>&1")
 
         # Remove the output folder if exists
         if os.path.exists(output_path_name):

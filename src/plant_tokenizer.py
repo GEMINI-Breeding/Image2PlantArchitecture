@@ -1,6 +1,6 @@
 import numpy as np
 import math
-
+import random
 
 # Create a dict convert plant structure to token
 # Structure | Token
@@ -37,6 +37,57 @@ else:
     params_EOS_token_padded[0] = EOS_token
 
 
+
+def token2vec(tokens):
+    vec = []
+    for token in tokens:
+        label = token[0]
+        if label == SOS_token:
+            #structure.append(SOS_word)
+            # Do not append SOS token
+            # break
+            pass
+        elif label == EOS_token or label == PAD_token:
+            #structure.append(EOS_word)
+            # Do not append EOS token
+            break
+        else:
+            i = label // 4
+            j = label % 4
+            params_padded = np.zeros(5)
+            if j == 0:
+                # Shoot
+                params_padded[0] = token[1] * 180 / math.pi # shoot_base_pitch
+                params_padded[1] = token[2] * 180 / math.pi # shoot_base_yaw
+                params_padded[2] = token[3] * 180 / math.pi # shoot_base_roll
+                params_padded[3] = token[4] * 100 # shoot_gravitropic_curvature
+                params_padded[4] = token[5] # shoot_type
+            elif j == 1:
+                # Internode
+                params_padded[0] = token[6] / 100 # internode_length
+                params_padded[1] = token[7] / 100 # internode_radius
+                params_padded[2] = token[8] * 180 / math.pi # internode_pitch
+                # Hardcored phyllotactic angle because it is not given from Brian yet
+                # params_padded[3] = 137.5 # TODO phyllotactic angle. The most common angle is the golden angle, or Fibonacci angle, which is approximately 137.5°.
+                params_padded[3] = random.uniform(130, 145)
+            elif j == 2:
+                # Petiole
+                params_padded[0] = token[9] / 100 # petiole_length
+                #params_padded[1] = 0.001 # TODO petiole radius is not given
+                params_padded[1] = random.uniform(0.00075, 0.00125) # TODO petiole radius is not given
+                params_padded[2] = token[10] * 180 / math.pi # petiole_pitch
+            elif j == 3:
+                # Leaf
+                params_padded[0] = token[11] / 100 # leaf_scale
+                params_padded[1] = token[12] * 180 / math.pi # leaf_pitch
+                params_padded[2] = token[13] * 180 / math.pi # leaf_yaw
+                params_padded[3] = token[14] * 180 / math.pi # leaf_roll
+            else:
+                raise ValueError(f"Invalid organ type {j}")
+
+            # Make 1x6 array with i, j and params
+            vec.append(np.concatenate(([i, j], params_padded),axis=0))
+    return np.array(vec)
 
 def vec2token(vec, n_params=15):
     tokens = []
@@ -77,7 +128,7 @@ def vec2token(vec, n_params=15):
         tokens.append(token)
     return tokens
 
-def token2vec(tokens):
+def token2vec_new(tokens):
     vec = []
     for token in tokens:
         label = token[0]
@@ -107,11 +158,13 @@ def token2vec(tokens):
                 params_padded[1] = token[7] / 100 # internode_radius
                 params_padded[2] = token[8] * 180 / math.pi # internode_pitch
                 # Hardcored phyllotactic angle because it is not given from Brian yet
-                params_padded[3] = 137.5 # TODO phyllotactic angle. The most common angle is the golden angle, or Fibonacci angle, which is approximately 137.5°.
+                # params_padded[3] = 137.5 # TODO phyllotactic angle. The most common angle is the golden angle, or Fibonacci angle, which is approximately 137.5°.
+                params_padded[3] = random.uniform(130, 145)
             elif j == 2:
                 # Petiole
                 params_padded[0] = token[9] / 100 # petiole_length
-                params_padded[1] = 0.001 # TODO petiole radius is not given
+                #params_padded[1] = 0.001 # TODO petiole radius is not given
+                params_padded[1] = random.uniform(0.00075, 0.00125) # TODO petiole radius is not given
                 params_padded[2] = token[10] * 180 / math.pi # petiole_pitch
             elif j == 3:
                 # Leaf
@@ -125,6 +178,45 @@ def token2vec(tokens):
             # Make 1x6 array with i, j and params
             vec.append(np.concatenate(([i, j], params_padded),axis=0))
     return np.array(vec)
+
+def vec2token_new(vec, n_params=15):
+    tokens = []
+    for x in vec:
+        depth_organ = x[0]*4 + x[1]
+        if 1:
+            token = np.zeros(n_params) # padding zeros to match the desired length
+        else:
+            token = np.ones(n_params) * PAD_token
+
+        token[0] = depth_organ
+        
+        if x[1] == 0:
+            # Shoot params    
+            token[1] = x[2] / 180 * math.pi # shoot_base_pitch
+            token[2] = x[3] / 180 * math.pi # shoot_base_yaw
+            token[3] = x[4] / 180 * math.pi # shoot_base_roll
+            token[4] = x[5] / 100           # shoot_gravitropic_curvature
+            token[5] = x[6]                 # shoot_type
+        elif x[1] == 1:
+            # Internode params
+            token[6] = x[2] * 100 # internode_length
+            token[7] = x[3] * 100 # internode_radius
+            token[8] = x[4] / 180 * math.pi # internode_pitch
+        elif x[1] == 2:
+            # Petiole params
+            token[9] = x[2] * 100 # petiole_length
+            token[10] = x[3] / 180 * math.pi # petiole_pitch
+        elif x[1] == 3:
+            # Leaf params
+            token[11] = x[2] * 100 # leaf_scale
+            token[12] = x[3] / 180 * math.pi # leaf_pitch
+            token[13] = x[4] / 180 * math.pi # leaf_yaw
+            token[14] = x[5] / 180 * math.pi # leaf_roll
+        else:
+            raise ValueError(f"Invalid organ type {x[1]}")
+        
+        tokens.append(token)
+    return tokens
 
 
 
