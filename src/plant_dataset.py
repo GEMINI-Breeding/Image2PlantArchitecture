@@ -1,18 +1,25 @@
+import torch
 from torch.utils.data import Dataset
 import os
 import cv2
 import numpy as np
 
-from PIL import Image
+from PIL import Image, ImageFile
 from tqdm import tqdm
 
 from image_process import process_leaf_image
-from plant_tokenizer import SOS_token, EOS_token, PAD_token, vec2token, params_EOS_token_padded, params_SOS_token_padded
+from plant_tokenizer import SOS_token, EOS_token, PAD_token, params_EOS_token_padded, params_SOS_token_padded
 from string_to_xml_to_vec import string2vec, vec2string, vec2xml, pretty_print_xml
 
+from plant_tokenizer import vec2token_new as vec2token
+
+# Enable loading of truncated images
+ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 class PlantDataset(Dataset):
-    def __init__(self, root_dir, plot=None, stages=None, transform=None, img_size=224, use_depth=True, preload=True, dry_run=False, process_leaf=False):
+    def __init__(self, root_dir, plot=None, stages=None, transform=None, 
+                 image_size=224, use_depth=True, preload=True, 
+                 dry_run=False, process_leaf=False, normalize_params=True):
 
         self.root_dir = root_dir
         self.use_depth = use_depth          
@@ -27,27 +34,32 @@ class PlantDataset(Dataset):
         self.depth_images = os.listdir(self.depth_path)
 
         # Get list of plant strings
-        self.plant_strings = [x.replace('.jpeg', '.txt') for x in self.image_paths]
+        self.plant_string_files = [x.replace('.jpeg', '.txt') for x in self.image_paths]
 
         # Sort the lists
         self.image_paths.sort()
-        self.plant_strings.sort()
+        self.plant_string_files.sort()
         self.depth_images.sort()
 
+        self.img_size = image_size
         # Filter with statges
         if stages:
             self.image_paths = [x for x in self.image_paths if x.split('_')[2] in stages]
-            self.plant_strings = [x for x in self.plant_strings if x.split('_')[2] in stages]
+            self.plant_string_files = [x for x in self.plant_string_files if x.split('_')[2] in stages]
             self.depth_images = [x for x in self.depth_images if x.split('_')[2] in stages]
 
         if plot:
             self.image_paths = [x for x in self.image_paths if x.split('_')[3] in plot]
-            self.plant_strings = [x for x in self.plant_strings if x.split('_')[3] in plot]
+            self.plant_string_files = [x for x in self.plant_string_files if x.split('_')[3] in plot]
             self.depth_images = [x for x in self.depth_images if x.split('_')[3] in plot]
                 
         self.transform = transform
 
         self.process_leaf = process_leaf
+
+        self.plant_string_raw = ""
+
+        self.normalize_params = normalize_params
 
         print(f"Total {len(self.image_paths)} images and plant strings loaded")
         
@@ -76,15 +88,17 @@ class PlantDataset(Dataset):
             # Preprocess image
             leaf_area, plant_width, plant_height, leaf_img, (x,y,w,h) = process_leaf_image(np.array(image), 
                                                                                 normalize=True, debug=False, sqaure_crop=True)
-            leaf_img = cv2.resize(leaf_img, (224, 224))
+            leaf_img = cv2.resize(leaf_img, (self.img_size, self.img_size))
         else:
-            leaf_img = cv2.resize(np.array(image), (224, 224))
+            leaf_img = cv2.resize(np.array(image), (self.img_size, self.img_size))
 
         if self.use_depth:
             # Convert depth to grayscale
             depth = Image.open(os.path.join(self.depth_path, self.depth_images[idx]))
             depth = np.array(depth)
-            depth = cv2.cvtColor(depth, cv2.COLOR_BGR2GRAY)
+            # Convert to grayscale if not already
+            if len(depth.shape) > 2:
+                depth = cv2.cvtColor(depth, cv2.COLOR_BGR2GRAY)
 
             if self.process_leaf:
                 # Crop the depth image
@@ -95,7 +109,7 @@ class PlantDataset(Dataset):
             depth = depth.astype(np.uint8)
 
             # Resize the images
-            depth = cv2.resize(depth, (224, 224))
+            depth = cv2.resize(depth, (self.img_size, self.img_size))
 
             # Add depth channel
             leaf_img = np.concatenate((leaf_img, depth[:, :, np.newaxis]), axis=2)
@@ -106,14 +120,13 @@ class PlantDataset(Dataset):
             image = self.transform(image)
         
         # Load plant string
-        with open(os.path.join(self.plant_string_path, self.plant_strings[idx]), 'r') as f:
-            plant_string = f.read()
+        with open(os.path.join(self.plant_string_path, self.plant_string_files[idx]), 'r') as f:
+            self.plant_string_raw = f.read()
         
-        vec = string2vec(plant_string)[0]
+        vec = string2vec(self.plant_string_raw)[0]
 
         # Tokenize the plant structure
-        out = vec2token(vec)
-
+        out = vec2token(vec, normalize=self.normalize_params)
             
         # Add SOS and EOS tokens
         out = np.concatenate(([params_SOS_token_padded], out, [params_EOS_token_padded]))
@@ -133,3 +146,25 @@ class PlantDataset(Dataset):
         return image, out, out_len
         
                 
+
+def collate_fn(batch):
+    images, vectors, lengths = zip(*batch)
+    max_length = max(lengths)
+    # Check if the vectors are 1 dimensional
+    if len(vectors[0].shape) == 1:
+        vectors_padded = np.ones((len(vectors), max_length), dtype=int) * PAD_token
+    else:
+        # vectors_padded = np.ones((len(vectors), max_length, 1+5+3+2+4)) * PAD_token
+        vectors_padded = np.ones((len(vectors), max_length, 1+5+4+3+4)) * PAD_token # Bacth samples are padded with PAD_token
+    
+        # Should not reset the param space PAD_token because of the masked loss
+        if 0:
+            # Reset param space
+            vectors_padded[:,:,1:] = 0
+        
+    for i, vector in enumerate(vectors):
+        end = lengths[i]
+        vectors_padded[i, :end] = vector
+    images = torch.stack(images)
+    vectors_padded = torch.tensor(vectors_padded,dtype=torch.float32)
+    return images, vectors_padded, lengths

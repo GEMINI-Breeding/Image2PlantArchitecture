@@ -23,20 +23,18 @@ import random
 # PAD token | 42 
 
 SOS_token = 40
-EOS_token = 41
-PAD_token = 42
+PAD_token = 41
+EOS_token = 42
 
 if 0:
     params_SOS_token_padded = np.ones(15)*SOS_token
     params_EOS_token_padded = np.ones(15)*EOS_token
 else:
-    # Zero padded params
-    params_SOS_token_padded = np.zeros(15)
+    # Zero padded params. SOS and EOS token are zero padded
+    params_SOS_token_padded = np.zeros(17)
     params_SOS_token_padded[0] = SOS_token
-    params_EOS_token_padded = np.zeros(15)
+    params_EOS_token_padded = np.zeros(17)
     params_EOS_token_padded[0] = EOS_token
-
-
 
 def token2vec(tokens):
     vec = []
@@ -128,7 +126,7 @@ def vec2token(vec, n_params=15):
         tokens.append(token)
     return tokens
 
-def token2vec_new(tokens):
+def token2vec_new(tokens, normalize=False):
     vec = []
     for token in tokens:
         label = token[0]
@@ -145,41 +143,67 @@ def token2vec_new(tokens):
             i = label // 4
             j = label % 4
             params_padded = np.zeros(5)
-            if j == 0:
-                # Shoot
-                params_padded[0] = token[1] * 180 / math.pi # shoot_base_pitch
-                params_padded[1] = token[2] * 180 / math.pi # shoot_base_yaw
-                params_padded[2] = token[3] * 180 / math.pi # shoot_base_roll
-                params_padded[3] = token[4] * 100 # shoot_gravitropic_curvature
-                params_padded[4] = token[5] # shoot_type
-            elif j == 1:
-                # Internode
-                params_padded[0] = token[6] / 100 # internode_length
-                params_padded[1] = token[7] / 100 # internode_radius
-                params_padded[2] = token[8] * 180 / math.pi # internode_pitch
-                # Hardcored phyllotactic angle because it is not given from Brian yet
-                # params_padded[3] = 137.5 # TODO phyllotactic angle. The most common angle is the golden angle, or Fibonacci angle, which is approximately 137.5°.
-                params_padded[3] = random.uniform(130, 145)
-            elif j == 2:
-                # Petiole
-                params_padded[0] = token[9] / 100 # petiole_length
-                #params_padded[1] = 0.001 # TODO petiole radius is not given
-                params_padded[1] = random.uniform(0.00075, 0.00125) # TODO petiole radius is not given
-                params_padded[2] = token[10] * 180 / math.pi # petiole_pitch
-            elif j == 3:
-                # Leaf
-                params_padded[0] = token[11] / 100 # leaf_scale
-                params_padded[1] = token[12] * 180 / math.pi # leaf_pitch
-                params_padded[2] = token[13] * 180 / math.pi # leaf_yaw
-                params_padded[3] = token[14] * 180 / math.pi # leaf_roll
+            # Scale the params to match the original scale
+            if normalize:
+                if j == 0:
+                    # Shoot
+                    params_padded[0] = token[1] * 180 / math.pi # shoot_base_pitch
+                    params_padded[1] = token[2] * 180 / math.pi # shoot_base_yaw
+                    params_padded[2] = token[3] * 180 / math.pi # shoot_base_roll
+                    params_padded[3] = token[4] * 100 # shoot_gravitropic_curvature
+                    params_padded[4] = token[5] # shoot_type
+                elif j == 1:
+                    # Internode
+                    params_padded[0] = token[6] / 100 # internode_length
+                    params_padded[1] = token[7] / 100 # internode_radius
+                    params_padded[2] = token[8] * 180 / math.pi # internode_pitch
+                    params_padded[3] = token[9] * 180 / math.pi # phyllotactic angle, random.uniform(130, 145)
+                elif j == 2:
+                    # Petiole
+                    params_padded[0] = token[10] / 100 # petiole_length
+                    params_padded[1] = token[11] / 100 # petiole radius, random.uniform(0.00075, 0.00125)
+                    params_padded[2] = token[12] * 180 / math.pi # petiole_pitch
+                elif j == 3:
+                    # Leaf
+                    params_padded[0] = token[13] / 100 # leaf_scale
+                    params_padded[1] = token[14] * 180 / math.pi # leaf_pitch
+                    params_padded[2] = token[15] * 180 / math.pi # leaf_yaw
+                    params_padded[3] = token[16] * 180 / math.pi # leaf_roll
+                else:
+                    raise ValueError(f"Invalid organ type {j}")
             else:
-                raise ValueError(f"Invalid organ type {j}")
+                if j == 0:
+                    # Shoot
+                    params_padded[0] = token[1] # shoot_base_pitch
+                    params_padded[1] = token[2] # shoot_base_yaw
+                    params_padded[2] = token[3] # shoot_base_roll
+                    params_padded[3] = token[4] # shoot_gravitropic_curvature
+                    params_padded[4] = token[5] # shoot_type
+                elif j == 1:
+                    # Internode
+                    params_padded[0] = token[6] # internode_length
+                    params_padded[1] = token[7] # internode_radius
+                    params_padded[2] = token[8] # internode_pitch
+                    params_padded[3] = token[9] # phyllotactic angle, random.uniform(130, 145)
+                elif j == 2:
+                    # Petiole
+                    params_padded[0] = token[10] # petiole_length
+                    params_padded[1] = token[11] # petiole radius, random.uniform(0.00075, 0.00125)
+                    params_padded[2] = token[12] # petiole_pitch
+                elif j == 3:
+                    # Leaf
+                    params_padded[0] = token[13] # leaf_scale
+                    params_padded[1] = token[14] # leaf_pitch
+                    params_padded[2] = token[15] # leaf_yaw
+                    params_padded[3] = token[16] # leaf_roll
+                else:
+                    raise ValueError(f"Invalid organ type {j}")
 
             # Make 1x6 array with i, j and params
             vec.append(np.concatenate(([i, j], params_padded),axis=0))
     return np.array(vec)
 
-def vec2token_new(vec, n_params=15):
+def vec2token_new(vec, n_params=17, normalize=True):
     tokens = []
     for x in vec:
         depth_organ = x[0]*4 + x[1]
@@ -189,31 +213,61 @@ def vec2token_new(vec, n_params=15):
             token = np.ones(n_params) * PAD_token
 
         token[0] = depth_organ
-        
-        if x[1] == 0:
-            # Shoot params    
-            token[1] = x[2] / 180 * math.pi # shoot_base_pitch
-            token[2] = x[3] / 180 * math.pi # shoot_base_yaw
-            token[3] = x[4] / 180 * math.pi # shoot_base_roll
-            token[4] = x[5] / 100           # shoot_gravitropic_curvature
-            token[5] = x[6]                 # shoot_type
-        elif x[1] == 1:
-            # Internode params
-            token[6] = x[2] * 100 # internode_length
-            token[7] = x[3] * 100 # internode_radius
-            token[8] = x[4] / 180 * math.pi # internode_pitch
-        elif x[1] == 2:
-            # Petiole params
-            token[9] = x[2] * 100 # petiole_length
-            token[10] = x[3] / 180 * math.pi # petiole_pitch
-        elif x[1] == 3:
-            # Leaf params
-            token[11] = x[2] * 100 # leaf_scale
-            token[12] = x[3] / 180 * math.pi # leaf_pitch
-            token[13] = x[4] / 180 * math.pi # leaf_yaw
-            token[14] = x[5] / 180 * math.pi # leaf_roll
+        # Scale the params to radians, centimeters, etc.
+        if normalize:
+            if x[1] == 0:
+                # Shoot params
+                token[1] = x[2] / 180 * math.pi # shoot_base_pitch
+                token[2] = x[3] / 180 * math.pi # shoot_base_yaw
+                token[3] = x[4] / 180 * math.pi # shoot_base_roll
+                token[4] = x[5] / 100           # shoot_gravitropic_curvature
+                token[5] = x[6]                 # shoot_type
+            elif x[1] == 1:
+                # Internode params
+                token[6] = x[2] * 100 # internode_length
+                token[7] = x[3] * 100 # internode_radius
+                token[8] = x[4] / 180 * math.pi # internode_pitch
+                token[9] = x[5] / 180 * math.pi # phyllotactic angle
+            elif x[1] == 2:
+                # Petiole params
+                token[10] = x[2] * 100 # petiole_length
+                token[11] = x[3] * 100 # petiole_radius
+                token[12] = x[4] / 180 * math.pi # petiole_pitch
+            elif x[1] == 3:
+                # Leaf params
+                token[13] = x[2] * 100 # leaf_scale
+                token[14] = x[3] / 180 * math.pi # leaf_pitch
+                token[15] = x[4] / 180 * math.pi # leaf_yaw
+                token[16] = x[5] / 180 * math.pi # leaf_roll
+            else:
+                raise ValueError(f"Invalid organ type {x[1]}")
         else:
-            raise ValueError(f"Invalid organ type {x[1]}")
+            if x[1] == 0:
+                # Shoot params
+                token[1] = x[2] # shoot_base_pitch
+                token[2] = x[3] # shoot_base_yaw
+                token[3] = x[4] # shoot_base_roll
+                token[4] = x[5] # shoot_gravitropic_curvature
+                token[5] = x[6]                 # shoot_type
+            elif x[1] == 1:
+                # Internode params
+                token[6] = x[2] # internode_length
+                token[7] = x[3] # internode_radius
+                token[8] = x[4] # internode_pitch
+                token[9] = x[5] # phyllotactic angle
+            elif x[1] == 2:
+                # Petiole params
+                token[10] = x[2] # petiole_length
+                token[11] = x[3] # petiole_radius
+                token[12] = x[4] # petiole_pitch
+            elif x[1] == 3:
+                # Leaf params
+                token[13] = x[2] # leaf_scale
+                token[14] = x[3] # leaf_pitch
+                token[15] = x[4] # leaf_yaw
+                token[16] = x[5] # leaf_roll
+            else:
+                raise ValueError(f"Invalid organ type {x[1]}")
         
         tokens.append(token)
     return tokens

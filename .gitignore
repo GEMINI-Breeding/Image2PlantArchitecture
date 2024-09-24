@@ -166,3 +166,7 @@ cython_debug/
 
 # data folder
 data
+log
+saved
+models/checkpoints
+src/output

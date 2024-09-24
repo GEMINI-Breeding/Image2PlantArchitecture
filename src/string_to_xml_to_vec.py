@@ -222,7 +222,10 @@ def vec2element(root, plant_array, depth=0):
         cnt += 1
         if cnt > 1e6:
             # Raise an error
-            raise ValueError("Infinite loop")
+            # raise ValueError("Infinite loop")
+            print("Infinite loop, force close the loop")
+            break
+            
         line = plant_array[0]
         depth_line = line[0]
         # If depth_line is the same as depth, then add the element to the root
@@ -290,9 +293,10 @@ def vec2element(root, plant_array, depth=0):
                         shoot_type = list(shoottype2num.keys())[list(shoottype2num.values()).index(params[4])]
                         current_shoot.set("type", shoot_type)
                         plant_array = plant_array[1:]
-
             # print("--------------------")
             # print(pretty_print_xml(root))
+        elif depth_line < depth:
+            pass
 
         # Check if next line is different from the current depth
         if len(plant_array) > 0:
@@ -394,6 +398,38 @@ def vec2string(plant_array):
         total_outstring += "\n"
 
     return total_outstring
+
+
+def plant_string2words(plant_string):
+    """
+    Convert a plant string to a list of words.
+    
+    Args:
+    - plant_string (str): The plant string to convert.
+    
+    Returns:
+    - list: The list of words in the plant string.
+    """
+    # Format the input string with line breaks between components
+    formatted_output = plant_string.replace("}Internode", "}\nInternode")\
+        .replace(")Internode", ")\nInternode")\
+        .replace(")[{", ")\n[{")\
+        .replace(")Petiole", ")\nPetiole")\
+        .replace(")Leaf", ")\nLeaf")\
+        .replace("]", "]\n")
+    
+    # Split the string into words
+    words = formatted_output.split("\n")
+
+    # remove the empty string
+    words = [word for word in words if word]
+
+    # Check if the lenth is the same as plant vector
+    vec = string2vec(plant_string)[0]
+    if len(words) != len(vec):
+        print(f"Length of words {len(words)} does not match length of plant vector {len(vec)}")
+
+    return words
 
 if __name__ == "__main__":
     # String to xml

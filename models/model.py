@@ -9,83 +9,27 @@ import math
 from typing import Optional, Any, Union, Callable
 from torch import Tensor
 
-def _generate_square_subsequent_mask(
-        sz: int,
-        device: Optional[torch.device] = None,
-        dtype: Optional[torch.dtype] = None,
-) -> Tensor:
-    r"""Generate a square causal mask for the sequence.
 
-    The masked positions are filled with float('-inf'). Unmasked positions are filled with float(0.0).
-    """
-    if device is None:
-        device = torch.device('cpu')
-    if dtype is None:
-        dtype = torch.float32
-    return torch.triu(
-        torch.full((sz, sz), float('-inf'), dtype=dtype, device=device),
-        diagonal=1,
-    )
+def get_tgt_mask(size) -> torch.tensor:
+    mask = torch.tril(torch.ones(size, size) == 1) # Lower triangular matrix
+    mask = mask.float()
+    mask = mask.masked_fill(mask == 0, float('-inf')) # Convert zeros to -inf
+    mask = mask.masked_fill(mask == 1, float(0.0)) # Convert ones to 0
 
-def _get_seq_len(
-        src: Tensor,
-        batch_first: bool
-) -> Optional[int]:
+    # Change type
+    mask = mask.type(torch.FloatTensor)
+    return mask
 
-    if src.is_nested:
-        return None
-    else:
-        src_size = src.size()
-        if len(src_size) == 2:
-            # unbatched: S, E
-            return src_size[0]
-        else:
-            # batched: B, S, E if batch_first else S, B, E
-            seq_len_pos = 1 if batch_first else 0
-            return src_size[seq_len_pos]
-        
-def _detect_is_causal_mask(
-        mask: Optional[Tensor],
-        is_causal: Optional[bool] = None,
-        size: Optional[int] = None,
-) -> bool:
-    """Return whether the given attention mask is causal.
+def create_pad_mask(matrix: torch.tensor, pad_token: int) -> torch.tensor:
+    # Create (batch_size, seq_len) tensor
+    seq = matrix[:, :, 0]
+    mask = (seq == pad_token)
 
-    Warning:
-    If ``is_causal`` is not ``None``, its value will be returned as is.  If a
-    user supplies an incorrect ``is_causal`` hint,
+    # Change type
+    mask = mask.type(torch.FloatTensor)
+    return mask
 
-    ``is_causal=False`` when the mask is in fact a causal attention.mask
-       may lead to reduced performance relative to what would be achievable
-       with ``is_causal=True``;
-    ``is_causal=True`` when the mask is in fact not a causal attention.mask
-       may lead to incorrect and unpredictable execution - in some scenarios,
-       a causal mask may be applied based on the hint, in other execution
-       scenarios the specified mask may be used.  The choice may not appear
-       to be deterministic, in that a number of factors like alignment,
-       hardware SKU, etc influence the decision whether to use a mask or
-       rely on the hint.
-    ``size`` if not None, check whether the mask is a causal mask of the provided size
-       Otherwise, checks for any causal mask.
-    """
-    # Prevent type refinement
-    make_causal = (is_causal is True)
 
-    if is_causal is None and mask is not None:
-        sz = size if size is not None else mask.size(-2)
-        causal_comparison = _generate_square_subsequent_mask(
-            sz, device=mask.device, dtype=mask.dtype)
-
-        # Do not use `torch.equal` so we handle batched masks by
-        # broadcasting the comparison.
-        if mask.size() == causal_comparison.size():
-            make_causal = bool((mask == causal_comparison).all())
-        else:
-            make_causal = False
-
-    return make_causal
-
-        
 class TransformerDecoderLayerWithAttention(nn.TransformerDecoderLayer):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -122,9 +66,6 @@ class TransformerDecoderWithAttention(nn.TransformerDecoder):
         self_attn_weights = []
         multihead_attn_weights = []
 
-        seq_len = _get_seq_len(tgt, self.layers[0].self_attn.batch_first)
-        tgt_is_causal = _detect_is_causal_mask(tgt_mask, tgt_is_causal, seq_len)
-
         for mod in self.layers:
             output = mod(output, memory, tgt_mask=tgt_mask, memory_mask=memory_mask,
                          tgt_key_padding_mask=tgt_key_padding_mask, memory_key_padding_mask=memory_key_padding_mask)
@@ -154,21 +95,29 @@ class CNN(nn.Module):
         return x
     
 class CNN_ViT(nn.Module):
-    def __init__(self, output_size=256, use_depth=False):
+    def __init__(self, output_size=256, image_size=448, use_depth=False):
         super(CNN_ViT, self).__init__()
         
-        # print("Before")
-        # print(self.model)
-        self.model = ViTModel.from_pretrained('google/vit-base-patch16-224-in21k')
-        # Replace the first layer to accept 4 channel
-        if use_depth:
+        if 0:
+            # print("Before")
+            # print(self.model)
+            self.model = ViTModel.from_pretrained('google/vit-base-patch16-224-in21k')
+            # Replace the first layer to accept 4 channel
+            if use_depth:
                 self.model.embeddings.patch_embeddings.projection = nn.Conv2d(4, 768, kernel_size=(16, 16), stride=(16, 16))
                 self.model.embeddings.patch_embeddings.num_channels = 4
-    
+        
+        else:
+            # Use fully custom model
+            config = ViTConfig(image_size=image_size, 
+                               patch_size=16,
+                               attention_probs_dropout_prob=0.1,
+                               num_channels=4)  
+            self.model = ViTModel(config)
+
         #print("After")
         #print(self.model)
-        # self.cnn.classifier = nn.Identity()  # Remove the classification layer
-        self.fc = nn.Linear(768, output_size)  # Reduce feature dimension (1280 is the output of efficientnet_b0)
+        self.fc = nn.Linear(768, output_size)  # Reduce feature dimension
 
     def forward(self, x):
         x = self.model(x).last_hidden_state
@@ -199,8 +148,7 @@ class CNN_Dinov2(nn.Module):
             self.model.embeddings.patch_embeddings.num_channels = 4
 
         # print(self.model)
-            
-        self.fc = nn.Linear(768, output_size)  # Reduce feature dimension (1280 is the output of )
+        self.fc = nn.Linear(768, output_size)  # Reduce feature dimension
 
     def forward(self, x):
         x = self.model(x).last_hidden_state
@@ -230,9 +178,11 @@ class PositionalEncoding(nn.Module):
         return self.dropout(token_embedding + self.pos_encoding[:token_embedding.size(0), :])
 
 class ImageToSequenceTransformer(nn.Module):
-    def __init__(self, seq_embedding_dim, param_embedding_dim, num_layers, num_heads, num_tokens, num_params, max_seq_length=2048, use_depth=True, decoder_only=False):
+    def __init__(self, seq_embedding_dim, param_embedding_dim, 
+                 num_layers, num_heads, num_tokens, num_params, 
+                 max_seq_length=2048, use_depth=True, decoder_only=False, image_size=448):
         super(ImageToSequenceTransformer, self).__init__()
-        self.cnn = CNN_ViT(output_size=seq_embedding_dim+param_embedding_dim, use_depth=use_depth)
+        self.cnn = CNN_ViT(output_size=seq_embedding_dim+param_embedding_dim, use_depth=use_depth, image_size=image_size)
         #self.cnn = CNN_Dinov2(output_size=seq_embedding_dim+param_embedding_dim, use_depth=use_depth)
         #self.cnn = CNN(output_size=seq_embedding_dim+param_embedding_dim, use_depth=use_depth)
     
@@ -241,7 +191,7 @@ class ImageToSequenceTransformer(nn.Module):
         self.seq_embedding = nn.Embedding(num_tokens, seq_embedding_dim)
         self.param_dim_model = param_embedding_dim
         self.dim_model = seq_embedding_dim + param_embedding_dim
-        if 0:
+        if 1:
             self.param_embedding = nn.Linear(num_params, param_embedding_dim)
         else:
             # Make a sequencial model
@@ -276,12 +226,19 @@ class ImageToSequenceTransformer(nn.Module):
             self.param_linear = nn.Linear(self.dim_model, num_params)
     
     def forward(self, images, tgt_seq, tgt_mask=None, tgt_key_padding_mask=None):
-        features = self.cnn(images) # hidden_dim 길이의 벡터를 생성하지만, ViT 처럼 Sequence를 생성하도록 수정해야 함
+        features = self.cnn(images)
         # Check dimensions
         if len(features.shape) == 2:
             features = features.unsqueeze(1) 
         else:
             pass
+
+        device = tgt_seq.device
+        if tgt_mask is not None:
+            tgt_mask = tgt_mask.to(device)
+        if tgt_key_padding_mask is not None:
+            tgt_key_padding_mask = tgt_key_padding_mask.to(device)
+
         # Categorical sequence to embedding
         if len(tgt_seq.shape) == 2:
             tgt_seq = tgt_seq.unsqueeze(1)
