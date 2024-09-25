@@ -1,12 +1,7 @@
 import os
 import sys
 import torch
-import numpy as np
-import torch.nn as nn
-import torch.nn.functional as F
 import pytorch_lightning as pl
-from torch.utils.data import DataLoader
-from torchvision import transforms
 from pytorch_lightning.callbacks import ModelCheckpoint, TQDMProgressBar, LearningRateMonitor, EarlyStopping
 from pytorch_lightning.loggers import TensorBoardLogger
 
@@ -30,24 +25,29 @@ if __name__ == "__main__":
         param_embedding_dim=64,
         image_size=448,
         alpha=1.0,
-        lr=1e-3
+        lr=1e-4
     )
-    datamodule = MainDataModule(dataset_dir)
+    datamodule = MainDataModule(dataset_dir, train_batch_size=16, num_workers=8, param_dim=module.param_dim)
     tqdm_cb = TQDMProgressBar(refresh_rate=10)
-    ckpt_cb = ModelCheckpoint(
-        dirpath='./saved',
-        filename="{epoch:02d}_",
-        save_last=True
-    )
     tb_logger = TensorBoardLogger(
-        name='Image2Helios_20240924',
+        name='Image2Helios_20240925_all_decoder_output',
         save_dir='./log'
+    )
+
+    # ModelCheckpoint 설정
+    ckpt_cb = ModelCheckpoint(
+        monitor='val/loss',  # Metric to monitor
+        dirpath=os.path.join(tb_logger.log_dir, 'checkpoints'),
+        filename="best_{epoch:02d}_",
+        save_top_k=1,  # Save only the best model
+        save_last=True,
+        save_weights_only=True  # 가중치만 저장
     )
 
     lr_monitor = LearningRateMonitor(logging_interval='epoch')
     early_stop_cb = EarlyStopping(
         monitor='val/loss',
-        patience=10,
+        patience=50,
         verbose=True,
         mode='min'
     )
@@ -57,9 +57,11 @@ if __name__ == "__main__":
         devices=[0],
         max_epochs=200,
         callbacks=[tqdm_cb, ckpt_cb, lr_monitor, early_stop_cb],
+        # callbacks=[tqdm_cb, ckpt_cb, lr_monitor],
         logger=tb_logger,
-        precision="16-mixed",  # 16비트 훈련 활성화
+        precision="16-mixed",  # 16비트 훈련 활성
     )
+    # module = MainModule.load_from_checkpoint('./saved/last.ckpt')
     trainer.fit(module, datamodule=datamodule)
 
     # To check the training progress,

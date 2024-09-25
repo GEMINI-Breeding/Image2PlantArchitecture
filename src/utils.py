@@ -38,7 +38,10 @@ def visualize_attention(image, attention_weights, words, word_index, layer_index
     attention_map = attention_weights[layer_index].squeeze()[word_index].detach().cpu().numpy()
     
     # Remove the CLS token
-    attention_map = attention_map[1:]
+    # Check if the attention map is n*n+1
+    if not np.sqrt(attention_map.shape[0]).is_integer():
+        # Remove the CLS token
+        attention_map = attention_map[1:]
     # Reshape the attention map to sqaure image
     feature_size = int(np.sqrt(attention_map.shape[0]))
     attention_map = attention_map.reshape(feature_size, feature_size)

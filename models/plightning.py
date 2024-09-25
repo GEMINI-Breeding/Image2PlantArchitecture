@@ -10,6 +10,8 @@ from torchvision import transforms
 from pytorch_lightning.callbacks import ModelCheckpoint, TQDMProgressBar, LearningRateMonitor, EarlyStopping
 from pytorch_lightning.loggers import TensorBoardLogger
 
+import random
+
 # 경로 설정
 script_file_path = os.path.abspath(__file__)
 sys.path.append(os.path.dirname(os.path.dirname(script_file_path)))
@@ -46,6 +48,8 @@ class MainModule(pl.LightningModule):
             use_depth=True,
             image_size=self.image_size
         )
+        self.multihead_attn_weights = None
+        self.self_attn_weights = None
 
     def forward(self, image, y_input):
         tgt_mask = get_tgt_mask(y_input.size(1))
@@ -53,6 +57,52 @@ class MainModule(pl.LightningModule):
         outputs = self.model(image, y_input, tgt_mask=tgt_mask, tgt_key_padding_mask=tgt_pad_mask)
         outputs = outputs.permute(1, 2, 0)
         return outputs
+    
+    def generate(self, image, max_len=2048, stage='test'):
+        device = image.device
+        y_input = torch.tensor(params_SOS_token_padded, dtype=torch.float32)
+
+        y_input = y_input.unsqueeze(0).unsqueeze(0)
+        y_input = y_input.to(device)
+
+        for i in range(max_len):
+            # Get source mask
+            tgt_mask = get_tgt_mask(y_input.size(1)).to(device)
+            
+            # Use torch.cuda.amp for mixed precision
+            with torch.cuda.amp.autocast():
+                try:
+                    if stage == 'test':
+                        with torch.no_grad():
+                            pred = self.model(image, y_input, tgt_mask)
+                    else:
+                        pred = self.model(image, y_input, tgt_mask)
+                except Exception as e:
+                    print(e)
+                    print(f"Error in {i} iteration")
+                    break
+            label_p = pred[:,:,:self.seq_dim]
+            label = label_p.topk(1)[1].view(-1)[-1].item()  # num with highest probability
+            params = pred[:,:,self.seq_dim:]
+
+            # Stop if model predicts end of sentencplant_structure_vit_transformer_withpsudodepth_paramEste
+            # if label == EOS_token or label == PAD_token:
+            if label == EOS_token:
+                break
+
+            # Make next tensor using label and params
+            next_item = torch.cat((torch.tensor([[label]], dtype=torch.float32, device=device), params[-1]), dim=1).unsqueeze(0)
+
+            # Concatenate previous input with predicted best word
+            y_input = torch.cat((y_input, next_item), dim=1)
+
+        return y_input.squeeze(0).tolist()
+    
+    def load_attn_weights(self):
+        self.multihead_attn_weights = self.model.multihead_attn_weights
+        self.self_attn_weights = self.model.self_attn_weights
+
+        return self.multihead_attn_weights, self.self_attn_weights
 
     def label_loss_fn(self, pred, label):
         return F.cross_entropy(pred, label, ignore_index=PAD_token)
@@ -66,6 +116,10 @@ class MainModule(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         image, y, lengths = batch
         y_input = y[:, :-1]
+        
+        # # Teacher Forcing 확률에 따라 Teacher Forcing 사용 여부 결정
+        # use_teacher_forcing = True if random.random() < self.prob_teacher_forcing else False
+
         pred = self(image, y_input)
 
         y_expected = y[:, 1:]
@@ -76,9 +130,9 @@ class MainModule(pl.LightningModule):
         param_loss = self.param_loss_fn(pred[:, self.seq_dim:], values)
         loss = label_loss + self.alpha * param_loss
 
-        self.log('train/0_label_loss', label_loss, batch_size=image.size(0))
-        self.log('train/1_param_loss', param_loss, batch_size=image.size(0))
-        self.log('train/2_loss', loss, batch_size=image.size(0))
+        self.log('train/label_loss', label_loss, batch_size=image.size(0))
+        self.log('train/param_loss', param_loss, batch_size=image.size(0))
+        self.log('train/loss', loss, batch_size=image.size(0))
         return loss
 
     def validation_step(self, batch, batch_idx):
@@ -94,14 +148,17 @@ class MainModule(pl.LightningModule):
         param_loss = self.param_loss_fn(pred[:, self.seq_dim:], values)
         loss = label_loss + self.alpha * param_loss
 
-        self.log('val/0_label_loss', label_loss, batch_size=image.size(0))
-        self.log('val/1_param_loss', param_loss, batch_size=image.size(0))
-        self.log('val/2_loss', loss, batch_size=image.size(0))
+        self.log('val/label_loss', label_loss, batch_size=image.size(0))
+        self.log('val/param_loss', param_loss, batch_size=image.size(0))
+        self.log('val/loss', loss, batch_size=image.size(0))
         return loss
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr)
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=5, min_lr=1e-6)
+        if 1:
+            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=25, min_lr=1e-6)
+        else:
+            scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=50, gamma=0.5)
         return {
             'optimizer': optimizer,
             'lr_scheduler': {
@@ -113,13 +170,15 @@ class MainModule(pl.LightningModule):
         }
 
 class MainDataModule(pl.LightningDataModule):
-    def __init__(self, dataset_dir, batch_size=16, num_workers=4, image_size=448, preload=False):
+    def __init__(self, dataset_dir, train_batch_size=16, val_batch_size=None, num_workers=4, image_size=448, param_dim=5 + 4 + 3 + 4, preload=False):
         super().__init__()
         self.dataset_dir = dataset_dir
-        self.batch_size = batch_size
+        self.train_batch_size = train_batch_size
+        self.val_batch_size = val_batch_size if val_batch_size is not None else train_batch_size
         self.num_workers = num_workers
         self.image_size = image_size
         self.preload = preload
+        self.param_dim = param_dim
         self.transform = transforms.Compose([
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.5, 0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5, 0.5])
@@ -148,7 +207,7 @@ class MainDataModule(pl.LightningDataModule):
         if len(vectors[0].shape) == 1:
             vectors_padded = np.ones((len(vectors), max_length), dtype=int) * PAD_token
         else:
-            vectors_padded = np.ones((len(vectors), max_length, 1 + 5 + 4 + 3 + 4)) * PAD_token
+            vectors_padded = np.ones((len(vectors), max_length, 1 + self.param_dim)) * PAD_token
             if 0:
                 vectors_padded[:, :, 1:] = 0
 
@@ -162,18 +221,18 @@ class MainDataModule(pl.LightningDataModule):
 
     def train_dataloader(self):
         return DataLoader(
-            self.train_dataset, batch_size=self.batch_size, shuffle=True,
+            self.train_dataset, batch_size=self.train_batch_size, shuffle=True,
             collate_fn=self.collate_fn, num_workers=self.num_workers
         )
 
     def val_dataloader(self):
         return DataLoader(
-            self.val_dataset, batch_size=self.batch_size, shuffle=False,
+            self.val_dataset, batch_size=self.val_batch_size, shuffle=False,
             collate_fn=self.collate_fn, num_workers=self.num_workers
         )
 
     def test_dataloader(self):
         return DataLoader(
-            self.test_dataset, batch_size=self.batch_size, shuffle=False,
+            self.test_dataset, batch_size=self.val_batch_size, shuffle=False,
             collate_fn=self.collate_fn, num_workers=self.num_workers
         )

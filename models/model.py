@@ -111,7 +111,7 @@ class CNN_ViT(nn.Module):
             # Use fully custom model
             config = ViTConfig(image_size=image_size, 
                                patch_size=16,
-                               attention_probs_dropout_prob=0.1,
+                               attention_probs_dropout_prob=0.0,
                                num_channels=4)  
             self.model = ViTModel(config)
 
@@ -218,7 +218,7 @@ class ImageToSequenceTransformer(nn.Module):
                                             num_decoder_layers=num_layers,
                                             dropout=0.1,
                                         )
-        if 1:
+        if 0:
             self.seq_linear = nn.Linear(self.seq_embedding_dim, num_tokens)
             self.param_linear = nn.Linear(self.param_dim_model, num_params)
         else:
@@ -232,6 +232,10 @@ class ImageToSequenceTransformer(nn.Module):
             features = features.unsqueeze(1) 
         else:
             pass
+        
+        if 0:
+            # Use the patch embeddings only as the input (Remove the CLS token)
+            features = features[:, 1:, :]
 
         device = tgt_seq.device
         if tgt_mask is not None:
@@ -262,7 +266,7 @@ class ImageToSequenceTransformer(nn.Module):
         else:
             decoded = self.transformer(features, tgt_seq, tgt_mask=tgt_mask,tgt_key_padding_mask=tgt_key_padding_mask)
         
-        if 1:
+        if 0:
             # 0 ~ seq_dim_model is the sequence, seq_dim_model-64 is the parameters
             decoded_seq = decoded[:, :, :self.seq_dim_model]
             output_seq = self.seq_linear(decoded_seq)
