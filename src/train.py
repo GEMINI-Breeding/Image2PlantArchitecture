@@ -54,12 +54,12 @@ if __name__ == "__main__":
 
     trainer = pl.Trainer(
         accelerator="gpu",
-        devices=[0],
+        devices="auto",
         max_epochs=200,
         callbacks=[tqdm_cb, ckpt_cb, lr_monitor, early_stop_cb],
         # callbacks=[tqdm_cb, ckpt_cb, lr_monitor],
         logger=tb_logger,
-        precision="16-mixed",  # 16비트 훈련 활성
+        # precision="16-mixed",  # 16비트 훈련 활성
     )
     # module = MainModule.load_from_checkpoint('./saved/last.ckpt')
     trainer.fit(module, datamodule=datamodule)
