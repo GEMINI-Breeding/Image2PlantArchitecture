@@ -156,7 +156,7 @@ class MainModule(pl.LightningModule):
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr)
         if 1:
-            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=25, min_lr=1e-6)
+            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=10, min_lr=1e-6)
         else:
             scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=50, gamma=0.5)
         return {
@@ -170,7 +170,11 @@ class MainModule(pl.LightningModule):
         }
 
 class MainDataModule(pl.LightningDataModule):
-    def __init__(self, dataset_dir, train_batch_size=16, val_batch_size=None, num_workers=4, image_size=448, param_dim=5 + 4 + 3 + 4, preload=False):
+    def __init__(self, dataset_dir, train_batch_size=16, val_batch_size=None, 
+                        num_workers=4, image_size=448, 
+                        param_dim=5 + 4 + 3 + 4,
+                        process_leaf=False,
+                        preload=False):
         super().__init__()
         self.dataset_dir = dataset_dir
         self.train_batch_size = train_batch_size
@@ -179,6 +183,7 @@ class MainDataModule(pl.LightningDataModule):
         self.image_size = image_size
         self.preload = preload
         self.param_dim = param_dim
+        self.process_leaf = process_leaf
         self.transform = transforms.Compose([
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.5, 0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5, 0.5])
@@ -188,16 +193,19 @@ class MainDataModule(pl.LightningDataModule):
         self.train_dataset = PlantDataset(
             self.dataset_dir, plot=["000", "001", "002"],
             transform=self.transform, use_depth=True,
+            process_leaf=self.process_leaf,
             preload=self.preload, image_size=self.image_size
         )
         self.val_dataset = PlantDataset(
             self.dataset_dir, plot=["003"],
             transform=self.transform, use_depth=True,
+            process_leaf=self.process_leaf,
             preload=self.preload, image_size=self.image_size
         )
         self.test_dataset = PlantDataset(
             self.dataset_dir, plot=["004"],
             transform=self.transform, use_depth=True,
+            process_leaf=self.process_leaf,
             preload=self.preload, image_size=self.image_size
         )
 

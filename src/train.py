@@ -27,10 +27,10 @@ if __name__ == "__main__":
         alpha=1.0,
         lr=1e-4
     )
-    datamodule = MainDataModule(dataset_dir, train_batch_size=16, num_workers=8, param_dim=module.param_dim)
+    datamodule = MainDataModule(dataset_dir, train_batch_size=16, num_workers=8, param_dim=module.param_dim, process_leaf=True)
     tqdm_cb = TQDMProgressBar(refresh_rate=10)
     tb_logger = TensorBoardLogger(
-        name='Image2Helios_20240925_all_decoder_output',
+        name='Image2Helios_20240925_process_leaf',
         save_dir='./log'
     )
 
@@ -38,16 +38,17 @@ if __name__ == "__main__":
     ckpt_cb = ModelCheckpoint(
         monitor='val/loss',  # Metric to monitor
         dirpath=os.path.join(tb_logger.log_dir, 'checkpoints'),
-        filename="best_{epoch:02d}_",
+        filename="best_{epoch:02d}",
         save_top_k=1,  # Save only the best model
         save_last=True,
         save_weights_only=True  # 가중치만 저장
     )
 
     lr_monitor = LearningRateMonitor(logging_interval='epoch')
+
     early_stop_cb = EarlyStopping(
         monitor='val/loss',
-        patience=50,
+        patience=20,
         verbose=True,
         mode='min'
     )
@@ -59,7 +60,7 @@ if __name__ == "__main__":
         callbacks=[tqdm_cb, ckpt_cb, lr_monitor, early_stop_cb],
         # callbacks=[tqdm_cb, ckpt_cb, lr_monitor],
         logger=tb_logger,
-        # precision="16-mixed",  # 16비트 훈련 활성
+        precision="bf16-mixed"
     )
     # module = MainModule.load_from_checkpoint('./saved/last.ckpt')
     trainer.fit(module, datamodule=datamodule)
