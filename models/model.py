@@ -180,7 +180,7 @@ class PositionalEncoding(nn.Module):
 class ImageToSequenceTransformer(nn.Module):
     def __init__(self, seq_embedding_dim, param_embedding_dim, 
                  num_layers, num_heads, num_tokens, num_params, 
-                 max_seq_length=2048, use_depth=True, decoder_only=False, image_size=448):
+                 max_seq_length=2048, use_depth=True, decoder_only=False, image_size=448, dropout=0.1):
         super(ImageToSequenceTransformer, self).__init__()
         self.cnn = CNN_ViT(output_size=seq_embedding_dim+param_embedding_dim, use_depth=use_depth, image_size=image_size)
         #self.cnn = CNN_Dinov2(output_size=seq_embedding_dim+param_embedding_dim, use_depth=use_depth)
@@ -191,6 +191,7 @@ class ImageToSequenceTransformer(nn.Module):
         self.seq_embedding = nn.Embedding(num_tokens, seq_embedding_dim)
         self.param_dim_model = param_embedding_dim
         self.dim_model = seq_embedding_dim + param_embedding_dim
+        self.dropout = dropout
         if 1:
             self.param_embedding = nn.Linear(num_params, param_embedding_dim)
         else:

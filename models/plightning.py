@@ -18,12 +18,12 @@ sys.path.append(os.path.dirname(os.path.dirname(script_file_path)))
 
 # 모듈 임포트
 from models.model import ImageToSequenceTransformer, get_tgt_mask, create_pad_mask
-from plant_tokenizer import SOS_token, EOS_token, PAD_token, params_EOS_token_padded, params_SOS_token_padded
-from plant_dataset import PlantDataset
+from src.plant_tokenizer import SOS_token, EOS_token, PAD_token, params_EOS_token_padded, params_SOS_token_padded
+from src.plant_dataset import PlantDataset
 
 
 class MainModule(pl.LightningModule):
-    def __init__(self, num_layers, num_heads, seq_dim, seq_embedding_dim, param_dim, param_embedding_dim, image_size, alpha, lr):
+    def __init__(self, num_layers, num_heads, seq_dim, seq_embedding_dim, param_dim, param_embedding_dim, image_size, alpha, lr, dropout):
         super(MainModule, self).__init__()
         self.save_hyperparameters()  # 전달된 모든 인수를 저장
 
@@ -36,6 +36,7 @@ class MainModule(pl.LightningModule):
         self.image_size = image_size
         self.alpha = alpha
         self.lr = lr
+        self.dropout = dropout
 
         self.model = ImageToSequenceTransformer(
             seq_embedding_dim=self.seq_embedding_dim,
@@ -46,10 +47,25 @@ class MainModule(pl.LightningModule):
             num_params=self.param_dim,
             decoder_only=True,
             use_depth=True,
-            image_size=self.image_size
+            image_size=self.image_size,
+            dropout=self.dropout,
         )
         self.multihead_attn_weights = None
         self.self_attn_weights = None
+
+        if 0:
+            # Test to generate 2048 tokens if memory is not enough
+            try:
+                print("Test generate")
+                empty_image = torch.zeros(1, 4, self.image_size, self.image_size)
+                empty_image.to("cuda")
+                self.generate(empty_image, max_len=2048, stage='test')
+                print("Test generate success")
+            except Exception as e:
+                print(e)
+                print("Error in test generate")
+
+
 
     def forward(self, image, y_input):
         tgt_mask = get_tgt_mask(y_input.size(1))
@@ -107,9 +123,12 @@ class MainModule(pl.LightningModule):
     def label_loss_fn(self, pred, label):
         return F.cross_entropy(pred, label, ignore_index=PAD_token)
 
-    def param_loss_fn(self, pred, params):
-        mask = (params == PAD_token)
-        loss_mse = F.mse_loss(pred, params, reduction='none')
+    def param_loss_fn(self, pred, params, ignore_index=PAD_token):
+        mask = (params == ignore_index)
+        if 0:
+            loss_mse = F.mse_loss(pred, params, reduction='none')
+        else:
+            loss_mse = F.smooth_l1_loss(pred, params, reduction='none')
         masked_loss = loss_mse * ~mask
         return masked_loss.sum() / (~mask).sum()
 
@@ -194,19 +213,19 @@ class MainDataModule(pl.LightningDataModule):
             self.dataset_dir, plot=["000", "001", "002"],
             transform=self.transform, use_depth=True,
             process_leaf=self.process_leaf,
-            preload=self.preload, image_size=self.image_size
+            preload=self.preload, image_size=self.image_size,
         )
         self.val_dataset = PlantDataset(
             self.dataset_dir, plot=["003"],
             transform=self.transform, use_depth=True,
             process_leaf=self.process_leaf,
-            preload=self.preload, image_size=self.image_size
+            preload=self.preload, image_size=self.image_size,
         )
         self.test_dataset = PlantDataset(
             self.dataset_dir, plot=["004"],
             transform=self.transform, use_depth=True,
             process_leaf=self.process_leaf,
-            preload=self.preload, image_size=self.image_size
+            preload=self.preload, image_size=self.image_size,
         )
 
     def collate_fn(self, batch):

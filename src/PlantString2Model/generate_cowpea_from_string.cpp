@@ -13,6 +13,7 @@ void printUsage(const char* programName) {
 
 int main(int argc, char* argv[]){
     std::string plant_string_file = "plantstring.txt";
+    std::string save_dir = "output";
     bool debug = false;
     bool grow = false;
     bool rotation_view = false;
@@ -32,8 +33,13 @@ int main(int argc, char* argv[]){
             height = std::stof(argv[i+1]);
         } else if (arg == "-tile" && i + 1 < argc) {
             tile_file = argv[i+1];
+        } else if (arg == "-f" && i + 1 < argc) {
+            plant_string_file = argv[i+1];
+        } else if (arg == "-o" && i + 1 < argc) {
+            save_dir = argv[i+1];
+            printf("Save dir: ", save_dir);
         } else {
-            plant_string_file = arg;
+            printf("Unknown argument: %s\n", arg.c_str());
         }
     }
 
@@ -54,15 +60,12 @@ int main(int argc, char* argv[]){
 
 
     // Create a save directory if it does not exist
-    std::string save_dir = "output";
     std::string command = "mkdir -p " + save_dir;
 
     if (system(command.c_str()) == -1) {
         std::cerr << "Error creating save directory: " << save_dir << std::endl;
         return 1;
     }
-
-
 
     std::stringstream buffer;
     buffer << file.rdbuf();

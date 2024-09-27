@@ -45,7 +45,7 @@ class plantstring2model:
         command += f"-h {self.height} "
         
         # Add the plantstring path
-        command += f"{plantstring_path}"
+        command += f"-f {plantstring_path}"
 
         if self.verbose == False:
             command += " > log.txt 2>&1"

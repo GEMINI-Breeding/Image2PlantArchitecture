@@ -19,7 +19,7 @@ ImageFile.LOAD_TRUNCATED_IMAGES = True
 class PlantDataset(Dataset):
     def __init__(self, root_dir, plot=None, stages=None, transform=None, 
                  image_size=224, use_depth=True, preload=True, 
-                 dry_run=False, process_leaf=False, normalize_params=True):
+                 dry_run=False, process_leaf=False):
 
         self.root_dir = root_dir
         self.use_depth = use_depth          
@@ -58,9 +58,7 @@ class PlantDataset(Dataset):
         self.process_leaf = process_leaf
 
         self.plant_string_raw = ""
-
-        self.normalize_params = normalize_params
-
+        
         print(f"Total {len(self.image_paths)} images and plant strings loaded")
         
         if self.preload:
@@ -126,7 +124,7 @@ class PlantDataset(Dataset):
         vec = string2vec(self.plant_string_raw)[0]
 
         # Tokenize the plant structure
-        out = vec2token(vec, normalize=self.normalize_params)
+        out = vec2token(vec)
             
         # Add SOS and EOS tokens
         out = np.concatenate(([params_SOS_token_padded], out, [params_EOS_token_padded]))
@@ -155,7 +153,7 @@ def collate_fn(batch):
         vectors_padded = np.ones((len(vectors), max_length), dtype=int) * PAD_token
     else:
         # vectors_padded = np.ones((len(vectors), max_length, 1+5+3+2+4)) * PAD_token
-        vectors_padded = np.ones((len(vectors), max_length, 1+5+4+3+4)) * PAD_token # Bacth samples are padded with PAD_token
+        vectors_padded = np.ones((len(vectors), max_length, vectors[0].shape[-1])) * PAD_token # Bacth samples are padded with PAD_token
     
         # Should not reset the param space PAD_token because of the masked loss
         if 0:

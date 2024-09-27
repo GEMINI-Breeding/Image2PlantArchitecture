@@ -17,20 +17,23 @@ if __name__ == "__main__":
 
     dataset_dir = "/home/lion397/codes/Image2PlantArchitecture/data/generated_dataset_Sep22_black"
     module = MainModule(
-        num_layers=3,
-        num_heads=4,
+        num_layers=6,
+        num_heads=8,
         seq_dim=43,
-        seq_embedding_dim=64,
-        param_dim=16,
-        param_embedding_dim=64,
+        seq_embedding_dim=256,
+        param_dim=18,
+        param_embedding_dim=256,
         image_size=448,
         alpha=1.0,
-        lr=1e-4
+        lr=1e-4,
+        dropout=0.1,
     )
-    datamodule = MainDataModule(dataset_dir, train_batch_size=16, num_workers=8, param_dim=module.param_dim, process_leaf=True)
+
+
+    datamodule = MainDataModule(dataset_dir, train_batch_size=4, num_workers=8, param_dim=module.param_dim, process_leaf=True)
     tqdm_cb = TQDMProgressBar(refresh_rate=10)
     tb_logger = TensorBoardLogger(
-        name='Image2Helios_20240925_process_leaf',
+        name='Image2Helios_20240927_6layers_8heads',
         save_dir='./log'
     )
 
