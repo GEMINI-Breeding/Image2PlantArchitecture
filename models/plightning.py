@@ -21,6 +21,7 @@ from models.model import ImageToSequenceTransformer, get_tgt_mask, create_pad_ma
 from src.plant_tokenizer import SOS_token, EOS_token, PAD_token, params_EOS_token_padded, params_SOS_token_padded
 from src.plant_dataset import PlantDataset
 
+import pickle
 
 class MainModule(pl.LightningModule):
     def __init__(self, num_layers, num_heads, seq_dim, seq_embedding_dim, param_dim, param_embedding_dim, image_size, alpha, lr, dropout):
@@ -149,9 +150,9 @@ class MainModule(pl.LightningModule):
         param_loss = self.param_loss_fn(pred[:, self.seq_dim:], values)
         loss = label_loss + self.alpha * param_loss
 
-        self.log('train/label_loss', label_loss, batch_size=image.size(0))
-        self.log('train/param_loss', param_loss, batch_size=image.size(0))
-        self.log('train/loss', loss, batch_size=image.size(0))
+        self.log('train/label_loss', label_loss, batch_size=image.size(0), sync_dist=True)
+        self.log('train/param_loss', param_loss, batch_size=image.size(0), sync_dist=True)
+        self.log('train/loss', loss, batch_size=image.size(0), sync_dist=True)
         return loss
 
     def validation_step(self, batch, batch_idx):
@@ -167,9 +168,9 @@ class MainModule(pl.LightningModule):
         param_loss = self.param_loss_fn(pred[:, self.seq_dim:], values)
         loss = label_loss + self.alpha * param_loss
 
-        self.log('val/label_loss', label_loss, batch_size=image.size(0))
-        self.log('val/param_loss', param_loss, batch_size=image.size(0))
-        self.log('val/loss', loss, batch_size=image.size(0))
+        self.log('val/label_loss', label_loss, batch_size=image.size(0), sync_dist=True)
+        self.log('val/param_loss', param_loss, batch_size=image.size(0), sync_dist=True)
+        self.log('val/loss', loss, batch_size=image.size(0), sync_dist=True)
         return loss
 
     def configure_optimizers(self):
@@ -203,29 +204,50 @@ class MainDataModule(pl.LightningDataModule):
         self.preload = preload
         self.param_dim = param_dim
         self.process_leaf = process_leaf
+        self.use_depth = True
         self.transform = transforms.Compose([
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.5, 0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5, 0.5])
         ])
 
+    def load_or_create_dataset(self, dataset_dir, dataset_name, plot, transform, use_depth, process_leaf, preload, image_size):
+        saved_dataset_name = os.path.join(dataset_dir, f"{dataset_name}.pkl")
+        if os.path.exists(saved_dataset_name):
+            print(f"Loading {dataset_name} dataset from .pkl file")
+            with open(saved_dataset_name, "rb") as f:
+                dataset = pickle.load(f)
+        else:
+            dataset = PlantDataset(
+                dataset_dir, plot=plot,
+                transform=transform, use_depth=use_depth,
+                process_leaf=process_leaf,
+                preload=preload, image_size=image_size,
+            )
+            if preload:
+                # Check if the dataset is already saved
+                print(f"Saving {dataset_name} dataset to .pkl file")
+                if not os.path.exists(saved_dataset_name):
+                    with open(saved_dataset_name, "wb") as f:
+                        pickle.dump(dataset, f)
+        return dataset
+
     def setup(self, stage=None):
-        self.train_dataset = PlantDataset(
-            self.dataset_dir, plot=["000", "001", "002"],
-            transform=self.transform, use_depth=True,
-            process_leaf=self.process_leaf,
-            preload=self.preload, image_size=self.image_size,
+        self.train_dataset = self.load_or_create_dataset(
+            self.dataset_dir, "train_dataset", ["000", "001", "002"],
+            self.transform, self.use_depth, self.process_leaf,
+            self.preload, self.image_size
         )
-        self.val_dataset = PlantDataset(
-            self.dataset_dir, plot=["003"],
-            transform=self.transform, use_depth=True,
-            process_leaf=self.process_leaf,
-            preload=self.preload, image_size=self.image_size,
+
+        self.val_dataset = self.load_or_create_dataset(
+            self.dataset_dir, "val_dataset", ["003"],
+            self.transform, self.use_depth, self.process_leaf,
+            self.preload, self.image_size
         )
-        self.test_dataset = PlantDataset(
-            self.dataset_dir, plot=["004"],
-            transform=self.transform, use_depth=True,
-            process_leaf=self.process_leaf,
-            preload=self.preload, image_size=self.image_size,
+
+        self.test_dataset = self.load_or_create_dataset(
+            self.dataset_dir, "test_dataset", ["004"],
+            self.transform, self.use_depth, self.process_leaf,
+            self.preload, self.image_size
         )
 
     def collate_fn(self, batch):

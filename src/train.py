@@ -4,6 +4,7 @@ import torch
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint, TQDMProgressBar, LearningRateMonitor, EarlyStopping
 from pytorch_lightning.loggers import TensorBoardLogger
+from pytorch_lightning.strategies import DDPStrategy
 
 # 경로 설정
 script_file_path = os.path.abspath(__file__)
@@ -30,7 +31,7 @@ if __name__ == "__main__":
     )
 
 
-    datamodule = MainDataModule(dataset_dir, train_batch_size=4, num_workers=8, param_dim=module.param_dim, process_leaf=True)
+    datamodule = MainDataModule(dataset_dir, train_batch_size=6, num_workers=4, param_dim=module.param_dim, process_leaf=True, preload=True)
     tqdm_cb = TQDMProgressBar(refresh_rate=10)
     tb_logger = TensorBoardLogger(
         name='Image2Helios_20240927_6layers_8heads',
@@ -63,7 +64,8 @@ if __name__ == "__main__":
         callbacks=[tqdm_cb, ckpt_cb, lr_monitor, early_stop_cb],
         # callbacks=[tqdm_cb, ckpt_cb, lr_monitor],
         logger=tb_logger,
-        precision="bf16-mixed"
+        precision="bf16-mixed",
+        strategy=DDPStrategy(find_unused_parameters=True)  # Enable detection of unused parameters
     )
     # module = MainModule.load_from_checkpoint('./saved/last.ckpt')
     trainer.fit(module, datamodule=datamodule)
