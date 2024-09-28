@@ -31,10 +31,10 @@ if __name__ == "__main__":
     )
 
 
-    datamodule = MainDataModule(dataset_dir, train_batch_size=6, num_workers=4, param_dim=module.param_dim, process_leaf=True, preload=True)
+    datamodule = MainDataModule(dataset_dir, train_batch_size=32, num_workers=4, param_dim=module.param_dim, process_leaf=True, preload=True)
     tqdm_cb = TQDMProgressBar(refresh_rate=10)
     tb_logger = TensorBoardLogger(
-        name='Image2Helios_20240927_6layers_8heads',
+        name='Image2Helios_20240927_6layers_8heads_onFarm',
         save_dir='./log'
     )
 

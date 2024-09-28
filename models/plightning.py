@@ -225,8 +225,8 @@ class MainDataModule(pl.LightningDataModule):
             )
             if preload:
                 # Check if the dataset is already saved
-                print(f"Saving {dataset_name} dataset to .pkl file")
                 if not os.path.exists(saved_dataset_name):
+                    print(f"Saving {dataset_name} dataset to .pkl file")
                     with open(saved_dataset_name, "wb") as f:
                         pickle.dump(dataset, f)
         return dataset
