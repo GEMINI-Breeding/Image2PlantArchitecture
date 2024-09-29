@@ -190,7 +190,7 @@ def vec2token_new(vec, n_params=19):
     tokens = []
     for x in vec:
         depth_organ = x[0]*4 + x[1]
-        if 0:
+        if 1:
             token = np.zeros(n_params) # padding zeros to match the desired length
         else:
             token = np.ones(n_params) * PAD_token # If use PAD_token, unmatched params's loss will be ignored

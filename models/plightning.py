@@ -7,10 +7,8 @@ import torch.nn.functional as F
 import pytorch_lightning as pl
 from torch.utils.data import DataLoader
 from torchvision import transforms
-from pytorch_lightning.callbacks import ModelCheckpoint, TQDMProgressBar, LearningRateMonitor, EarlyStopping
-from pytorch_lightning.loggers import TensorBoardLogger
+from pytorch_lightning.callbacks import BatchSizeFinder, LearningRateFinder
 
-import random
 
 # 경로 설정
 script_file_path = os.path.abspath(__file__)
@@ -22,6 +20,30 @@ from src.plant_tokenizer import SOS_token, EOS_token, PAD_token, params_EOS_toke
 from src.plant_dataset import PlantDataset
 
 import pickle
+
+class FineTuneBatchSizeFinder(BatchSizeFinder):
+    def __init__(self, milestones, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.milestones = milestones
+
+    def on_fit_start(self, *args, **kwargs):
+        return
+
+    def on_train_epoch_start(self, trainer, pl_module):
+        if trainer.current_epoch in self.milestones or trainer.current_epoch == 0:
+            self.scale_batch_size(trainer, pl_module)
+
+class FineTuneLearningRateFinder(LearningRateFinder):
+    def __init__(self, milestones, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.milestones = milestones
+
+    def on_fit_start(self, *args, **kwargs):
+        return
+
+    def on_train_epoch_start(self, trainer, pl_module):
+        if trainer.current_epoch in self.milestones or trainer.current_epoch == 0:
+            self.lr_find(trainer, pl_module)
 
 class MainModule(pl.LightningModule):
     def __init__(self, num_layers, num_heads, seq_dim, seq_embedding_dim, param_dim, param_embedding_dim, image_size, alpha, lr, dropout):
@@ -87,17 +109,16 @@ class MainModule(pl.LightningModule):
             tgt_mask = get_tgt_mask(y_input.size(1)).to(device)
             
             # Use torch.cuda.amp for mixed precision
-            with torch.cuda.amp.autocast():
-                try:
-                    if stage == 'test':
-                        with torch.no_grad():
-                            pred = self.model(image, y_input, tgt_mask)
-                    else:
+            try:
+                if stage == 'test':
+                    with torch.no_grad():
                         pred = self.model(image, y_input, tgt_mask)
-                except Exception as e:
-                    print(e)
-                    print(f"Error in {i} iteration")
-                    break
+                else:
+                    pred = self.model(image, y_input, tgt_mask)
+            except Exception as e:
+                print(e)
+                print(f"Error in {i} iteration")
+                break
             label_p = pred[:,:,:self.seq_dim]
             label = label_p.topk(1)[1].view(-1)[-1].item()  # num with highest probability
             params = pred[:,:,self.seq_dim:]
@@ -121,8 +142,8 @@ class MainModule(pl.LightningModule):
 
         return self.multihead_attn_weights, self.self_attn_weights
 
-    def label_loss_fn(self, pred, label):
-        return F.cross_entropy(pred, label, ignore_index=PAD_token)
+    def label_loss_fn(self, pred, label, ignore_index=PAD_token):
+        return F.cross_entropy(pred, label, ignore_index=ignore_index)
 
     def param_loss_fn(self, pred, params, ignore_index=PAD_token):
         mask = (params == ignore_index)
@@ -133,6 +154,44 @@ class MainModule(pl.LightningModule):
         masked_loss = loss_mse * ~mask
         return masked_loss.sum() / (~mask).sum()
 
+    def create_organ_mask(self, mask_pattern, device):
+        mask = np.concatenate(mask_pattern, axis=0)
+        return torch.tensor(mask, dtype=torch.bool, device=device)
+
+    def param_loss_fn_bylabel(self, label, values, pred, ignore_index=PAD_token):
+        # label: (batch_size, seq_len)
+        # pred: (batch_size, seq_len, param_dim)
+        # Masked values are not included in the loss
+
+        # Define mask patterns
+        mask_patterns = [
+            [np.zeros(6), np.ones(4), np.ones(3), np.ones(5)],  # shoot_mask
+            [np.ones(6), np.zeros(4), np.ones(3), np.ones(5)],  # internode_mask
+            [np.ones(6), np.ones(4), np.zeros(3), np.ones(5)],  # petiole_mask
+            [np.ones(6), np.ones(4), np.ones(3), np.zeros(5)],  # leaf_mask
+            [np.zeros(self.param_dim)]                         # all_mask
+        ]
+        # Create masks
+        masks = torch.stack([self.create_organ_mask(pattern, label.device) for pattern in mask_patterns])
+
+        # Ensure label_mod and masks have compatible dimensions
+        label_mod = label % 4
+        mask = (values == ignore_index)  # First mask is for padding
+        for i in range(4):
+            mask = mask | ((label_mod == i).unsqueeze(1).expand_as(mask) & masks[i].unsqueeze(0).unsqueeze(2).expand_as(mask))
+            #  The bitwise AND operation has higher precedence than the bitwise OR operation. 
+            #  However, using parentheses can make the code more readable and explicitly indicate the intended order of operations.
+
+        # Compute loss
+        if 0:
+            loss_mse = F.mse_loss(pred, values, reduction='none')
+        else:
+            loss_mse = F.smooth_l1_loss(pred, values, reduction='none')
+        
+        masked_loss = loss_mse * ~mask
+        return masked_loss.sum() / (~mask).sum()
+
+    
     def training_step(self, batch, batch_idx):
         image, y, lengths = batch
         y_input = y[:, :-1]
@@ -148,6 +207,7 @@ class MainModule(pl.LightningModule):
 
         label_loss = self.label_loss_fn(pred[:, :self.seq_dim], label)
         param_loss = self.param_loss_fn(pred[:, self.seq_dim:], values)
+        #param_loss = self.param_loss_fn_bylabel(label=label,values=values,pred=pred[:, self.seq_dim:])
         loss = label_loss + self.alpha * param_loss
 
         self.log('train/label_loss', label_loss, batch_size=image.size(0), sync_dist=True)
@@ -166,6 +226,7 @@ class MainModule(pl.LightningModule):
 
         label_loss = self.label_loss_fn(pred[:, :self.seq_dim], label)
         param_loss = self.param_loss_fn(pred[:, self.seq_dim:], values)
+        #param_loss = self.param_loss_fn_bylabel(label=label,values=values,pred=pred[:, self.seq_dim:])
         loss = label_loss + self.alpha * param_loss
 
         self.log('val/label_loss', label_loss, batch_size=image.size(0), sync_dist=True)
@@ -210,15 +271,15 @@ class MainDataModule(pl.LightningDataModule):
             transforms.Normalize(mean=[0.5, 0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5, 0.5])
         ])
 
-    def load_or_create_dataset(self, dataset_dir, dataset_name, plot, transform, use_depth, process_leaf, preload, image_size):
+    def load_or_create_dataset(self, dataset_dir, dataset_name, plot, stages, transform, use_depth, process_leaf, preload, image_size):
         saved_dataset_name = os.path.join(dataset_dir, f"{dataset_name}.pkl")
-        if os.path.exists(saved_dataset_name):
+        if os.path.exists(saved_dataset_name) and preload:
             print(f"Loading {dataset_name} dataset from .pkl file")
             with open(saved_dataset_name, "rb") as f:
                 dataset = pickle.load(f)
         else:
             dataset = PlantDataset(
-                dataset_dir, plot=plot,
+                dataset_dir, plot=plot, stages=stages,
                 transform=transform, use_depth=use_depth,
                 process_leaf=process_leaf,
                 preload=preload, image_size=image_size,
@@ -232,20 +293,21 @@ class MainDataModule(pl.LightningDataModule):
         return dataset
 
     def setup(self, stage=None):
+        growth_stages = ["003","010","016","023"]
         self.train_dataset = self.load_or_create_dataset(
-            self.dataset_dir, "train_dataset", ["000", "001", "002"],
+            self.dataset_dir, "train_dataset", ["000", "001", "002"], growth_stages,
             self.transform, self.use_depth, self.process_leaf,
             self.preload, self.image_size
         )
 
         self.val_dataset = self.load_or_create_dataset(
-            self.dataset_dir, "val_dataset", ["003"],
+            self.dataset_dir, "val_dataset", ["003"], growth_stages,
             self.transform, self.use_depth, self.process_leaf,
             self.preload, self.image_size
         )
 
         self.test_dataset = self.load_or_create_dataset(
-            self.dataset_dir, "test_dataset", ["004"],
+            self.dataset_dir, "test_dataset", ["004"], growth_stages,
             self.transform, self.use_depth, self.process_leaf,
             self.preload, self.image_size
         )

@@ -9,7 +9,7 @@ from pytorch_lightning.strategies import DDPStrategy
 # 경로 설정
 script_file_path = os.path.abspath(__file__)
 sys.path.append(os.path.dirname(os.path.dirname(script_file_path)))
-from models.plightning import MainModule, MainDataModule
+from models.plightning import MainModule, MainDataModule, FineTuneBatchSizeFinder, FineTuneLearningRateFinder
 
 if __name__ == "__main__":
     # Tensor Cores 활용을 위한 설정
@@ -18,23 +18,24 @@ if __name__ == "__main__":
 
     dataset_dir = "/home/lion397/codes/Image2PlantArchitecture/data/generated_dataset_Sep22_black"
     module = MainModule(
-        num_layers=6,
-        num_heads=8,
+        num_layers=3,
+        num_heads=4,
         seq_dim=43,
-        seq_embedding_dim=256,
+        seq_embedding_dim=64,
         param_dim=18,
-        param_embedding_dim=256,
-        image_size=448,
+        param_embedding_dim=64,
+        image_size=224,
         alpha=1.0,
         lr=1e-4,
         dropout=0.1,
     )
 
-
-    datamodule = MainDataModule(dataset_dir, train_batch_size=32, num_workers=4, param_dim=module.param_dim, process_leaf=True, preload=True)
+    datamodule = MainDataModule(dataset_dir, 
+                                image_size=module.image_size,
+                                train_batch_size=4, num_workers=4, param_dim=module.param_dim, process_leaf=True, preload=False)
     tqdm_cb = TQDMProgressBar(refresh_rate=10)
     tb_logger = TensorBoardLogger(
-        name='Image2Helios_20240927_6layers_8heads_onFarm',
+        name='Image2Helios_20240929_GenLossTest',
         save_dir='./log'
     )
 
@@ -61,11 +62,14 @@ if __name__ == "__main__":
         accelerator="gpu",
         devices="auto",
         max_epochs=200,
-        callbacks=[tqdm_cb, ckpt_cb, lr_monitor, early_stop_cb],
+        callbacks=[tqdm_cb, ckpt_cb, lr_monitor, early_stop_cb, 
+                #    FineTuneBatchSizeFinder(milestones=(5, 10)),
+                #    FineTuneLearningRateFinder(milestones=(5, 10))
+                   ],
         # callbacks=[tqdm_cb, ckpt_cb, lr_monitor],
         logger=tb_logger,
         precision="bf16-mixed",
-        strategy=DDPStrategy(find_unused_parameters=True)  # Enable detection of unused parameters
+        #strategy=DDPStrategy(find_unused_parameters=True)  # Enable detection of unused parameters
     )
     # module = MainModule.load_from_checkpoint('./saved/last.ckpt')
     trainer.fit(module, datamodule=datamodule)

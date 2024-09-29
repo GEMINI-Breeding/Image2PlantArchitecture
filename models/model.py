@@ -9,6 +9,7 @@ import math
 from typing import Optional, Any, Union, Callable
 from torch import Tensor
 
+from torch.nn import LayerNorm
 
 def get_tgt_mask(size) -> torch.tensor:
     mask = torch.tril(torch.ones(size, size) == 1) # Lower triangular matrix
@@ -36,10 +37,10 @@ class TransformerDecoderLayerWithAttention(nn.TransformerDecoderLayer):
         self.self_attn_weights = None
         self.multihead_attn_weights = None
 
-    def forward(self, tgt, memory, tgt_mask=None, memory_mask=None,
+    def forward(self, tgt, memory, tgt_mask=None, memory_mask=None, 
                 tgt_key_padding_mask=None, memory_key_padding_mask=None):
         # self-attention block
-        tgt2, self_attn_weights = self.self_attn(tgt, tgt, tgt, attn_mask=tgt_mask,
+        tgt2, self_attn_weights = self.self_attn(tgt, tgt, tgt, attn_mask=tgt_mask, is_causal=True,
                                                  key_padding_mask=tgt_key_padding_mask)
         self.self_attn_weights = self_attn_weights
         tgt = tgt + self.dropout1(tgt2)
@@ -68,7 +69,8 @@ class TransformerDecoderWithAttention(nn.TransformerDecoder):
 
         for mod in self.layers:
             output = mod(output, memory, tgt_mask=tgt_mask, memory_mask=memory_mask,
-                         tgt_key_padding_mask=tgt_key_padding_mask, memory_key_padding_mask=memory_key_padding_mask)
+                         tgt_key_padding_mask=tgt_key_padding_mask,
+                         memory_key_padding_mask=memory_key_padding_mask)
             self_attn_weights.append(mod.self_attn_weights)
             multihead_attn_weights.append(mod.multihead_attn_weights)
         return output, self_attn_weights, multihead_attn_weights
@@ -186,7 +188,6 @@ class ImageToSequenceTransformer(nn.Module):
         #self.cnn = CNN_Dinov2(output_size=seq_embedding_dim+param_embedding_dim, use_depth=use_depth)
         #self.cnn = CNN(output_size=seq_embedding_dim+param_embedding_dim, use_depth=use_depth)
     
-        self.seq_dim_model = seq_embedding_dim
         self.seq_embedding_dim = seq_embedding_dim
         self.seq_embedding = nn.Embedding(num_tokens, seq_embedding_dim)
         self.param_dim_model = param_embedding_dim
@@ -268,11 +269,11 @@ class ImageToSequenceTransformer(nn.Module):
             decoded = self.transformer(features, tgt_seq, tgt_mask=tgt_mask,tgt_key_padding_mask=tgt_key_padding_mask)
         
         if 0:
-            # 0 ~ seq_dim_model is the sequence, seq_dim_model-64 is the parameters
-            decoded_seq = decoded[:, :, :self.seq_dim_model]
+            # 0 ~ seq_embedding_dim is the sequence, seq_embedding_dim-64 is the parameters
+            decoded_seq = decoded[:, :, :self.seq_embedding_dim]
             output_seq = self.seq_linear(decoded_seq)
 
-            decoded_params = decoded[:, :, self.seq_dim_model:]
+            decoded_params = decoded[:, :, self.seq_embedding_dim:]
             output_params = self.param_linear(decoded_params)
         else:
             # Use all the decoded output
