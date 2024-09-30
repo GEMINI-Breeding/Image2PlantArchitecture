@@ -205,12 +205,13 @@ class ImageToSequenceTransformer(nn.Module):
         self.self_attn_weights = None
         self.multihead_attn_weights = None
         
-        self.positional_encoding = PositionalEncoding(dim_model=self.dim_model, max_len=max_seq_length, dropout_p=0.1)
+        self.positional_encoding = PositionalEncoding(dim_model=self.dim_model, max_len=max_seq_length, dropout_p=self.dropout)
         self.decoder_only = decoder_only
         if self.decoder_only:
             # self.transformer_decoder_layer = nn.TransformerDecoderLayer(d_model=self.dim_model, nhead=num_heads)
             # self.transformer_decoder = nn.TransformerDecoder(self.transformer_decoder_layer, num_layers=num_layers)
-            self.transformer_decoder_layer = TransformerDecoderLayerWithAttention(d_model=self.dim_model, nhead=num_heads)
+            self.transformer_decoder_layer = TransformerDecoderLayerWithAttention(d_model=self.dim_model, 
+                                                                                  nhead=num_heads, dropout=self.dropout)
             self.transformer_decoder = TransformerDecoderWithAttention(self.transformer_decoder_layer, num_layers=num_layers)
         else:
             self.transformer = nn.Transformer(
@@ -234,10 +235,6 @@ class ImageToSequenceTransformer(nn.Module):
             features = features.unsqueeze(1) 
         else:
             pass
-        
-        if 0:
-            # Use the patch embeddings only as the input (Remove the CLS token)
-            features = features[:, 1:, :]
 
         device = tgt_seq.device
         if tgt_mask is not None:
@@ -257,12 +254,15 @@ class ImageToSequenceTransformer(nn.Module):
         params = self.param_embedding(params) * math.sqrt(self.dim_model)
 
         tgt_seq = torch.cat((depth_organ_seq, params), dim=2)
+
+        # Make sequence length the first dimension 
+        # PositionalEncoding은 시퀀스 차원에 대해 적용되므로, Positional Encoding을 적용하기 전에 반드시 시퀀스 차원이 첫 번째가 되어야 합니다.
+        tgt_seq = tgt_seq.permute(1,0,2)
+        features = features.permute(1,0,2)
+
         tgt_seq = self.positional_encoding(tgt_seq)
-        
         features = self.positional_encoding(features)
 
-        features = features.permute(1,0,2)
-        tgt_seq = tgt_seq.permute(1,0,2)
         if self.decoder_only:
             decoded, self.self_attn_weights, self.multihead_attn_weights = self.transformer_decoder(tgt_seq, features, tgt_mask=tgt_mask,tgt_key_padding_mask=tgt_key_padding_mask)
         else:

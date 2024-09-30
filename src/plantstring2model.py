@@ -22,10 +22,13 @@ class plantstring2model:
         # Create the output directory
         os.makedirs(self.output_path_name, exist_ok=True)
 
-    def run(self, plantstring_path):
+    def run(self, in_plantstring_path, output_path=None):
         
-        plantstring_name = os.path.splitext(os.path.basename(plantstring_path))[0]
-        output_file_name = f"{plantstring_name}_top.jpeg"
+        plantstring_name = os.path.splitext(os.path.basename(in_plantstring_path))[0]
+        if output_path:
+            output_file_name = output_path
+        else:
+            output_file_name = f"{plantstring_name}_top.jpeg"
         # Construct the command
         command = ""
         command += f"cd {self.program_path} && ./{self.program_name} "
@@ -45,7 +48,8 @@ class plantstring2model:
         command += f"-h {self.height} "
         
         # Add the plantstring path
-        command += f"-f {plantstring_path}"
+        command += f"-f {in_plantstring_path} "
+        command += f"-o {output_file_name} "
 
         if self.verbose == False:
             command += " > log.txt 2>&1"
@@ -58,18 +62,13 @@ class plantstring2model:
         # Check if the command was successful
         if result.returncode == 0:
             # print("Command executed successfully")
-            print(result.stdout)  # Print the standard output
+            # print(result.stdout)  # Print the standard output
+            pass
         else:
             # print("Command failed")
-            print(result.stderr)  # Print the error output
-        
-        destination_path = os.path.join(self.output_path_name, output_file_name)
-        # Check if the output file exists
-        if os.path.exists(destination_path):
-            os.remove(destination_path)
-        # Move the output image to the current directory
-        shutil.move(os.path.join(self.program_path, self.output_path_name, output_file_name), destination_path)
-
+            # print(result.stderr)  # Print the error output
+            pass
+            
 # Test 
 if __name__ == "__main__":
     p2m = plantstring2model("src/PlantString2Model/build", "PlantString2Model", display=":11.0")

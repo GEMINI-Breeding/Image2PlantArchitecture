@@ -220,10 +220,10 @@ def vec2element(root, plant_array, depth=0):
     cnt = 0
     while len(plant_array) > 0:
         cnt += 1
-        if cnt > 1e6:
+        if cnt > 2048:
             # Raise an error
             # raise ValueError("Infinite loop")
-            print("Infinite loop, force close the loop")
+            # print("Infinite loop, force close the loop")
             break
             
         line = plant_array[0]

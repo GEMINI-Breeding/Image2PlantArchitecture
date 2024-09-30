@@ -9,6 +9,9 @@ from torch.utils.data import DataLoader
 from torchvision import transforms
 from pytorch_lightning.callbacks import BatchSizeFinder, LearningRateFinder
 
+from transformers import AutoImageProcessor, AutoModelForDepthEstimation
+import cv2
+from concurrent.futures import ThreadPoolExecutor
 
 # 경로 설정
 script_file_path = os.path.abspath(__file__)
@@ -18,7 +21,10 @@ sys.path.append(os.path.dirname(os.path.dirname(script_file_path)))
 from models.model import ImageToSequenceTransformer, get_tgt_mask, create_pad_mask
 from src.plant_tokenizer import SOS_token, EOS_token, PAD_token, params_EOS_token_padded, params_SOS_token_padded
 from src.plant_dataset import PlantDataset
-
+from src.plantstring2model import plantstring2model
+from src.plant_tokenizer import token2vec_new as token2vec
+from src.string_to_xml_to_vec import vec2string
+from src.image_process import process_leaf_image
 import pickle
 
 class FineTuneBatchSizeFinder(BatchSizeFinder):
@@ -50,6 +56,7 @@ class MainModule(pl.LightningModule):
         super(MainModule, self).__init__()
         self.save_hyperparameters()  # 전달된 모든 인수를 저장
 
+        self.current_script_dir = os.path.dirname(os.path.abspath(__file__))
         self.num_layers = num_layers
         self.num_heads = num_heads
         self.seq_dim = seq_dim
@@ -60,6 +67,16 @@ class MainModule(pl.LightningModule):
         self.alpha = alpha
         self.lr = lr
         self.dropout = dropout
+
+        self.transform = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.5, 0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5, 0.5])
+        ])
+
+        self.transform_rgb = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+        ])
 
         self.model = ImageToSequenceTransformer(
             seq_embedding_dim=self.seq_embedding_dim,
@@ -76,6 +93,20 @@ class MainModule(pl.LightningModule):
         self.multihead_attn_weights = None
         self.self_attn_weights = None
 
+        self.depth_image_processor = AutoImageProcessor.from_pretrained("depth-anything/Depth-Anything-V2-Small-hf")
+        self.depth_model = AutoModelForDepthEstimation.from_pretrained("depth-anything/Depth-Anything-V2-Small-hf")
+
+        self.helios_path = os.path.join(self.current_script_dir, "../src/PlantString2Model/build")
+        self.helios = plantstring2model(program_path=self.helios_path,
+                                                        program_name="PlantString2Model",
+                                                        display=":11.0", 
+                                                        height=1.0,background_path=os.path.join(self.current_script_dir,"../src/assets/black.png"))
+        
+        # Test gen
+        # Run 
+        self.helios.run(in_plantstring_path=os.path.abspath("plant_string.txt"),
+                        output_path=os.path.abspath("temp/batch_0"))
+        
         if 0:
             # Test to generate 2048 tokens if memory is not enough
             try:
@@ -87,8 +118,6 @@ class MainModule(pl.LightningModule):
             except Exception as e:
                 print(e)
                 print("Error in test generate")
-
-
 
     def forward(self, image, y_input):
         tgt_mask = get_tgt_mask(y_input.size(1))
@@ -190,15 +219,56 @@ class MainModule(pl.LightningModule):
         
         masked_loss = loss_mse * ~mask
         return masked_loss.sum() / (~mask).sum()
+    
+    def calc_image_loss(self, pred, image):
+        # Generate using Helios
+        label_p = pred[:, :self.seq_dim, :].permute(0, 2, 1)
+        label_est = label_p.topk(1)[1]  # num with highest probability
+        params_est = pred[:, self.seq_dim:].permute(0, 2, 1)
+        # Cat label and params
+        tokens_est = torch.cat((label_est, params_est), dim=-1)
+        os.makedirs("temp", exist_ok=True)
+        image_loss = 0
+
+        def process_single_image(i):
+            try:
+                plant_vec = token2vec(tokens_est[i].tolist())
+                plant_string = vec2string([plant_vec])
+            except Exception as e:
+                # Error in converting plant_vec to plant_string
+                # print("Error in converting plant_vec to plant_string. Force return 1.0")
+                return torch.tensor(1.0)
+            
+            # Create output folder
+            output_path = os.path.abspath(f"temp/batch_{i}")
+            os.makedirs(output_path, exist_ok=True)
+            plant_string_path = os.path.join(output_path, "plant_string.txt")
+            with open(plant_string_path, "w") as f:
+                f.write(plant_string)
+            self.helios.run(in_plantstring_path=os.path.abspath(plant_string_path),
+                            output_path=os.path.abspath(output_path))
+
+            # Load the generated plant image
+            plant_image_path = os.path.join(output_path, "plant_string_top.jpeg")
+            img = cv2.imread(plant_image_path)
+            leaf_area, plant_width, plant_height, leaf_img, _ = process_leaf_image(img, sqaure_crop=True, thr=0.2)
+            leaf_img = cv2.resize(leaf_img, (self.image_size, self.image_size))
+            # Transform to tensor
+            leaf_img = self.transform_rgb(leaf_img).to(image.device)
+
+            # Calculate RGB Loss
+            return F.mse_loss(image[i][:3, :, :], leaf_img)
+
+        with ThreadPoolExecutor() as executor:
+            losses = list(executor.map(process_single_image, range(image.size(0))))
+
+        image_loss = sum(losses) / image.size(0)
+        return image_loss
 
     
-    def training_step(self, batch, batch_idx):
+    def compute_loss(self, batch, mode):
         image, y, lengths = batch
         y_input = y[:, :-1]
-        
-        # # Teacher Forcing 확률에 따라 Teacher Forcing 사용 여부 결정
-        # use_teacher_forcing = True if random.random() < self.prob_teacher_forcing else False
-
         pred = self(image, y_input)
 
         y_expected = y[:, 1:]
@@ -207,32 +277,21 @@ class MainModule(pl.LightningModule):
 
         label_loss = self.label_loss_fn(pred[:, :self.seq_dim], label)
         param_loss = self.param_loss_fn(pred[:, self.seq_dim:], values)
-        #param_loss = self.param_loss_fn_bylabel(label=label,values=values,pred=pred[:, self.seq_dim:])
-        loss = label_loss + self.alpha * param_loss
+        # param_loss = self.param_loss_fn_bylabel(label=label, values=values, pred=pred[:, self.seq_dim:])
+        image_loss = self.calc_image_loss(pred, image)
+        loss = (label_loss + self.alpha * param_loss) * image_loss
 
-        self.log('train/label_loss', label_loss, batch_size=image.size(0), sync_dist=True)
-        self.log('train/param_loss', param_loss, batch_size=image.size(0), sync_dist=True)
-        self.log('train/loss', loss, batch_size=image.size(0), sync_dist=True)
+        self.log(f'{mode}/label_loss', label_loss, batch_size=image.size(0), sync_dist=True)
+        self.log(f'{mode}/param_loss', param_loss, batch_size=image.size(0), sync_dist=True)
+        self.log(f'{mode}/image_loss', image_loss, batch_size=image.size(0), sync_dist=True)
+        self.log(f'{mode}/loss', loss, batch_size=image.size(0), sync_dist=True)
         return loss
+
+    def training_step(self, batch, batch_idx):
+        return self.compute_loss(batch, 'train')
 
     def validation_step(self, batch, batch_idx):
-        image, y, lengths = batch
-        y_input = y[:, :-1]
-        pred = self(image, y_input)
-
-        y_expected = y[:, 1:]
-        label = y_expected[:, :, 0].long()
-        values = y_expected[:, :, 1:].permute(0, 2, 1)
-
-        label_loss = self.label_loss_fn(pred[:, :self.seq_dim], label)
-        param_loss = self.param_loss_fn(pred[:, self.seq_dim:], values)
-        #param_loss = self.param_loss_fn_bylabel(label=label,values=values,pred=pred[:, self.seq_dim:])
-        loss = label_loss + self.alpha * param_loss
-
-        self.log('val/label_loss', label_loss, batch_size=image.size(0), sync_dist=True)
-        self.log('val/param_loss', param_loss, batch_size=image.size(0), sync_dist=True)
-        self.log('val/loss', loss, batch_size=image.size(0), sync_dist=True)
-        return loss
+        return self.compute_loss(batch, 'val')
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr)
@@ -251,7 +310,8 @@ class MainModule(pl.LightningModule):
         }
 
 class MainDataModule(pl.LightningDataModule):
-    def __init__(self, dataset_dir, train_batch_size=16, val_batch_size=None, 
+    def __init__(self, dataset_dir, train_batch_size=16, val_batch_size=None,
+                        transform=None,
                         num_workers=4, image_size=448, 
                         param_dim=5 + 4 + 3 + 4,
                         process_leaf=False,
@@ -266,10 +326,14 @@ class MainDataModule(pl.LightningDataModule):
         self.param_dim = param_dim
         self.process_leaf = process_leaf
         self.use_depth = True
-        self.transform = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.5, 0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5, 0.5])
-        ])
+
+        if transform is None:
+            self.transform = transforms.Compose([
+                transforms.ToTensor(),
+                transforms.Normalize(mean=[0.5, 0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5, 0.5])
+            ])
+        else:    
+            self.transform = transform
 
     def load_or_create_dataset(self, dataset_dir, dataset_name, plot, stages, transform, use_depth, process_leaf, preload, image_size):
         saved_dataset_name = os.path.join(dataset_dir, f"{dataset_name}.pkl")
@@ -293,7 +357,8 @@ class MainDataModule(pl.LightningDataModule):
         return dataset
 
     def setup(self, stage=None):
-        growth_stages = ["003","010","016","023"]
+        #growth_stages = ["003","010","016","023"]
+        growth_stages = ["003"]
         self.train_dataset = self.load_or_create_dataset(
             self.dataset_dir, "train_dataset", ["000", "001", "002"], growth_stages,
             self.transform, self.use_depth, self.process_leaf,
