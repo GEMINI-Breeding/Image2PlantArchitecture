@@ -2,6 +2,9 @@ import numpy as np
 import math
 import random
 
+from utils import euler_to_quaternion, quaternion_to_euler
+
+
 # Create a dict convert plant structure to token
 # Structure | Token
 # 00        | 0
@@ -126,65 +129,126 @@ else:
 #         tokens.append(token)
 #     return tokens
 
-def rpydeg2quat(roll, pitch, yaw):
-    # Convert degrees to radians
-    roll = math.radians(roll)
-    pitch = math.radians(pitch)
-    yaw = math.radians(yaw)
-    
-    # Compute quaternion
-    cy = math.cos(yaw * 0.5)
-    sy = math.sin(yaw * 0.5)
-    cp = math.cos(pitch * 0.5)
-    sp = math.sin(pitch * 0.5)
-    cr = math.cos(roll * 0.5)
-    sr = math.sin(roll * 0.5)
 
-    q = np.zeros(4)
-    q[0] = cr * cp * cy + sr * sp * sy
-    q[1] = sr * cp * cy - cr * sp * sy
-    q[2] = cr * sp * cy + sr * cp * sy
-    q[3] = cr * cp * sy - sr * sp * cy
+# def vec2token_new(vec, n_params=19):
+#     tokens = []
+#     for x in vec:
+#         depth_organ = x[0]*4 + x[1]
+#         if 1:
+#             token = np.zeros(n_params) # padding zeros to match the desired length
+#         else:
+#             token = np.ones(n_params) * PAD_token # If use PAD_token, unmatched params's loss will be ignored
 
-    # w가 항상 양수가 되도록 정규화하기도 합니다.
-    # 비록 q와 -q가 같은 회전을 나타내지만, 연속적인 회전 시퀀스에서는 일관성을 위해 한 가지 표현을 선택하여 사용하는 것이 좋습니다.
-    if q[0] < 0:
-        q = -q
+#         token[0] = depth_organ
+#         # Scale the params to radians, centimeters, etc.
 
-    return q
+#         if x[1] == 0:
+#             # Shoot params
+#             # x[2]: shoot_base_pitch
+#             # x[3]: shoot_base_yaw
+#             # x[4]: shoot_base_roll
+#             if 1:
+#                 q = euler_to_quaternion(roll=x[4], pitch=x[2], yaw=x[3], degrees=True)
+#                 token[1] = q[0]
+#                 token[2] = q[1]
+#                 token[3] = q[2]
+#                 token[4] = q[3]
+#             else:
+#                 token[1] = x[2] / 180 * math.pi
+#                 token[2] = x[3] / 180 * math.pi
+#                 token[3] = x[4] / 180 * math.pi
+#                 token[4] = 0
+            
+#             token[5] = x[5] / 100           # shoot_gravitropic_curvature
+#             token[6] = x[6]                 # shoot_type
+#         elif x[1] == 1:
+#             # Internode params
+#             token[7] = x[2] * 100 # internode_length
+#             token[8] = x[3] * 100 # internode_radius
+#             token[9] = x[4] / 180 * math.pi # internode_pitch
+#             token[10] = x[5] / 180 * math.pi # phyllotactic angle
+#         elif x[1] == 2:
+#             # Petiole params
+#             token[11] = x[2] * 100 # petiole_length
+#             token[12] = x[3] * 100 # petiole_radius
+#             token[13] = x[4] / 180 * math.pi # petiole_pitch
+#         elif x[1] == 3:
+#             # Leaf params
+#             token[14] = x[2] * 100 # leaf_scale
 
-def quat2rpydeg(q):
-    # Normalize quaternion
-    q = q / np.linalg.norm(q)
-    
-    # Compute roll, pitch, yaw
-    sinr_cosp = 2 * (q[0] * q[1] + q[2] * q[3])
-    cosr_cosp = 1 - 2 * (q[1] * q[1] + q[2] * q[2])
-    roll = math.atan2(sinr_cosp, cosr_cosp)
+#             q = euler_to_quaternion(roll=x[5], pitch=x[3], yaw=x[4],degrees=True)
+#             # x[3]: leaf_pitch
+#             # x[4]: leaf_yaw
+#             # x[5]: leaf_roll
+#             token[15] = q[0]
+#             token[16] = q[1]
+#             token[17] = q[2]
+#             token[18] = q[3]
+#         else:
+#             raise ValueError(f"Invalid organ type {x[1]}")
+        
+#         tokens.append(token)
+#     return tokens
 
-    sinp = 2 * (q[0] * q[2] - q[3] * q[1])
-    if abs(sinp) >= 1:
-        pitch = math.copysign(math.pi / 2, sinp)
-    else:
-        pitch = math.asin(sinp)
+# def token2vec_new(tokens):
+#     vec = []
+#     for token in tokens:
+#         label = token[0]
+#         if label == SOS_token:
+#             #structure.append(SOS_word)
+#             # Do not append SOS token
+#             # break
+#             pass
+#         elif label == EOS_token or label == PAD_token:
+#             #structure.append(EOS_word)
+#             # Do not append EOS token
+#             break
+#         else:
+#             i = label // 4
+#             j = label % 4
+#             params_padded = np.zeros(5)
+#             # Scale the params to match the original scale
+   
+#             if j == 0:
+#                 # Shoot
+#                 if 1:
+#                     q = np.array([token[1], token[2], token[3], token[4]])
+#                     roll, pitch, yaw = quaternion_to_euler(q,degrees=True)
+#                     params_padded[0] = pitch
+#                     params_padded[1] = yaw
+#                     params_padded[2] = roll
+#                 else:
+#                     params_padded[0] = token[1] * 180 / math.pi
+#                     params_padded[1] = token[2] * 180 / math.pi
+#                     params_padded[2] = token[3] * 180 / math.pi
 
-    siny_cosp = 2 * (q[0] * q[3] + q[1] * q[2])
-    cosy_cosp = 1 - 2 * (q[2] * q[2] + q[3] * q[3])
-    yaw = math.atan2(siny_cosp, cosy_cosp)
+#                 params_padded[3] = token[5] * 100 # shoot_gravitropic_curvature
+#                 params_padded[4] = token[6] # shoot_type
+#             elif j == 1:
+#                 # Internode
+#                 params_padded[0] = token[7] / 100 # internode_length
+#                 params_padded[1] = token[8] / 100 # internode_radius
+#                 params_padded[2] = token[9] * 180 / math.pi # internode_pitch
+#                 params_padded[3] = token[10] * 180 / math.pi # phyllotactic angle, random.uniform(130, 145)
+#             elif j == 2:
+#                 # Petiole
+#                 params_padded[0] = token[11] / 100 # petiole_length
+#                 params_padded[1] = token[12] / 100 # petiole radius, random.uniform(0.00075, 0.00125)
+#                 params_padded[2] = token[13] * 180 / math.pi # petiole_pitch
+#             elif j == 3:
+#                 # Leaf
+#                 params_padded[0] = token[14] / 100 # leaf_scale
+#                 q = np.array([token[15], token[16], token[17], token[18]])
+#                 roll, pitch, yaw = quaternion_to_euler(q, degrees=True)
+#                 params_padded[1] = pitch
+#                 params_padded[2] = yaw
+#                 params_padded[3] = roll
+#             else:
+#                 raise ValueError(f"Invalid organ type {j}")
 
-    # Convert radians to degrees
-    roll = math.degrees(roll)
-    pitch = math.degrees(pitch)
-    yaw = math.degrees(yaw)
-
-    # Normalize to [0, 360)
-    roll = roll % 360
-    pitch = pitch % 360
-    yaw = yaw % 360
-
-    return roll, pitch, yaw
-
-
+#             # Make 1x6 array with i, j and params
+#             vec.append(np.concatenate(([i, j], params_padded),axis=0))
+#     return np.array(vec)
 
 def vec2token_new(vec, n_params=19):
     tokens = []
@@ -203,11 +267,17 @@ def vec2token_new(vec, n_params=19):
             # x[2]: shoot_base_pitch
             # x[3]: shoot_base_yaw
             # x[4]: shoot_base_roll
-            q = rpydeg2quat(roll=x[4], pitch=x[2], yaw=x[3])
-            token[1] = q[0]
-            token[2] = q[1]
-            token[3] = q[2]
-            token[4] = q[3]
+            if 1:
+                q = euler_to_quaternion(roll=x[4], pitch=x[2], yaw=x[3], degrees=True)
+                token[1] = q[0]
+                token[2] = q[1]
+                token[3] = q[2]
+                token[4] = q[3]
+            else:
+                token[1] = x[2] / 180 * math.pi
+                token[2] = x[3] / 180 * math.pi
+                token[3] = x[4] / 180 * math.pi
+                token[4] = 0
             
             token[5] = x[5] / 100           # shoot_gravitropic_curvature
             token[6] = x[6]                 # shoot_type
@@ -226,7 +296,7 @@ def vec2token_new(vec, n_params=19):
             # Leaf params
             token[14] = x[2] * 100 # leaf_scale
 
-            q = rpydeg2quat(roll=x[5], pitch=x[3], yaw=x[4])
+            q = euler_to_quaternion(roll=x[5], pitch=x[3], yaw=x[4],degrees=True)
             # x[3]: leaf_pitch
             # x[4]: leaf_yaw
             # x[5]: leaf_roll
@@ -261,11 +331,17 @@ def token2vec_new(tokens):
    
             if j == 0:
                 # Shoot
-                q = np.array([token[1], token[2], token[3], token[4]])
-                roll, pitch, yaw = quat2rpydeg(q)
-                params_padded[0] = pitch
-                params_padded[1] = yaw
-                params_padded[2] = roll
+                if 1:
+                    q = np.array([token[1], token[2], token[3], token[4]])
+                    roll, pitch, yaw = quaternion_to_euler(q,degrees=True)
+                    params_padded[0] = pitch
+                    params_padded[1] = yaw
+                    params_padded[2] = roll
+                else:
+                    params_padded[0] = token[1] * 180 / math.pi
+                    params_padded[1] = token[2] * 180 / math.pi
+                    params_padded[2] = token[3] * 180 / math.pi
+
                 params_padded[3] = token[5] * 100 # shoot_gravitropic_curvature
                 params_padded[4] = token[6] # shoot_type
             elif j == 1:
@@ -283,7 +359,7 @@ def token2vec_new(tokens):
                 # Leaf
                 params_padded[0] = token[14] / 100 # leaf_scale
                 q = np.array([token[15], token[16], token[17], token[18]])
-                roll, pitch, yaw = quat2rpydeg(q)
+                roll, pitch, yaw = quaternion_to_euler(q, degrees=True)
                 params_padded[1] = pitch
                 params_padded[2] = yaw
                 params_padded[3] = roll
@@ -296,28 +372,6 @@ def token2vec_new(tokens):
 
 if __name__ == "__main__":
 
-    # Test rpy2quat and quat2rpy
-
-    pitch = 4.940316
-    yaw = 307.362274
-    roll = 104.781784
-    
-    q = rpydeg2quat(roll, pitch, yaw)
-    roll_, pitch_, yaw_ = quat2rpydeg(q)
-    print(f"roll={roll}, pitch={pitch}, yaw={yaw}")
-    print("q=", q)
-    print(f"roll_={roll_}, pitch_={pitch_}, yaw_={yaw_}")
-
-    # Test rpy2quat and quat2rpy    
-    roll = 359
-    pitch = 150
-    yaw = 260
-    
-    q = rpydeg2quat(roll, pitch, yaw)
-    roll_, pitch_, yaw_ = quat2rpydeg(q)
-    print(f"roll={roll}, pitch={pitch}, yaw={yaw}")
-    print("q=", q)
-    print(f"roll_={roll_}, pitch_={pitch_}, yaw_={yaw_}")
 
     from plant_dataset import PlantDataset
     dataset_dir = "/home/lion397/codes/Image2PlantArchitecture/data/generated_dataset_Sep22_black"

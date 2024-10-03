@@ -18,7 +18,8 @@ script_file_path = os.path.abspath(__file__)
 sys.path.append(os.path.dirname(os.path.dirname(script_file_path)))
 
 # 모듈 임포트
-from models.model import ImageToSequenceTransformer, get_tgt_mask, create_pad_mask
+from models.model import TransformerDecoderModel, get_tgt_mask, create_pad_mask, RegressionModel, ViT_FeatureExtractor, CNN_FeatureExtractor
+from models.model import RegressionModel_Transformer
 from src.plant_tokenizer import SOS_token, EOS_token, PAD_token, params_EOS_token_padded, params_SOS_token_padded
 from src.plant_dataset import PlantDataset
 from src.plantstring2model import plantstring2model
@@ -77,15 +78,15 @@ class MainModule(pl.LightningModule):
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
         ])
-
-        self.model = ImageToSequenceTransformer(
+        self.feature_encoder = ViT_FeatureExtractor(output_size=seq_embedding_dim+param_embedding_dim, use_depth=True, image_size=image_size)
+        self.sequence_decoder = TransformerDecoderModel(
             seq_embedding_dim=self.seq_embedding_dim,
             param_embedding_dim=self.param_embedding_dim,
             num_layers=self.num_layers,
             num_heads=self.num_heads,
             num_tokens=self.seq_dim,
             num_params=self.param_dim,
-            decoder_only=True,
+            decoder_only=False,
             use_depth=True,
             image_size=self.image_size,
             dropout=self.dropout,
@@ -93,8 +94,8 @@ class MainModule(pl.LightningModule):
         self.multihead_attn_weights = None
         self.self_attn_weights = None
 
-        self.depth_image_processor = AutoImageProcessor.from_pretrained("depth-anything/Depth-Anything-V2-Small-hf")
-        self.depth_model = AutoModelForDepthEstimation.from_pretrained("depth-anything/Depth-Anything-V2-Small-hf")
+        # self.depth_image_processor = AutoImageProcessor.from_pretrained("depth-anything/Depth-Anything-V2-Small-hf")
+        # self.depth_model = AutoModelForDepthEstimation.from_pretrained("depth-anything/Depth-Anything-V2-Small-hf")
 
         self.helios_path = os.path.join(self.current_script_dir, "../src/PlantString2Model/build")
         self.helios = plantstring2model(program_path=self.helios_path,
@@ -122,7 +123,8 @@ class MainModule(pl.LightningModule):
     def forward(self, image, y_input):
         tgt_mask = get_tgt_mask(y_input.size(1))
         tgt_pad_mask = create_pad_mask(y_input, PAD_token)
-        outputs = self.model(image, y_input, tgt_mask=tgt_mask, tgt_key_padding_mask=tgt_pad_mask)
+        features = self.feature_encoder(image)
+        outputs = self.sequence_decoder(features, y_input, tgt_mask=tgt_mask, tgt_key_padding_mask=tgt_pad_mask)
         outputs = outputs.permute(1, 2, 0)
         return outputs
     
@@ -141,9 +143,9 @@ class MainModule(pl.LightningModule):
             try:
                 if stage == 'test':
                     with torch.no_grad():
-                        pred = self.model(image, y_input, tgt_mask)
+                        pred = self.sequence_decoder(image, y_input, tgt_mask)
                 else:
-                    pred = self.model(image, y_input, tgt_mask)
+                    pred = self.sequence_decoder(image, y_input, tgt_mask)
             except Exception as e:
                 print(e)
                 print(f"Error in {i} iteration")
@@ -166,8 +168,8 @@ class MainModule(pl.LightningModule):
         return y_input.squeeze(0).tolist()
     
     def load_attn_weights(self):
-        self.multihead_attn_weights = self.model.multihead_attn_weights
-        self.self_attn_weights = self.model.self_attn_weights
+        self.multihead_attn_weights = self.sequence_decoder.multihead_attn_weights
+        self.self_attn_weights = self.sequence_decoder.self_attn_weights
 
         return self.multihead_attn_weights, self.self_attn_weights
 
@@ -198,7 +200,7 @@ class MainModule(pl.LightningModule):
             [np.ones(6), np.zeros(4), np.ones(3), np.ones(5)],  # internode_mask
             [np.ones(6), np.ones(4), np.zeros(3), np.ones(5)],  # petiole_mask
             [np.ones(6), np.ones(4), np.ones(3), np.zeros(5)],  # leaf_mask
-            [np.zeros(self.param_dim)]                         # all_mask
+            [np.ones(self.param_dim)]                         # all_mask
         ]
         # Create masks
         masks = torch.stack([self.create_organ_mask(pattern, label.device) for pattern in mask_patterns])
@@ -208,8 +210,6 @@ class MainModule(pl.LightningModule):
         mask = (values == ignore_index)  # First mask is for padding
         for i in range(4):
             mask = mask | ((label_mod == i).unsqueeze(1).expand_as(mask) & masks[i].unsqueeze(0).unsqueeze(2).expand_as(mask))
-            #  The bitwise AND operation has higher precedence than the bitwise OR operation. 
-            #  However, using parentheses can make the code more readable and explicitly indicate the intended order of operations.
 
         # Compute loss
         if 0:
@@ -220,7 +220,7 @@ class MainModule(pl.LightningModule):
         masked_loss = loss_mse * ~mask
         return masked_loss.sum() / (~mask).sum()
     
-    def calc_image_loss(self, pred, image):
+    def image_gen_loss(self, pred, image):
         # Generate using Helios
         label_p = pred[:, :self.seq_dim, :].permute(0, 2, 1)
         label_est = label_p.topk(1)[1]  # num with highest probability
@@ -276,10 +276,13 @@ class MainModule(pl.LightningModule):
         values = y_expected[:, :, 1:].permute(0, 2, 1)
 
         label_loss = self.label_loss_fn(pred[:, :self.seq_dim], label)
-        param_loss = self.param_loss_fn(pred[:, self.seq_dim:], values)
-        # param_loss = self.param_loss_fn_bylabel(label=label, values=values, pred=pred[:, self.seq_dim:])
-        image_loss = self.calc_image_loss(pred, image)
-        loss = (label_loss + self.alpha * param_loss) * image_loss
+        #param_loss = self.param_loss_fn(pred[:, self.seq_dim:], values)
+        param_loss = self.param_loss_fn_bylabel(label=label, values=values, pred=pred[:, self.seq_dim:])
+        if 0:
+            image_loss = self.image_gen_loss(pred, image)
+        else:
+            image_loss = 0
+        loss = (label_loss + self.alpha * param_loss)
 
         self.log(f'{mode}/label_loss', label_loss, batch_size=image.size(0), sync_dist=True)
         self.log(f'{mode}/param_loss', param_loss, batch_size=image.size(0), sync_dist=True)
@@ -294,7 +297,7 @@ class MainModule(pl.LightningModule):
         return self.compute_loss(batch, 'val')
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr)
+        optimizer = torch.optim.Adam(self.sequence_decoder.parameters(), lr=self.lr)
         if 1:
             scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=10, min_lr=1e-6)
         else:
@@ -412,3 +415,60 @@ class MainDataModule(pl.LightningDataModule):
             self.test_dataset, batch_size=self.val_batch_size, shuffle=False,
             collate_fn=self.collate_fn, num_workers=self.num_workers
         )
+    
+class SimpleRegressionTest(MainModule):
+
+    def __init__(self, image_size, lr, dropout, dim_model=768):
+        super(MainModule, self).__init__()
+        self.save_hyperparameters()  # 전달된 모든 인수를 저장
+
+        self.image_size = image_size
+
+        self.feature_extractor = ViT_FeatureExtractor(output_size=dim_model, use_depth=True, image_size=image_size)
+        #self.feature_extractor = CNN_FeatureExtractor(output_size=dim_model, use_depth=True)
+        self.regression_model = RegressionModel_Transformer(dim_model=dim_model, image_size=image_size, dropout=dropout)
+
+        self.lr = lr
+
+
+    def forward(self, image):
+        x = self.feature_extractor(image)
+        x = self.regression_model(x)
+        return x
+    
+    def compute_loss(self, batch, mode):
+        image, y, lengths = batch
+        y_input = y[:, :-1]
+        pred = self(image)
+
+        y_expected = y[:, 1:]
+        label = y_expected[:, :, 0].long()
+        values = y_expected[:, :, 1:].permute(0, 2, 1)
+
+        # Calculate Loss using only for the first element
+        loss = F.mse_loss(pred.squeeze(), values[:,:4,0])
+
+        self.log(f'{mode}/loss', loss, batch_size=image.size(0), sync_dist=True)
+        return loss
+
+    def training_step(self, batch, batch_idx):
+        return self.compute_loss(batch, 'train')
+
+    def validation_step(self, batch, batch_idx):
+        return self.compute_loss(batch, 'val')
+
+    def configure_optimizers(self):
+        optimizer = torch.optim.Adam(self.regression_model.parameters(), lr=self.lr)
+        if 1:
+            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=10, min_lr=1e-6)
+        else:
+            scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=50, gamma=0.5)
+        return {
+            'optimizer': optimizer,
+            'lr_scheduler': {
+                'scheduler': scheduler,
+                'monitor': 'val/loss',
+                'interval': 'epoch',
+                'frequency': 1
+            }
+        }

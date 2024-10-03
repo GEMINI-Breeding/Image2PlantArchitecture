@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import cv2
 
+from scipy.spatial.transform import Rotation as R
 
 def plot_image(image):
     # Plot the image
@@ -74,3 +75,90 @@ def visualize_attention(image, attention_weights, words, word_index, layer_index
     # plt.show()
 
     return overlay
+
+def euler_to_quaternion(roll, pitch, yaw, degrees=True, order='xyz'):
+    """
+    Convert Roll-Pitch-Yaw angles (in radians) to Quaternion using SciPy.
+    :param roll: Roll angle (φ) in radians
+    :param pitch: Pitch angle (θ) in radians
+    :param yaw: Yaw angle (ψ) in radians
+    :return: Quaternion as a numpy array [q_w, q_x, q_y, q_z]
+    """
+    if degrees:
+        roll = np.radians(roll)
+        pitch = np.radians(pitch)
+        yaw = np.radians(yaw)
+    # Create a rotation object from Euler angles (RBZ convention)
+    if order == 'xyz':
+        rotation = R.from_euler(order, [roll, pitch, yaw])
+    elif order == 'yzx':
+        rotation = R.from_euler(order, [pitch, yaw, roll])
+    else:
+        rotation = R.from_euler(order, [roll, pitch, yaw])
+
+    # Convert the rotation object to a quaternion
+    quaternion = rotation.as_quat()  # Returns [q_x, q_y, q_z, q_w]
+    
+    # Rearranging to [q_w, q_x, q_y, q_z]
+    return np.array([quaternion[3], quaternion[0], quaternion[1], quaternion[2]])
+
+def quaternion_to_euler(q, degrees=True, order='xyz'):
+    """
+    Convert Quaternion to Roll-Pitch-Yaw angles (in radians).
+    :param q: Quaternion as a numpy array [q_w, q_x, q_y, q_z]
+    :param degrees: Whether to return angles in degrees
+    :param order: Rotation order for Euler angles. Default is 'xyz' (Roll-Pitch-Yaw), you can also use 'yzx' (Pitch-Yaw-Roll) etc.
+    :return: Roll, Pitch, Yaw in radians as a tuple (roll, pitch, yaw)
+    """
+    rotation = R.from_quat([q[1], q[2], q[3], q[0]])  # SciPy expects [q_x, q_y, q_z, q_w]
+    if order == 'xyz':
+        roll, pitch, yaw = rotation.as_euler(order)  # Returns roll, pitch, yaw in radians
+    elif order == 'yzx':
+        pitch, yaw, roll = rotation.as_euler(order)
+    else:
+        roll, pitch, yaw = rotation.as_euler(order)
+        
+    if degrees:
+        roll = np.degrees(roll)
+        pitch = np.degrees(pitch)
+        yaw = np.degrees(yaw)
+    return roll, pitch, yaw
+
+def test_conversion(roll, pitch, yaw):
+    # Step 1: Convert RPY to Quaternion
+    quaternion = euler_to_quaternion(roll, pitch, yaw, degrees=True)
+    print(f"Original RPY: (Roll: {roll}, Pitch: {pitch}, Yaw: {yaw})")
+    print(f"Converted Quaternion: {quaternion}")
+
+    # Step 2: Convert Quaternion back to RPY
+    converted_roll, converted_pitch, converted_yaw = quaternion_to_euler(quaternion, degrees=True)
+    
+    print(f"Converted back to RPY: (Roll: {converted_roll}, Pitch: {converted_pitch}, Yaw: {converted_yaw})")
+    
+    # Check if the original and converted values are close
+    roll_diff = converted_roll - roll
+    pitch_diff = converted_pitch - pitch
+    yaw_diff = converted_yaw - yaw
+    
+    print(f"Differences: (Roll: {roll_diff}, Pitch: {pitch_diff}, Yaw: {yaw_diff})")
+    print("---------------------------------------------------")
+
+
+
+if __name__ == "__main__":
+    # Test cases with angles in degrees
+    test_cases = [
+        (30, 45, 60),
+        (90, 0, 0),
+        (120, 45, 30),
+        (0, 90, 0),
+        (0, 0, 180),
+        (45, 45, 45),
+        (30, 60, 90),
+        (60, 30, 90),
+        (15, 15, 30),
+        (45, 90, 180)
+    ]
+
+    for roll, pitch, yaw in test_cases:
+        test_conversion(roll, pitch, yaw)

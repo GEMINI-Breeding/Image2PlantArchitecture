@@ -12,13 +12,18 @@ from torch import Tensor
 from torch.nn import LayerNorm
 
 def get_tgt_mask(size) -> torch.tensor:
-    mask = torch.tril(torch.ones(size, size) == 1) # Lower triangular matrix
-    mask = mask.float()
-    mask = mask.masked_fill(mask == 0, float('-inf')) # Convert zeros to -inf
-    mask = mask.masked_fill(mask == 1, float(0.0)) # Convert ones to 0
+    if 0:
+        mask = torch.tril(torch.ones(size, size) == 1) # Lower triangular matrix
+        mask = mask.float()
+        mask = mask.masked_fill(mask == 0, float('-inf')) # Convert zeros to -inf
+        mask = mask.masked_fill(mask == 1, float(0.0)) # Convert ones to 0
 
-    # Change type
-    mask = mask.type(torch.FloatTensor)
+        # Change type
+        mask = mask.type(torch.FloatTensor)
+    else:
+        # Causal mask 생성
+        mask = nn.Transformer.generate_square_subsequent_mask(size)
+
     return mask
 
 def create_pad_mask(matrix: torch.tensor, pad_token: int) -> torch.tensor:
@@ -75,9 +80,19 @@ class TransformerDecoderWithAttention(nn.TransformerDecoder):
             multihead_attn_weights.append(mod.multihead_attn_weights)
         return output, self_attn_weights, multihead_attn_weights
 
-class CNN(nn.Module):
+# 특정 층까지의 출력을 얻기 위한 새로운 모델 정의
+class EfficientNetExtractor(nn.Module):
+    def __init__(self, original_model):
+        super(EfficientNetExtractor, self).__init__()
+        # self.features = nn.Sequential(*list(original_model.children())[0][:9])  # (8) Conv2dNormActivation까지 포함
+        self.features = nn.Sequential(*list(original_model.children())[0])  # (8) Conv2dNormActivation까지 포함
+        
+    def forward(self, x):
+        return self.features(x)
+    
+class CNN_FeatureExtractor(nn.Module):
     def __init__(self, output_size=256, use_depth=False):
-        super(CNN, self).__init__()
+        super(CNN_FeatureExtractor, self).__init__()
         self.efficientnet = efficientnet_b0(pretrained=True)
         #print("Before")
         #print(self.efficientnet.features[0])
@@ -87,28 +102,36 @@ class CNN(nn.Module):
         else:
             pass
         #print("After")
-        #print(self.efficientnet.features[0])
+        print(self.efficientnet)
+        self.feature_extractor = EfficientNetExtractor(self.efficientnet)
+
         self.efficientnet.classifier = nn.Identity()  # Remove the classification layer
         self.fc = nn.Linear(1280, output_size)  # Reduce feature dimension (1280 is the output of efficientnet_b0)
 
     def forward(self, x):
-        x = self.efficientnet(x)
+        x = self.feature_extractor(x)
+        # (4, 1280,7,7) to (4, 1280, 49) to (4, 49, 1280)
+        x = x.permute(0, 2, 3, 1)
+        x = x.reshape(x.size(0), -1, x.size(3))
+        # (4, 49, 1280) to (4, 49, 256)
         x = self.fc(x)
         return x
     
-class CNN_ViT(nn.Module):
+class ViT_FeatureExtractor(nn.Module):
     def __init__(self, output_size=256, image_size=448, use_depth=False):
-        super(CNN_ViT, self).__init__()
+        super(ViT_FeatureExtractor, self).__init__()
         
-        if 0:
+        if 1:
             # print("Before")
             # print(self.model)
             self.model = ViTModel.from_pretrained('google/vit-base-patch16-224-in21k')
             # Replace the first layer to accept 4 channel
-            if use_depth:
-                self.model.embeddings.patch_embeddings.projection = nn.Conv2d(4, 768, kernel_size=(16, 16), stride=(16, 16))
-                self.model.embeddings.patch_embeddings.num_channels = 4
-        
+            self.model.embeddings.patch_embeddings.projection = nn.Conv2d(4, 768, kernel_size=(16, 16), stride=(16, 16))
+            self.model.embeddings.patch_embeddings.num_channels = 4
+        elif 0:
+            self.model = AutoModel.from_pretrained('facebook/dinov2-base')
+            self.model.embeddings.patch_embeddings.projection = nn.Conv2d(4, 768, kernel_size=(14, 14), stride=(14, 14))
+            self.model.embeddings.patch_embeddings.num_channels = 4
         else:
             # Use fully custom model
             config = ViTConfig(image_size=image_size, 
@@ -124,6 +147,7 @@ class CNN_ViT(nn.Module):
     def forward(self, x):
         x = self.model(x).last_hidden_state
         x = self.fc(x)
+        x = nn.ReLU()(x)
         return x
     
     def get_last_selfattention(self, x):
@@ -135,27 +159,6 @@ class CNN_ViT(nn.Module):
         attention = attention.detach().numpy()
 
         return attention
-    
-
-class CNN_Dinov2(nn.Module):
-    def __init__(self, output_size=256, use_depth=False):
-        super(CNN_Dinov2, self).__init__()
-        
-        self.model = AutoModel.from_pretrained('facebook/dinov2-base')
-        
-        if use_depth:
-            # self.model.patch_embed.proj = nn.Conv2d(4, 768, kernel_size=(14, 14), stride=(14, 14))
-            # self.model.patch_embed.proj.num_channels = 4
-            self.model.embeddings.patch_embeddings.projection = nn.Conv2d(4, 768, kernel_size=(14, 14), stride=(14, 14))
-            self.model.embeddings.patch_embeddings.num_channels = 4
-
-        # print(self.model)
-        self.fc = nn.Linear(768, output_size)  # Reduce feature dimension
-
-    def forward(self, x):
-        x = self.model(x).last_hidden_state
-        x = self.fc(x)
-        return x
     
 class PositionalEncoding(nn.Module):
     def __init__(self, dim_model, dropout_p, max_len):
@@ -179,29 +182,32 @@ class PositionalEncoding(nn.Module):
         # Residual connection + pos encoding
         return self.dropout(token_embedding + self.pos_encoding[:token_embedding.size(0), :])
 
-class ImageToSequenceTransformer(nn.Module):
+class TransformerDecoderModel(nn.Module):
     def __init__(self, seq_embedding_dim, param_embedding_dim, 
                  num_layers, num_heads, num_tokens, num_params, 
                  max_seq_length=2048, use_depth=True, decoder_only=False, image_size=448, dropout=0.1):
-        super(ImageToSequenceTransformer, self).__init__()
-        self.cnn = CNN_ViT(output_size=seq_embedding_dim+param_embedding_dim, use_depth=use_depth, image_size=image_size)
+        super(TransformerDecoderModel, self).__init__()
+        # self.cnn = CNN_ViT(output_size=seq_embedding_dim+param_embedding_dim, use_depth=use_depth, image_size=image_size)
         #self.cnn = CNN_Dinov2(output_size=seq_embedding_dim+param_embedding_dim, use_depth=use_depth)
         #self.cnn = CNN(output_size=seq_embedding_dim+param_embedding_dim, use_depth=use_depth)
+        self.dim_model = seq_embedding_dim + param_embedding_dim
     
         self.seq_embedding_dim = seq_embedding_dim
-        self.seq_embedding = nn.Embedding(num_tokens, seq_embedding_dim)
+        self.seq_embedding = nn.Embedding(num_tokens, self.dim_model)
         self.param_dim_model = param_embedding_dim
-        self.dim_model = seq_embedding_dim + param_embedding_dim
+        
         self.dropout = dropout
         if 1:
-            self.param_embedding = nn.Linear(num_params, param_embedding_dim)
+            self.param_embedding = nn.Linear(num_params, self.dim_model)
         else:
             # Make a sequencial model
             self.param_embedding = nn.Sequential(
-                                    nn.Linear(num_params, param_embedding_dim),
+                                    nn.Linear(num_params, self.dim_model),
                                     # Normalize the output
-                                    nn.LayerNorm(param_embedding_dim)
+                                    nn.LayerNorm(self.dim_model)
                                 )
+        self.embedding_linear = nn.Linear(self.param_dim_model+self.seq_embedding_dim, self.dim_model)
+        self.activation = nn.ReLU()
         self.self_attn_weights = None
         self.multihead_attn_weights = None
         
@@ -222,14 +228,22 @@ class ImageToSequenceTransformer(nn.Module):
                                             dropout=0.1,
                                         )
         if 0:
-            self.seq_linear = nn.Linear(self.seq_embedding_dim, num_tokens)
-            self.param_linear = nn.Linear(self.param_dim_model, num_params)
+            self.seq_decode_linear = nn.Linear(self.seq_embedding_dim, num_tokens)
+            self.param_decode_linear = nn.Linear(self.param_dim_model, num_params)
         else:
-            self.seq_linear = nn.Linear(self.dim_model, num_tokens)
-            self.param_linear = nn.Linear(self.dim_model, num_params)
+            self.seq_decode_linear = nn.Linear(self.dim_model, num_tokens)
+            #self.param_decode_linear = nn.Linear(self.dim_model, num_params)
+            # Make more deeper network
+            self.param_decode_linear = nn.Sequential(
+                                    nn.Linear(self.dim_model, self.dim_model),
+                                    nn.ReLU(),
+                                    nn.Linear(self.dim_model, self.dim_model),
+                                    nn.ReLU(),
+                                    nn.Linear(self.dim_model, num_params),
+                                )
     
-    def forward(self, images, tgt_seq, tgt_mask=None, tgt_key_padding_mask=None):
-        features = self.cnn(images)
+    def forward(self, features, tgt_seq, tgt_mask=None, tgt_key_padding_mask=None):
+        # features = self.cnn(images)
         # Check dimensions
         if len(features.shape) == 2:
             features = features.unsqueeze(1) 
@@ -253,7 +267,11 @@ class ImageToSequenceTransformer(nn.Module):
         depth_organ_seq = self.seq_embedding(depth_organ_seq) * math.sqrt(self.dim_model)
         params = self.param_embedding(params) * math.sqrt(self.dim_model)
 
-        tgt_seq = torch.cat((depth_organ_seq, params), dim=2)
+        if 0:
+            tgt_seq = torch.cat((depth_organ_seq, params), dim=2)
+            tgt_seq = self.activation(self.embedding_linear(tgt_seq))
+        else:
+            tgt_seq = depth_organ_seq + params
 
         # Make sequence length the first dimension 
         # PositionalEncoding은 시퀀스 차원에 대해 적용되므로, Positional Encoding을 적용하기 전에 반드시 시퀀스 차원이 첫 번째가 되어야 합니다.
@@ -266,20 +284,88 @@ class ImageToSequenceTransformer(nn.Module):
         if self.decoder_only:
             decoded, self.self_attn_weights, self.multihead_attn_weights = self.transformer_decoder(tgt_seq, features, tgt_mask=tgt_mask,tgt_key_padding_mask=tgt_key_padding_mask)
         else:
-            decoded = self.transformer(features, tgt_seq, tgt_mask=tgt_mask,tgt_key_padding_mask=tgt_key_padding_mask)
-        
+            decoded = self.transformer(features, tgt_seq, tgt_mask=tgt_mask, tgt_key_padding_mask=tgt_key_padding_mask, tgt_is_causal=True)
+        # decoded = self.activation(decoded)
+
         if 0:
             # 0 ~ seq_embedding_dim is the sequence, seq_embedding_dim-64 is the parameters
             decoded_seq = decoded[:, :, :self.seq_embedding_dim]
-            output_seq = self.seq_linear(decoded_seq)
+            output_seq = self.seq_decode_linear(decoded_seq)
 
             decoded_params = decoded[:, :, self.seq_embedding_dim:]
-            output_params = self.param_linear(decoded_params)
+            output_params = self.param_decode_linear(decoded_params)
         else:
             # Use all the decoded output
-            output_seq = self.seq_linear(decoded)
-            output_params = self.param_linear(decoded)
+            output_seq = self.seq_decode_linear(decoded)
+            output_params = self.param_decode_linear(decoded)
             
         # Cat the output_seq and output_params
         output_seq = torch.cat((output_seq, output_params), dim=2)
         return output_seq
+    
+
+class RegressionModel(nn.Module):
+    def __init__(self, dim_model=768, image_size=448, dropout=0.1):
+        super(RegressionModel,self).__init__()
+        
+        self.activation = nn.ReLU()
+
+        self.linear = nn.Linear(197*dim_model, 4)
+
+    def forward(self, x):
+        x = x.reshape(x.size(0), -1)
+
+        x = self.activation(x)
+
+        x = self.linear(x)
+        
+        return x
+    
+class RegressionModel_Transformer(nn.Module):
+    def __init__(self, dim_model=768, image_size=448, dropout=0.1):
+        super(RegressionModel_Transformer,self).__init__()
+        
+        self.activation = nn.ReLU()
+
+        # self.linear = nn.Linear(197*dim_model, 4)
+        self.linear = nn.Linear(dim_model, 4) # Use EfficientNetB0 feature extractor. 49 is the number of patches
+        self.transformer = nn.Transformer(d_model=dim_model, nhead=4, num_encoder_layers=2, num_decoder_layers=2, dropout=dropout)
+
+
+    def forward(self, x):
+        x = x.permute(1,0,2)
+        x = self.transformer(x, x)
+        x = x.permute(1,0,2)
+
+        #x = x.reshape(x.size(0), -1)
+        
+        x = x.mean(dim=1)  # Pool along the sequence length dimension (aggregate features)
+
+        x = self.activation(x)
+
+        x = self.linear(x)
+
+        return x
+    
+class RegressionModel_CNN_Transformer(nn.Module):
+    def __init__(self, dim_model=768, image_size=448, dropout=0.1):
+        super(RegressionModel_CNN_Transformer,self).__init__()
+        
+        self.activation = nn.ReLU()
+
+        self.linear = nn.Linear(197*dim_model, 4)
+        self.transformer = nn.Transformer(d_model=dim_model, nhead=8, num_encoder_layers=6, num_decoder_layers=6, dropout=dropout)
+
+
+    def forward(self, x):
+        x = x.permute(1,0,2)
+        x = self.transformer(x, x)
+        x = x.permute(1,0,2)
+
+        x = x.reshape(x.size(0), -1)
+
+        x = self.activation(x)
+
+        x = self.linear(x)
+
+        return x
