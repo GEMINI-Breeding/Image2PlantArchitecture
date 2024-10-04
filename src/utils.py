@@ -144,9 +144,85 @@ def test_conversion(roll, pitch, yaw):
     print("---------------------------------------------------")
 
 
+def angle_to_coordinates(theta, degrees=True):
+    """
+    Convert an angle (in degrees) to Cartesian coordinates (x, y).
+    :param theta: Angle in degrees
+    :return: Tuple (x, y), where x = cos(theta), y = sin(theta)
+    """
+    if degrees:
+        # Convert to radians for calculation
+        radians = np.radians(theta)
+    radians = radians % (2 * np.pi)
+
+    x = np.cos(radians)
+    y = np.sin(radians)
+    return x, y
+
+
+def coordinates_to_angle(x, y, degrees=True, angle_min=None, angle_max=None):
+    """
+    Convert Cartesian coordinates (x, y) back to an angle (in degrees).
+    :param x: x coordinate
+    :param y: y coordinate
+    :return: Angle in degrees
+    """
+    angle = np.arctan2(y, x)  # Get angle in degrees     
+    if angle < 0:
+        angle += 2 * np.pi
+    if degrees:
+        angle = np.degrees(angle)
+
+    # Check if the angle is within the specified range
+    if angle_min is not None:
+        if angle < angle_min:
+            angle += 360
+
+    # Check if the angle is within the specified range
+    if angle_max is not None:
+        if angle > angle_max:
+            angle -= 360
+    
+    return angle
+
+
+def test_angle_conversion(theta):
+    print(f"Testing angle: {theta} degrees")
+    
+    # Convert angle to coordinates
+    x, y = angle_to_coordinates(theta)
+    print(f"Coordinates (x, y): ({x}, {y})")
+
+    # Convert back to angle
+    converted_angle = coordinates_to_angle(x, y)
+    print(f"Converted back to angle: {converted_angle} degrees")
+    
+    # Check for consistency
+    assert np.isclose(converted_angle, theta % 360), "Converted angle does not match the original angle!"
+    print("Test passed!\n")
 
 if __name__ == "__main__":
     # Test cases with angles in degrees
+    test_angles = [0, 90, 180, 270, 360, 45, 135, 225, 315, 720]
+
+    for angle in test_angles:
+        test_angle_conversion(angle)
+        test_angle_conversion(-angle)
+
+    from plant_dataset import PlantDataset
+    dataset_dir = "/home/lion397/codes/Image2PlantArchitecture/data/generated_dataset_Sep22_black"
+    train_dataset = PlantDataset(dataset_dir, plot=["000", "001", "002",], load_depth=True, preload=False,
+                                 process_leaf=False,
+                                 image_size=224)
+    from tqdm import tqdm
+    for i, data in tqdm(enumerate(train_dataset)):
+        vec = train_dataset.getitem(i)[1]
+        test_angles = vec[0][2:5]
+        for angle in test_angles:
+            test_angle_conversion(angle)
+
+
+
     test_cases = [
         (30, 45, 60),
         (90, 0, 0),

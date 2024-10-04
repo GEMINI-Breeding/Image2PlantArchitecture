@@ -121,17 +121,20 @@ class ViT_FeatureExtractor(nn.Module):
     def __init__(self, output_size=256, image_size=448, use_depth=False):
         super(ViT_FeatureExtractor, self).__init__()
         
-        if 1:
+        # Define a 4 ch to 3 ch conversion layer
+        self.conv = nn.Conv2d(4, 3, kernel_size=3, stride=1, padding=1)
+        if 0:
             # print("Before")
             # print(self.model)
-            self.model = ViTModel.from_pretrained('google/vit-base-patch16-224-in21k')
+            self.model = ViTModel.from_pretrained('google/vit-base-patch16-224-in21k') # Use ViT, it will give 197x768 feature
+        
             # Replace the first layer to accept 4 channel
             self.model.embeddings.patch_embeddings.projection = nn.Conv2d(4, 768, kernel_size=(16, 16), stride=(16, 16))
             self.model.embeddings.patch_embeddings.num_channels = 4
-        elif 0:
-            self.model = AutoModel.from_pretrained('facebook/dinov2-base')
-            self.model.embeddings.patch_embeddings.projection = nn.Conv2d(4, 768, kernel_size=(14, 14), stride=(14, 14))
-            self.model.embeddings.patch_embeddings.num_channels = 4
+        elif 1:
+            self.model = AutoModel.from_pretrained('facebook/dinov2-base') # Use DINOv2, it will give 257x768 feature
+            # self.model.embeddings.patch_embeddings.projection = nn.Conv2d(4, 768, kernel_size=(14, 14), stride=(14, 14))
+            # self.model.embeddings.patch_embeddings.num_channels = 4
         else:
             # Use fully custom model
             config = ViTConfig(image_size=image_size, 
@@ -145,6 +148,7 @@ class ViT_FeatureExtractor(nn.Module):
         self.fc = nn.Linear(768, output_size)  # Reduce feature dimension
 
     def forward(self, x):
+        x = self.conv(x)
         x = self.model(x).last_hidden_state
         x = self.fc(x)
         x = nn.ReLU()(x)
@@ -310,7 +314,8 @@ class RegressionModel(nn.Module):
         
         self.activation = nn.ReLU()
 
-        self.linear = nn.Linear(197*dim_model, 4)
+        #self.linear = nn.Linear(197*dim_model, 4)
+        self.linear = nn.Linear(257*dim_model, 6)
 
     def forward(self, x):
         x = x.reshape(x.size(0), -1)

@@ -317,6 +317,7 @@ class MainDataModule(pl.LightningDataModule):
                         transform=None,
                         num_workers=4, image_size=448, 
                         param_dim=5 + 4 + 3 + 4,
+                        load_depth=True,
                         process_leaf=False,
                         preload=False):
         super().__init__()
@@ -328,7 +329,7 @@ class MainDataModule(pl.LightningDataModule):
         self.preload = preload
         self.param_dim = param_dim
         self.process_leaf = process_leaf
-        self.use_depth = True
+        self.load_depth = load_depth
 
         if transform is None:
             self.transform = transforms.Compose([
@@ -338,7 +339,7 @@ class MainDataModule(pl.LightningDataModule):
         else:    
             self.transform = transform
 
-    def load_or_create_dataset(self, dataset_dir, dataset_name, plot, stages, transform, use_depth, process_leaf, preload, image_size):
+    def load_or_create_dataset(self, dataset_dir, dataset_name, plot, stages, transform, load_depth, process_leaf, preload, image_size):
         saved_dataset_name = os.path.join(dataset_dir, f"{dataset_name}.pkl")
         if os.path.exists(saved_dataset_name) and preload:
             print(f"Loading {dataset_name} dataset from .pkl file")
@@ -347,7 +348,7 @@ class MainDataModule(pl.LightningDataModule):
         else:
             dataset = PlantDataset(
                 dataset_dir, plot=plot, stages=stages,
-                transform=transform, use_depth=use_depth,
+                transform=transform, load_depth=load_depth,
                 process_leaf=process_leaf,
                 preload=preload, image_size=image_size,
             )
@@ -364,19 +365,19 @@ class MainDataModule(pl.LightningDataModule):
         growth_stages = ["003"]
         self.train_dataset = self.load_or_create_dataset(
             self.dataset_dir, "train_dataset", ["000", "001", "002"], growth_stages,
-            self.transform, self.use_depth, self.process_leaf,
+            self.transform, self.load_depth, self.process_leaf,
             self.preload, self.image_size
         )
 
         self.val_dataset = self.load_or_create_dataset(
             self.dataset_dir, "val_dataset", ["003"], growth_stages,
-            self.transform, self.use_depth, self.process_leaf,
+            self.transform, self.load_depth, self.process_leaf,
             self.preload, self.image_size
         )
 
         self.test_dataset = self.load_or_create_dataset(
             self.dataset_dir, "test_dataset", ["004"], growth_stages,
-            self.transform, self.use_depth, self.process_leaf,
+            self.transform, self.load_depth, self.process_leaf,
             self.preload, self.image_size
         )
 
@@ -424,14 +425,42 @@ class SimpleRegressionTest(MainModule):
 
         self.image_size = image_size
 
+        self.depth_est_img_proc = AutoImageProcessor.from_pretrained("depth-anything/Depth-Anything-V2-Small-hf")
+        self.depth_est_model = AutoModelForDepthEstimation.from_pretrained("depth-anything/Depth-Anything-V2-Small-hf")
+
+        self.normalize = transforms.Normalize(mean=[0.5, 0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5, 0.5])
+
         self.feature_extractor = ViT_FeatureExtractor(output_size=dim_model, use_depth=True, image_size=image_size)
         #self.feature_extractor = CNN_FeatureExtractor(output_size=dim_model, use_depth=True)
-        self.regression_model = RegressionModel_Transformer(dim_model=dim_model, image_size=image_size, dropout=dropout)
+        #self.regression_model = RegressionModel_Transformer(dim_model=dim_model, image_size=image_size, dropout=dropout)
+        self.regression_model = RegressionModel(dim_model=dim_model, image_size=image_size, dropout=dropout)
 
         self.lr = lr
 
+        self.predicted_depth = None
+
+
 
     def forward(self, image):
+        # prepare image for the model
+        inputs = self.depth_est_img_proc(images=image, return_tensors="pt").to(image.device)
+        with torch.no_grad():
+            outputs = self.depth_est_model(**inputs)
+            predicted_depth = outputs.predicted_depth
+
+        # interpolate to original size
+        depth = torch.nn.functional.interpolate(
+            predicted_depth.unsqueeze(1),
+            size=image.shape[-2:],
+            mode="bicubic",
+            align_corners=False,
+        )
+        self.predicted_depth = depth
+        # cat depth to image
+        image = torch.cat((image, depth), dim=1)
+
+        image = self.normalize(image)
+        
         x = self.feature_extractor(image)
         x = self.regression_model(x)
         return x
@@ -446,7 +475,7 @@ class SimpleRegressionTest(MainModule):
         values = y_expected[:, :, 1:].permute(0, 2, 1)
 
         # Calculate Loss using only for the first element
-        loss = F.mse_loss(pred.squeeze(), values[:,:4,0])
+        loss = F.mse_loss(pred.squeeze(), values[:,:6,0])
 
         self.log(f'{mode}/loss', loss, batch_size=image.size(0), sync_dist=True)
         return loss

@@ -3,6 +3,7 @@ import math
 import random
 
 from utils import euler_to_quaternion, quaternion_to_euler
+from utils import coordinates_to_angle, angle_to_coordinates
 
 
 # Create a dict convert plant structure to token
@@ -267,20 +268,24 @@ def vec2token_new(vec, n_params=19):
             # x[2]: shoot_base_pitch
             # x[3]: shoot_base_yaw
             # x[4]: shoot_base_roll
-            if 1:
+            if 0:
                 q = euler_to_quaternion(roll=x[4], pitch=x[2], yaw=x[3], degrees=True)
                 token[1] = q[0]
                 token[2] = q[1]
                 token[3] = q[2]
                 token[4] = q[3]
+            elif 1:
+                token[1],token[2] = angle_to_coordinates(x[2])
+                token[3],token[4] = angle_to_coordinates(x[3])
+                token[5],token[6] = angle_to_coordinates(x[4])
             else:
                 token[1] = x[2] / 180 * math.pi
                 token[2] = x[3] / 180 * math.pi
                 token[3] = x[4] / 180 * math.pi
                 token[4] = 0
             
-            token[5] = x[5] / 100           # shoot_gravitropic_curvature
-            token[6] = x[6]                 # shoot_type
+            # token[5] = x[5] / 100           # shoot_gravitropic_curvature
+            # token[6] = x[6]                 # shoot_type
         elif x[1] == 1:
             # Internode params
             token[7] = x[2] * 100 # internode_length
@@ -331,12 +336,16 @@ def token2vec_new(tokens):
    
             if j == 0:
                 # Shoot
-                if 1:
+                if 0:
                     q = np.array([token[1], token[2], token[3], token[4]])
                     roll, pitch, yaw = quaternion_to_euler(q,degrees=True)
                     params_padded[0] = pitch
                     params_padded[1] = yaw
                     params_padded[2] = roll
+                elif 1:
+                    params_padded[0] = coordinates_to_angle(token[1], token[2])
+                    params_padded[1] = coordinates_to_angle(token[3], token[4])
+                    params_padded[2] = coordinates_to_angle(token[5], token[6])
                 else:
                     params_padded[0] = token[1] * 180 / math.pi
                     params_padded[1] = token[2] * 180 / math.pi
@@ -375,7 +384,7 @@ if __name__ == "__main__":
 
     from plant_dataset import PlantDataset
     dataset_dir = "/home/lion397/codes/Image2PlantArchitecture/data/generated_dataset_Sep22_black"
-    train_dataset = PlantDataset(dataset_dir, plot=["000", "001", "002",], use_depth=True, preload=False,
+    train_dataset = PlantDataset(dataset_dir, plot=["000", "001", "002",], load_depth=True, preload=False,
                                  process_leaf=False,
                                  image_size=224)
     from tqdm import tqdm

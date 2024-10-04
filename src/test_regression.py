@@ -7,6 +7,8 @@ from pytorch_lightning.loggers import TensorBoardLogger
 from pytorch_lightning.strategies import DDPStrategy
 from datetime import datetime
 
+import torchvision.transforms as transforms
+
 # 경로 설정
 script_file_path = os.path.abspath(__file__)
 sys.path.append(os.path.dirname(os.path.dirname(script_file_path)))
@@ -24,16 +26,25 @@ if __name__ == "__main__":
         dropout=0.10,
         dim_model=64
     )
+    
+    transform = transforms.Compose([
+                transforms.RandomResizedCrop(module.image_size, scale=(0.8, 1.0)),
+                transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.2),
+                transforms.ToTensor(),
+            ])
 
     datamodule = MainDataModule(dataset_dir,
                                 image_size=module.image_size,
-                                train_batch_size=4, num_workers=4, param_dim=18, process_leaf=True, preload=False)
+                                train_batch_size=4, num_workers=4, param_dim=18, 
+                                transform=transform,
+                                load_depth=False,
+                                process_leaf=True, preload=False)
     tqdm_cb = TQDMProgressBar(refresh_rate=10)
 
     # Generate today's date string in YYYYMMDD format
     today_date_str = datetime.now().strftime('%Y%m%d')
     tb_logger = TensorBoardLogger(
-        name=f'{today_date_str}_TransformerRegression',
+        name=f'{today_date_str}_SimpleRegression_angle2coord_Jitter',
         save_dir='./log'
     )
 
@@ -66,7 +77,7 @@ if __name__ == "__main__":
                    ],
         # callbacks=[tqdm_cb, ckpt_cb, lr_monitor],
         logger=tb_logger,
-        precision="bf16-mixed",
+        # precision="bf16-mixed",
         #strategy=DDPStrategy(find_unused_parameters=True)  # Enable detection of unused parameters
     )
     # module = MainModule.load_from_checkpoint('./saved/last.ckpt')

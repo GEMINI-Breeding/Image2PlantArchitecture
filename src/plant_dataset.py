@@ -18,11 +18,11 @@ ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 class PlantDataset(Dataset):
     def __init__(self, root_dir, plot=None, stages=None, transform=None, 
-                 image_size=224, use_depth=True, preload=True, 
+                 image_size=224, load_depth=True, preload=True, 
                  dry_run=False, process_leaf=False):
 
         self.root_dir = root_dir
-        self.use_depth = use_depth          
+        self.load_depth = load_depth          
         # images_path
         self.images_path = os.path.join(root_dir, 'images')
         self.depth_path = os.path.join(root_dir, 'depth')
@@ -64,13 +64,13 @@ class PlantDataset(Dataset):
         if self.preload:
             # Pre-load data
             self.images = []
-            self.out = []
+            self.vec = []
             print("Pre-loading data")
             for i in tqdm(range(len(self.image_paths))):
-                image, out, out_len = self.getitem(i)
+                image, vec = self.getitem(i)
                 if image is not None:
                     self.images.append(image)
-                    self.out.append(out)
+                    self.vec.append(vec)
 
     def __len__(self):
         return len(self.image_paths)
@@ -90,7 +90,7 @@ class PlantDataset(Dataset):
         else:
             leaf_img = cv2.resize(np.array(image), (self.img_size, self.img_size))
 
-        if self.use_depth:
+        if self.load_depth:
             # Convert depth to grayscale
             depth = Image.open(os.path.join(self.depth_path, self.depth_images[idx]))
             depth = np.array(depth)
@@ -113,33 +113,35 @@ class PlantDataset(Dataset):
             leaf_img = np.concatenate((leaf_img, depth[:, :, np.newaxis]), axis=2)
 
         image = leaf_img
-        image = Image.fromarray(image)
-        if self.transform:
-            image = self.transform(image)
-        
+
         # Load plant string
         with open(os.path.join(self.plant_string_path, self.plant_string_files[idx]), 'r') as f:
             self.plant_string_raw = f.read()
         
         vec = string2vec(self.plant_string_raw)[0]
 
-        # Tokenize the plant structure
-        out = vec2token(vec)
-            
-        # Add SOS and EOS tokens
-        out = np.concatenate(([params_SOS_token_padded], out, [params_EOS_token_padded]))
-
-        return image, out, len(out)
+        return image, vec
 
     
     def __getitem__(self, idx):
 
         if self.preload:
             image = self.images[idx]
-            out = self.out[idx]
-            out_len = len(out)
+            vec = self.vec[idx]
         else:
-            image, out, out_len = self.getitem(idx)
+            image, vec = self.getitem(idx)
+
+        # Convert image to PIL and apply transforms
+        image = Image.fromarray(image)
+        if self.transform:
+            image = self.transform(image)
+
+        # Tokenize the plant structure
+        out = vec2token(vec)
+            
+        # Add SOS and EOS tokens
+        out = np.concatenate(([params_SOS_token_padded], out, [params_EOS_token_padded]))
+        out_len = len(out)
 
         return image, out, out_len
         
