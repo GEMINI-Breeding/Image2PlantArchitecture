@@ -24,19 +24,14 @@ if __name__ == "__main__":
         image_size=224,
         lr=1e-4,
         dropout=0.10,
-        dim_model=64
+        dim_model=64,
+        use_depth=True,
+        vit_finetune=True
     )
-    
-    transform = transforms.Compose([
-                transforms.RandomResizedCrop(module.image_size, scale=(0.8, 1.0)),
-                transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.2),
-                transforms.ToTensor(),
-            ])
 
     datamodule = MainDataModule(dataset_dir,
                                 image_size=module.image_size,
                                 train_batch_size=4, num_workers=4, param_dim=18, 
-                                transform=transform,
                                 load_depth=False,
                                 process_leaf=True, preload=False)
     tqdm_cb = TQDMProgressBar(refresh_rate=10)
@@ -44,7 +39,7 @@ if __name__ == "__main__":
     # Generate today's date string in YYYYMMDD format
     today_date_str = datetime.now().strftime('%Y%m%d')
     tb_logger = TensorBoardLogger(
-        name=f'{today_date_str}_SimpleRegression_angle2coord_Jitter',
+        name=f'{today_date_str}_RGBD_Transformer_MaxPool',
         save_dir='./log'
     )
 
@@ -80,7 +75,7 @@ if __name__ == "__main__":
         # precision="bf16-mixed",
         #strategy=DDPStrategy(find_unused_parameters=True)  # Enable detection of unused parameters
     )
-    # module = MainModule.load_from_checkpoint('./saved/last.ckpt')
+    # module = SimpleRegressionTest.load_from_checkpoint('log/20241007_RGBD_Dinov2Finetune/version_0/checkpoints/best_epoch=86.ckpt')
     trainer.fit(module, datamodule=datamodule)
 
     # To check the training progress,

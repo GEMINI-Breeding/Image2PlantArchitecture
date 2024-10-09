@@ -10,6 +10,7 @@ from typing import Optional, Any, Union, Callable
 from torch import Tensor
 
 from torch.nn import LayerNorm
+import torchvision.transforms as transforms
 
 def get_tgt_mask(size) -> torch.tensor:
     if 0:
@@ -121,18 +122,22 @@ class ViT_FeatureExtractor(nn.Module):
     def __init__(self, output_size=256, image_size=448, use_depth=False):
         super(ViT_FeatureExtractor, self).__init__()
         
-        # Define a 4 ch to 3 ch conversion layer
-        self.conv = nn.Conv2d(4, 3, kernel_size=3, stride=1, padding=1)
+        self.use_depth = use_depth
         if 0:
             # print("Before")
             # print(self.model)
             self.model = ViTModel.from_pretrained('google/vit-base-patch16-224-in21k') # Use ViT, it will give 197x768 feature
-        
+            
             # Replace the first layer to accept 4 channel
             self.model.embeddings.patch_embeddings.projection = nn.Conv2d(4, 768, kernel_size=(16, 16), stride=(16, 16))
             self.model.embeddings.patch_embeddings.num_channels = 4
         elif 1:
             self.model = AutoModel.from_pretrained('facebook/dinov2-base') # Use DINOv2, it will give 257x768 feature
+            self.img_proc = AutoImageProcessor.from_pretrained('facebook/dinov2-base')
+            if self.use_depth:
+                self.normalize = transforms.Normalize(mean=[0.5, 0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5, 0.5])
+            else:
+                self.normalize = transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
             # self.model.embeddings.patch_embeddings.projection = nn.Conv2d(4, 768, kernel_size=(14, 14), stride=(14, 14))
             # self.model.embeddings.patch_embeddings.num_channels = 4
         else:
@@ -148,7 +153,9 @@ class ViT_FeatureExtractor(nn.Module):
         self.fc = nn.Linear(768, output_size)  # Reduce feature dimension
 
     def forward(self, x):
-        x = self.conv(x)
+        # x = self.img_proc(images=x, return_tensors="pt").to(x.device)
+        # x = self.model(**x).last_hidden_state
+        x = self.normalize(x)
         x = self.model(x).last_hidden_state
         x = self.fc(x)
         x = nn.ReLU()(x)
@@ -333,7 +340,7 @@ class RegressionModel_Transformer(nn.Module):
         self.activation = nn.ReLU()
 
         # self.linear = nn.Linear(197*dim_model, 4)
-        self.linear = nn.Linear(dim_model, 4) # Use EfficientNetB0 feature extractor. 49 is the number of patches
+        self.linear = nn.Linear(dim_model, 6) # Use EfficientNetB0 feature extractor. 49 is the number of patches
         self.transformer = nn.Transformer(d_model=dim_model, nhead=4, num_encoder_layers=2, num_decoder_layers=2, dropout=dropout)
 
 
@@ -343,8 +350,11 @@ class RegressionModel_Transformer(nn.Module):
         x = x.permute(1,0,2)
 
         #x = x.reshape(x.size(0), -1)
-        
-        x = x.mean(dim=1)  # Pool along the sequence length dimension (aggregate features)
+        if 0:
+            x = x.mean(dim=1)  # Pool along the sequence length dimension (aggregate features)
+        else:
+            # Max pooling
+            x = x.max(dim=1).values
 
         x = self.activation(x)
 
@@ -373,4 +383,31 @@ class RegressionModel_CNN_Transformer(nn.Module):
 
         x = self.linear(x)
 
+        return x
+    
+
+
+
+class Discriminator(nn.Module):
+    def __init__(self, dim_model=768, image_size=448, dropout=0.1):
+        super(Discriminator,self).__init__()
+        
+        self.activation = nn.ReLU()
+
+        self.model = nn.Sequential(
+            nn.Linear(dim_model, 512),
+            nn.ReLU(),
+            nn.Linear(512, 256),
+            nn.ReLU(),
+            nn.Linear(256, 1),
+            nn.Sigmoid()
+        )
+
+    def forward(self, image_feature, seq_feature):
+        x = x.reshape(x.size(0), -1)
+
+        x = self.activation(x)
+
+        x = self.linear(x)
+        
         return x

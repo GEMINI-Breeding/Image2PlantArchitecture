@@ -53,7 +53,7 @@ class FineTuneLearningRateFinder(LearningRateFinder):
             self.lr_find(trainer, pl_module)
 
 class MainModule(pl.LightningModule):
-    def __init__(self, num_layers, num_heads, seq_dim, seq_embedding_dim, param_dim, param_embedding_dim, image_size, alpha, lr, dropout):
+    def __init__(self, num_layers, num_heads, seq_dim, seq_embedding_dim, param_dim, param_embedding_dim, image_size, alpha, lr, dropout, use_depth):
         super(MainModule, self).__init__()
         self.save_hyperparameters()  # 전달된 모든 인수를 저장
 
@@ -68,6 +68,7 @@ class MainModule(pl.LightningModule):
         self.alpha = alpha
         self.lr = lr
         self.dropout = dropout
+        self.use_depth = use_depth
 
         self.transform = transforms.Compose([
             transforms.ToTensor(),
@@ -87,7 +88,7 @@ class MainModule(pl.LightningModule):
             num_tokens=self.seq_dim,
             num_params=self.param_dim,
             decoder_only=False,
-            use_depth=True,
+            use_depth=self.use_depth,
             image_size=self.image_size,
             dropout=self.dropout,
         )
@@ -314,7 +315,6 @@ class MainModule(pl.LightningModule):
 
 class MainDataModule(pl.LightningDataModule):
     def __init__(self, dataset_dir, train_batch_size=16, val_batch_size=None,
-                        transform=None,
                         num_workers=4, image_size=448, 
                         param_dim=5 + 4 + 3 + 4,
                         load_depth=True,
@@ -331,13 +331,18 @@ class MainDataModule(pl.LightningDataModule):
         self.process_leaf = process_leaf
         self.load_depth = load_depth
 
-        if transform is None:
-            self.transform = transforms.Compose([
-                transforms.ToTensor(),
-                transforms.Normalize(mean=[0.5, 0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5, 0.5])
+        self.data_aug = transforms.Compose([
+                transforms.RandomResizedCrop(self.image_size, scale=(0.8, 1.0)),
+                transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.2),
             ])
-        else:    
-            self.transform = transform
+        
+        self.train_transform = transforms.Compose([
+                self.data_aug,
+                transforms.ToTensor(),
+        ])
+        self.test_transform = transforms.Compose([
+                transforms.ToTensor(),
+        ])
 
     def load_or_create_dataset(self, dataset_dir, dataset_name, plot, stages, transform, load_depth, process_leaf, preload, image_size):
         saved_dataset_name = os.path.join(dataset_dir, f"{dataset_name}.pkl")
@@ -361,23 +366,22 @@ class MainDataModule(pl.LightningDataModule):
         return dataset
 
     def setup(self, stage=None):
-        #growth_stages = ["003","010","016","023"]
-        growth_stages = ["003"]
+        growth_stages = ["003"] # ["003","010","016","023"]
         self.train_dataset = self.load_or_create_dataset(
             self.dataset_dir, "train_dataset", ["000", "001", "002"], growth_stages,
-            self.transform, self.load_depth, self.process_leaf,
+            self.train_transform, self.load_depth, self.process_leaf,
             self.preload, self.image_size
         )
 
         self.val_dataset = self.load_or_create_dataset(
             self.dataset_dir, "val_dataset", ["003"], growth_stages,
-            self.transform, self.load_depth, self.process_leaf,
+            self.test_transform, self.load_depth, self.process_leaf,
             self.preload, self.image_size
         )
 
         self.test_dataset = self.load_or_create_dataset(
             self.dataset_dir, "test_dataset", ["004"], growth_stages,
-            self.transform, self.load_depth, self.process_leaf,
+            self.test_transform, self.load_depth, self.process_leaf,
             self.preload, self.image_size
         )
 
@@ -419,21 +423,28 @@ class MainDataModule(pl.LightningDataModule):
     
 class SimpleRegressionTest(MainModule):
 
-    def __init__(self, image_size, lr, dropout, dim_model=768):
+    def __init__(self, image_size, lr, dropout, use_depth, vit_finetune, dim_model=768):
         super(MainModule, self).__init__()
         self.save_hyperparameters()  # 전달된 모든 인수를 저장
 
         self.image_size = image_size
+        self.use_depth = use_depth
+        if self.use_depth:
+            self.depth_est_img_proc = AutoImageProcessor.from_pretrained("depth-anything/Depth-Anything-V2-Small-hf")
+            self.depth_est_model = AutoModelForDepthEstimation.from_pretrained("depth-anything/Depth-Anything-V2-Small-hf")
 
-        self.depth_est_img_proc = AutoImageProcessor.from_pretrained("depth-anything/Depth-Anything-V2-Small-hf")
-        self.depth_est_model = AutoModelForDepthEstimation.from_pretrained("depth-anything/Depth-Anything-V2-Small-hf")
+        
+        # Define a 4 ch to 3 ch conversion layer
+        self.ch4_to_ch3_conv = nn.Conv2d(4, 3, kernel_size=3, stride=1, padding=1) 
 
-        self.normalize = transforms.Normalize(mean=[0.5, 0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5, 0.5])
+        self.feature_extractor = ViT_FeatureExtractor(output_size=dim_model, image_size=image_size)
+        # Froze self.feature_extractor
+        if vit_finetune == False:
+            self.feature_extractor.eval()
 
-        self.feature_extractor = ViT_FeatureExtractor(output_size=dim_model, use_depth=True, image_size=image_size)
         #self.feature_extractor = CNN_FeatureExtractor(output_size=dim_model, use_depth=True)
-        #self.regression_model = RegressionModel_Transformer(dim_model=dim_model, image_size=image_size, dropout=dropout)
-        self.regression_model = RegressionModel(dim_model=dim_model, image_size=image_size, dropout=dropout)
+        self.regression_model = RegressionModel_Transformer(dim_model=dim_model, image_size=image_size, dropout=dropout)
+        #self.regression_model = RegressionModel(dim_model=dim_model, image_size=image_size, dropout=dropout)
 
         self.lr = lr
 
@@ -442,28 +453,77 @@ class SimpleRegressionTest(MainModule):
 
 
     def forward(self, image):
-        # prepare image for the model
-        inputs = self.depth_est_img_proc(images=image, return_tensors="pt").to(image.device)
-        with torch.no_grad():
-            outputs = self.depth_est_model(**inputs)
-            predicted_depth = outputs.predicted_depth
+        if self.use_depth:
+            # prepare image for the model
+            inputs = self.depth_est_img_proc(images=image, return_tensors="pt").to(image.device)
+            with torch.no_grad():
+                outputs = self.depth_est_model(**inputs)
+                predicted_depth = outputs.predicted_depth
 
-        # interpolate to original size
-        depth = torch.nn.functional.interpolate(
-            predicted_depth.unsqueeze(1),
-            size=image.shape[-2:],
-            mode="bicubic",
-            align_corners=False,
-        )
-        self.predicted_depth = depth
-        # cat depth to image
-        image = torch.cat((image, depth), dim=1)
-
-        image = self.normalize(image)
-        
+            # interpolate to original size
+            depth = torch.nn.functional.interpolate(
+                predicted_depth.unsqueeze(1),
+                size=image.shape[-2:],
+                mode="bicubic",
+                align_corners=False,
+            )
+            self.predicted_depth = depth
+            # cat depth to image
+            image = torch.cat((image, depth), dim=1)
+            # Convert 4 channel to 3 channel
+            image = self.ch4_to_ch3_conv(image)
+            if 0:
+                # Normalize to 0-1
+                image = (image - image.min()) / (image.max() - image.min())
+            
         x = self.feature_extractor(image)
         x = self.regression_model(x)
         return x
+    
+    def image_gen_loss_simple_regression(self, pred, image):
+        # Generate using Helios
+        label_p = pred[:, :self.seq_dim, :].permute(0, 2, 1)
+        label_est = label_p.topk(1)[1]  # num with highest probability
+        params_est = pred[:, self.seq_dim:].permute(0, 2, 1)
+        # Cat label and params
+        tokens_est = torch.cat((label_est, params_est), dim=-1)
+        os.makedirs("temp", exist_ok=True)
+        image_loss = 0
+
+        def process_single_image(i):
+            try:
+                plant_vec = token2vec(tokens_est[i].tolist())
+                plant_string = vec2string([plant_vec])
+            except Exception as e:
+                # Error in converting plant_vec to plant_string
+                # print("Error in converting plant_vec to plant_string. Force return 1.0")
+                return torch.tensor(1.0)
+            
+            # Create output folder
+            output_path = os.path.abspath(f"temp/batch_{i}")
+            os.makedirs(output_path, exist_ok=True)
+            plant_string_path = os.path.join(output_path, "plant_string.txt")
+            with open(plant_string_path, "w") as f:
+                f.write(plant_string)
+            self.helios.run(in_plantstring_path=os.path.abspath(plant_string_path),
+                            output_path=os.path.abspath(output_path))
+
+            # Load the generated plant image
+            plant_image_path = os.path.join(output_path, "plant_string_top.jpeg")
+            img = cv2.imread(plant_image_path)
+            leaf_area, plant_width, plant_height, leaf_img, _ = process_leaf_image(img, sqaure_crop=True, thr=0.2)
+            leaf_img = cv2.resize(leaf_img, (self.image_size, self.image_size))
+            # Transform to tensor
+            leaf_img = self.transform_rgb(leaf_img).to(image.device)
+
+            # Calculate RGB Loss
+            return F.mse_loss(image[i][:3, :, :], leaf_img)
+
+        with ThreadPoolExecutor() as executor:
+            losses = list(executor.map(process_single_image, range(image.size(0))))
+
+        image_loss = sum(losses) / image.size(0)
+        return image_loss
     
     def compute_loss(self, batch, mode):
         image, y, lengths = batch
@@ -475,7 +535,7 @@ class SimpleRegressionTest(MainModule):
         values = y_expected[:, :, 1:].permute(0, 2, 1)
 
         # Calculate Loss using only for the first element
-        loss = F.mse_loss(pred.squeeze(), values[:,:6,0])
+        loss = F.mse_loss(pred.squeeze().squeeze(), values[:,:6,0])
 
         self.log(f'{mode}/loss', loss, batch_size=image.size(0), sync_dist=True)
         return loss
