@@ -14,19 +14,23 @@ import cv2
 from concurrent.futures import ThreadPoolExecutor
 
 # 경로 설정
-script_file_path = os.path.abspath(__file__)
-sys.path.append(os.path.dirname(os.path.dirname(script_file_path)))
+script_file_path = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(os.path.dirname(script_file_path))
 
 # 모듈 임포트
 from models.model import TransformerDecoderModel, get_tgt_mask, create_pad_mask, RegressionModel, ViT_FeatureExtractor, CNN_FeatureExtractor
 from models.model import RegressionModel_Transformer
 from src.plant_tokenizer import SOS_token, EOS_token, PAD_token, params_EOS_token_padded, params_SOS_token_padded
+from src.plant_tokenizer import randomize_plant_vec_params
 from src.plant_dataset import PlantDataset
 from src.plantstring2model import plantstring2model
 from src.plant_tokenizer import token2vec_new as token2vec
 from src.string_to_xml_to_vec import vec2string
 from src.image_process import process_leaf_image
+from src.utils import coordinates_to_angle
 import pickle
+import copy
+
 
 class FineTuneBatchSizeFinder(BatchSizeFinder):
     def __init__(self, milestones, *args, **kwargs):
@@ -388,10 +392,11 @@ class MainDataModule(pl.LightningDataModule):
     def collate_fn(self, batch):
         images, vectors, lengths = zip(*batch)
         max_length = max(lengths)
+        param_dim = vectors[0].shape[-1]
         if len(vectors[0].shape) == 1:
             vectors_padded = np.ones((len(vectors), max_length), dtype=int) * PAD_token
         else:
-            vectors_padded = np.ones((len(vectors), max_length, 1 + self.param_dim)) * PAD_token
+            vectors_padded = np.ones((len(vectors), max_length, param_dim)) * PAD_token
             if 0:
                 vectors_padded[:, :, 1:] = 0
 
@@ -450,81 +455,105 @@ class SimpleRegressionTest(MainModule):
 
         self.predicted_depth = None
 
+        # self.seq_embedding_layer = nn.Linear(6, 64)
+        self.seq_embedding_layer = nn.Sequential(
+                                    nn.Linear(6,64),
+                                    nn.ReLU(),
+                                    nn.Linear(64,128),
+                                    nn.ReLU(),
+                                    nn.Linear(128,64),
+                                    )
+ 
+        self.transform_rgb = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+        ])
 
+        self.loss_triplet = nn.TripletMarginLoss(margin=1.0, p=2)
+
+        src_path = os.path.join(script_file_path,"../src") # script_file_path is models/
+        self.image_generator = plantstring2model(program_path=os.path.join(src_path, "PlantString2Model/build"),
+                                                 program_name="PlantString2Model",
+                                                 display=":11.0", height=1.0, 
+                                                 background_path=os.path.join(src_path, "assets/black.png"))
+        
+        # self.current_epoch = 0  # Initialize the epoch counter
+        self.triplet_loss_start_epoch = 20  # Set the epoch to start triplet loss calculation
+
+
+    def generate_image(self, plant_vec, idx, suffix="", image_size=224):
+
+        def save_plant_string(plant_vec, idx, suffix=""):
+            plant_string = vec2string([plant_vec])
+            plant_string_file_name = f"temp/output_{suffix}_{idx}/plant_string_{suffix}_{idx}.txt"
+            # Create output folder
+            os.makedirs(os.path.dirname(plant_string_file_name), exist_ok=True)
+            with open(plant_string_file_name, "w") as f:
+                f.write(plant_string)
+            return plant_string_file_name
+        plant_string_file_name = save_plant_string(plant_vec, idx, suffix)
+
+        self.image_generator.run(in_plantstring_path=os.path.abspath(plant_string_file_name), 
+                                 output_path=os.path.abspath(f"temp/output_{suffix}_{idx}"))
+        
+        generated_image_path = f"temp/output_{suffix}_{idx}/plant_string_{suffix}_{idx}_top.jpeg"
+        img = cv2.imread(generated_image_path)
+        leaf_area, plant_width, plant_height, leaf_img, _ = process_leaf_image(img, sqaure_crop=True, thr=0.2)
+        img = cv2.normalize(leaf_img, None, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+        img = cv2.resize(leaf_img, (image_size, image_size))
+
+        return img
+    
+    def get_image_embedding(self, image):
+        with torch.no_grad():
+            if self.use_depth:
+                image = self.add_depth_to_image(image)
+            x = self.feature_extractor(image)
+            # Max pooling across the ViT Patches
+            x = x.max(dim=1).values
+        return x
+            
+    def get_seq_embedding(self, seq):
+        # This is a simple embedding layer
+        # It will be replaced by a transformer model in the future
+        # seq: (batch_size, seq_len)
+
+        return self.seq_embedding_layer(seq)
+    
+    def add_depth_to_image(self, image):
+        # prepare image for the model
+        inputs = self.depth_est_img_proc(images=image, return_tensors="pt").to(image.device)
+        with torch.no_grad():
+            outputs = self.depth_est_model(**inputs)
+            predicted_depth = outputs.predicted_depth
+
+        # interpolate to original size
+        depth = torch.nn.functional.interpolate(
+            predicted_depth.unsqueeze(1),
+            size=image.shape[-2:],
+            mode="bicubic",
+            align_corners=False,
+        )
+        self.predicted_depth = depth
+        # cat depth to image
+        image = torch.cat((image, depth), dim=1)
+        # Convert 4 channel to 3 channel
+        image = self.ch4_to_ch3_conv(image)
+        if 0:
+            # Normalize to 0-1
+            image = (image - image.min()) / (image.max() - image.min())
+
+        return image
 
     def forward(self, image):
         if self.use_depth:
-            # prepare image for the model
-            inputs = self.depth_est_img_proc(images=image, return_tensors="pt").to(image.device)
-            with torch.no_grad():
-                outputs = self.depth_est_model(**inputs)
-                predicted_depth = outputs.predicted_depth
+            image = self.add_depth_to_image(image)
 
-            # interpolate to original size
-            depth = torch.nn.functional.interpolate(
-                predicted_depth.unsqueeze(1),
-                size=image.shape[-2:],
-                mode="bicubic",
-                align_corners=False,
-            )
-            self.predicted_depth = depth
-            # cat depth to image
-            image = torch.cat((image, depth), dim=1)
-            # Convert 4 channel to 3 channel
-            image = self.ch4_to_ch3_conv(image)
-            if 0:
-                # Normalize to 0-1
-                image = (image - image.min()) / (image.max() - image.min())
-            
         x = self.feature_extractor(image)
         x = self.regression_model(x)
         return x
     
-    def image_gen_loss_simple_regression(self, pred, image):
-        # Generate using Helios
-        label_p = pred[:, :self.seq_dim, :].permute(0, 2, 1)
-        label_est = label_p.topk(1)[1]  # num with highest probability
-        params_est = pred[:, self.seq_dim:].permute(0, 2, 1)
-        # Cat label and params
-        tokens_est = torch.cat((label_est, params_est), dim=-1)
-        os.makedirs("temp", exist_ok=True)
-        image_loss = 0
-
-        def process_single_image(i):
-            try:
-                plant_vec = token2vec(tokens_est[i].tolist())
-                plant_string = vec2string([plant_vec])
-            except Exception as e:
-                # Error in converting plant_vec to plant_string
-                # print("Error in converting plant_vec to plant_string. Force return 1.0")
-                return torch.tensor(1.0)
-            
-            # Create output folder
-            output_path = os.path.abspath(f"temp/batch_{i}")
-            os.makedirs(output_path, exist_ok=True)
-            plant_string_path = os.path.join(output_path, "plant_string.txt")
-            with open(plant_string_path, "w") as f:
-                f.write(plant_string)
-            self.helios.run(in_plantstring_path=os.path.abspath(plant_string_path),
-                            output_path=os.path.abspath(output_path))
-
-            # Load the generated plant image
-            plant_image_path = os.path.join(output_path, "plant_string_top.jpeg")
-            img = cv2.imread(plant_image_path)
-            leaf_area, plant_width, plant_height, leaf_img, _ = process_leaf_image(img, sqaure_crop=True, thr=0.2)
-            leaf_img = cv2.resize(leaf_img, (self.image_size, self.image_size))
-            # Transform to tensor
-            leaf_img = self.transform_rgb(leaf_img).to(image.device)
-
-            # Calculate RGB Loss
-            return F.mse_loss(image[i][:3, :, :], leaf_img)
-
-        with ThreadPoolExecutor() as executor:
-            losses = list(executor.map(process_single_image, range(image.size(0))))
-
-        image_loss = sum(losses) / image.size(0)
-        return image_loss
-    
+        
     def compute_loss(self, batch, mode):
         image, y, lengths = batch
         y_input = y[:, :-1]
@@ -535,10 +564,67 @@ class SimpleRegressionTest(MainModule):
         values = y_expected[:, :, 1:].permute(0, 2, 1)
 
         # Calculate Loss using only for the first element
-        loss = F.mse_loss(pred.squeeze().squeeze(), values[:,:6,0])
+        mse_loss = F.mse_loss(pred.squeeze().squeeze(), values[:, :6, 0])
 
+        # Triplet Loss Calculation Part
+        if self.current_epoch >= self.triplet_loss_start_epoch:
+            P_generated_image = torch.zeros_like(image)
+            N_generated_image = torch.zeros_like(image)
+
+            def generate_image_tensor(batch_idx, y_expected, pred, image, suffix, randomize=False):
+                ground_truth = y_expected[batch_idx].squeeze().squeeze().tolist()
+                plant_vec = token2vec(ground_truth)
+
+                # Calculate Loss using only for the first element
+                plant_vec_predicted = copy.deepcopy(plant_vec)
+                result = pred[batch_idx].squeeze().squeeze().tolist()
+                plant_vec_predicted[0][2] = coordinates_to_angle(result[0], result[1], angle_max=180)
+                plant_vec_predicted[0][3] = coordinates_to_angle(result[2], result[3])
+                plant_vec_predicted[0][4] = coordinates_to_angle(result[4], result[5])
+
+                if randomize:
+                    plant_vec_predicted = randomize_plant_vec_params(plant_vec_predicted)
+
+                # Generate image
+                img = self.generate_image(plant_vec_predicted, idx=batch_idx, suffix=suffix, image_size=self.image_size)
+                img_tensor = torch.tensor(img).to(image.device).permute(2, 0, 1)  # (C, H, W)
+                return batch_idx, img_tensor
+
+            # Generate positive and negative images
+            with ThreadPoolExecutor() as executor:
+                pos_results = list(executor.map(lambda idx: generate_image_tensor(idx, y_expected, pred, image, "P"), range(y_expected.size(0))))
+                neg_results = list(executor.map(lambda idx: generate_image_tensor(idx, y_expected, pred, image, "N", randomize=True), range(y_expected.size(0))))
+
+            # Initialize tensors for generated images
+            P_generated_image = torch.zeros_like(image)
+            N_generated_image = torch.zeros_like(image)
+
+            # Assign generated images to tensors
+            for (batch_idx, pos_img_tensor), (_, neg_img_tensor) in zip(pos_results, neg_results):
+                P_generated_image[batch_idx] = pos_img_tensor
+                N_generated_image[batch_idx] = neg_img_tensor
+
+            # Get image embeddings
+            P_image_embedding = self.get_image_embedding(P_generated_image)
+            N_image_embedding = self.get_image_embedding(N_generated_image)
+        else:
+            # If the epoch is not reached, train the A_seq_embedding to be close to the ground truth
+            P_image_embedding = self.get_image_embedding(image)
+            # Empty tensor for negative image
+            N_image_embedding = torch.zeros_like(P_image_embedding)
+            # Get Seq Embeddings
+            A_seq_embedding = self.get_seq_embedding(pred)
+            
+        # Calculate Triplet Loss
+        triplet_loss = self.loss_triplet(A_seq_embedding, P_image_embedding, N_image_embedding)
+
+    
+        loss = mse_loss + triplet_loss
+
+        self.log(f'{mode}/mse_loss', mse_loss, batch_size=image.size(0), sync_dist=True)
+        self.log(f'{mode}/triplet_loss', triplet_loss, batch_size=image.size(0), sync_dist=True)
         self.log(f'{mode}/loss', loss, batch_size=image.size(0), sync_dist=True)
-        return loss
+        return mse_loss
 
     def training_step(self, batch, batch_idx):
         return self.compute_loss(batch, 'train')

@@ -35,9 +35,9 @@ if 0:
     params_EOS_token_padded = np.ones(15)*EOS_token
 else:
     # Zero padded params. SOS and EOS token are zero padded
-    params_SOS_token_padded = np.zeros(19)
+    params_SOS_token_padded = np.zeros(23)
     params_SOS_token_padded[0] = SOS_token
-    params_EOS_token_padded = np.zeros(19)
+    params_EOS_token_padded = np.zeros(23)
     params_EOS_token_padded[0] = EOS_token
 
 # def token2vec(tokens):
@@ -251,7 +251,11 @@ else:
 #             vec.append(np.concatenate(([i, j], params_padded),axis=0))
 #     return np.array(vec)
 
-def vec2token_new(vec, n_params=19):
+def vec2token_new(vec, n_params=23):
+    """
+    Convert vec to tokens
+    vec: converted plant vector from plant string. (depth, organ, [params])
+    """
     tokens = []
     for x in vec:
         depth_organ = x[0]*4 + x[1]
@@ -268,47 +272,28 @@ def vec2token_new(vec, n_params=19):
             # x[2]: shoot_base_pitch
             # x[3]: shoot_base_yaw
             # x[4]: shoot_base_roll
-            if 0:
-                q = euler_to_quaternion(roll=x[4], pitch=x[2], yaw=x[3], degrees=True)
-                token[1] = q[0]
-                token[2] = q[1]
-                token[3] = q[2]
-                token[4] = q[3]
-            elif 1:
-                token[1],token[2] = angle_to_coordinates(x[2])
-                token[3],token[4] = angle_to_coordinates(x[3])
-                token[5],token[6] = angle_to_coordinates(x[4])
-            else:
-                token[1] = x[2] / 180 * math.pi
-                token[2] = x[3] / 180 * math.pi
-                token[3] = x[4] / 180 * math.pi
-                token[4] = 0
-            
-            # token[5] = x[5] / 100           # shoot_gravitropic_curvature
-            # token[6] = x[6]                 # shoot_type
+            token[1],token[2] = angle_to_coordinates(x[2])
+            token[3],token[4] = angle_to_coordinates(x[3])
+            token[5],token[6] = angle_to_coordinates(x[4])
+            token[7] = x[5] / 100           # shoot_gravitropic_curvature
+            token[8] = x[6]                 # shoot_type
         elif x[1] == 1:
             # Internode params
-            token[7] = x[2] * 100 # internode_length
-            token[8] = x[3] * 100 # internode_radius
-            token[9] = x[4] / 180 * math.pi # internode_pitch
-            token[10] = x[5] / 180 * math.pi # phyllotactic angle
+            token[9] = x[2] * 100 # internode_length
+            token[10] = x[3] * 100 # internode_radius
+            token[11] = x[4] / 180 * math.pi # internode_pitch
+            token[12] = x[5] / 180 * math.pi # phyllotactic angle
         elif x[1] == 2:
             # Petiole params
-            token[11] = x[2] * 100 # petiole_length
-            token[12] = x[3] * 100 # petiole_radius
-            token[13] = x[4] / 180 * math.pi # petiole_pitch
+            token[13] = x[2] * 100 # petiole_length
+            token[14] = x[3] * 100 # petiole_radius
+            token[15] = x[4] / 180 * math.pi # petiole_pitch
         elif x[1] == 3:
             # Leaf params
-            token[14] = x[2] * 100 # leaf_scale
-
-            q = euler_to_quaternion(roll=x[5], pitch=x[3], yaw=x[4],degrees=True)
-            # x[3]: leaf_pitch
-            # x[4]: leaf_yaw
-            # x[5]: leaf_roll
-            token[15] = q[0]
-            token[16] = q[1]
-            token[17] = q[2]
-            token[18] = q[3]
+            token[16] = x[2] * 100 # leaf_scale
+            token[17],token[18] = angle_to_coordinates(x[3]) # leaf pitch
+            token[19],token[20] = angle_to_coordinates(x[4]) # leaf yaw
+            token[21],token[22] = angle_to_coordinates(x[5]) # leaf roll
         else:
             raise ValueError(f"Invalid organ type {x[1]}")
         
@@ -336,48 +321,79 @@ def token2vec_new(tokens):
    
             if j == 0:
                 # Shoot
-                if 0:
-                    q = np.array([token[1], token[2], token[3], token[4]])
-                    roll, pitch, yaw = quaternion_to_euler(q,degrees=True)
-                    params_padded[0] = pitch
-                    params_padded[1] = yaw
-                    params_padded[2] = roll
-                elif 1:
-                    params_padded[0] = coordinates_to_angle(token[1], token[2])
-                    params_padded[1] = coordinates_to_angle(token[3], token[4])
-                    params_padded[2] = coordinates_to_angle(token[5], token[6])
-                else:
-                    params_padded[0] = token[1] * 180 / math.pi
-                    params_padded[1] = token[2] * 180 / math.pi
-                    params_padded[2] = token[3] * 180 / math.pi
-
-                params_padded[3] = token[5] * 100 # shoot_gravitropic_curvature
-                params_padded[4] = token[6] # shoot_type
+                params_padded[0] = coordinates_to_angle(token[1], token[2])
+                params_padded[1] = coordinates_to_angle(token[3], token[4])
+                params_padded[2] = coordinates_to_angle(token[5], token[6])
+                params_padded[3] = token[7] * 100 # shoot_gravitropic_curvature
+                params_padded[4] = token[8] # shoot_type
             elif j == 1:
                 # Internode
-                params_padded[0] = token[7] / 100 # internode_length
-                params_padded[1] = token[8] / 100 # internode_radius
-                params_padded[2] = token[9] * 180 / math.pi # internode_pitch
-                params_padded[3] = token[10] * 180 / math.pi # phyllotactic angle, random.uniform(130, 145)
+                params_padded[0] = token[9] / 100 # internode_length
+                params_padded[1] = token[10] / 100 # internode_radius
+                params_padded[2] = token[11] * 180 / math.pi # internode_pitch
+                params_padded[3] = token[12] * 180 / math.pi # phyllotactic angle, random.uniform(130, 145)
             elif j == 2:
                 # Petiole
-                params_padded[0] = token[11] / 100 # petiole_length
-                params_padded[1] = token[12] / 100 # petiole radius, random.uniform(0.00075, 0.00125)
-                params_padded[2] = token[13] * 180 / math.pi # petiole_pitch
+                params_padded[0] = token[13] / 100 # petiole_length
+                params_padded[1] = token[14] / 100 # petiole radius, random.uniform(0.00075, 0.00125)
+                params_padded[2] = token[15] * 180 / math.pi # petiole_pitch
             elif j == 3:
                 # Leaf
-                params_padded[0] = token[14] / 100 # leaf_scale
-                q = np.array([token[15], token[16], token[17], token[18]])
-                roll, pitch, yaw = quaternion_to_euler(q, degrees=True)
-                params_padded[1] = pitch
-                params_padded[2] = yaw
-                params_padded[3] = roll
+                params_padded[0] = token[16] / 100 # leaf_scale
+                params_padded[1] = coordinates_to_angle(token[17], token[18])
+                params_padded[2] = coordinates_to_angle(token[19], token[20])
+                params_padded[3] = coordinates_to_angle(token[21], token[22])
             else:
                 raise ValueError(f"Invalid organ type {j}")
 
             # Make 1x6 array with i, j and params
             vec.append(np.concatenate(([i, j], params_padded),axis=0))
     return np.array(vec)
+
+def randomize_plant_vec_params(vec):
+    """
+    Randomize the plant vector by adding noise to each element
+    """
+    for x in vec:
+        organ_type = x[1]
+        if organ_type == 0:
+            # Shoot 
+            # x[2]: shoot_base_pitch
+            # x[3]: shoot_base_yaw
+            # x[4]: shoot_base_roll
+            # x[5]: shoot_gravitropic_curvature
+            # x[6]: shoot_type
+            x[2] += random.uniform(-2.5, 2.5)
+            x[3] += random.uniform(-90, 90)
+            x[4] += random.uniform(-90, 90)
+            pass
+        elif organ_type == 1:
+            # Internode params
+            # x[2]: internode_length
+            # x[3]: internode_radius
+            # x[4]: internode_pitch
+            # x[5]: phyllotactic angle
+            pass
+        elif organ_type == 2:
+            # Petiole params
+            # x[2]: petiole_length
+            # x[3]: petiole_radius
+            # x[4]: petiole_pitch
+            pass
+        elif organ_type == 3:
+            # Leaf params
+            # x[2]: leaf_scale
+            # x[3]: leaf pitch
+            # x[4]: leaf yaw
+            # x[5]: leaf roll
+            x[3] += random.uniform(-10, 10)
+            x[4] += random.uniform(-10, 10)
+            x[5] += random.uniform(-10, 10)
+            pass
+        else:
+            raise ValueError(f"Unknown organ type: {organ_type}")
+        
+    return vec
 
 if __name__ == "__main__":
 

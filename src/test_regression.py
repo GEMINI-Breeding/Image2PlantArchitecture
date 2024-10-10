@@ -39,7 +39,7 @@ if __name__ == "__main__":
     # Generate today's date string in YYYYMMDD format
     today_date_str = datetime.now().strftime('%Y%m%d')
     tb_logger = TensorBoardLogger(
-        name=f'{today_date_str}_RGBD_Transformer_MaxPool',
+        name=f'{today_date_str}_TripletLoss',
         save_dir='./log'
     )
 

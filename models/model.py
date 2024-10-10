@@ -362,52 +362,32 @@ class RegressionModel_Transformer(nn.Module):
 
         return x
     
-class RegressionModel_CNN_Transformer(nn.Module):
-    def __init__(self, dim_model=768, image_size=448, dropout=0.1):
-        super(RegressionModel_CNN_Transformer,self).__init__()
+class TripletLoss(nn.Module):
+    def __init__(self, d_model, image_size=224, dropout=0.1):
+        super(TripletLoss,self).__init__()
         
         self.activation = nn.ReLU()
-
-        self.linear = nn.Linear(197*dim_model, 4)
-        self.transformer = nn.Transformer(d_model=dim_model, nhead=8, num_encoder_layers=6, num_decoder_layers=6, dropout=dropout)
-
-
-    def forward(self, x):
-        x = x.permute(1,0,2)
-        x = self.transformer(x, x)
-        x = x.permute(1,0,2)
-
-        x = x.reshape(x.size(0), -1)
-
-        x = self.activation(x)
-
-        x = self.linear(x)
-
-        return x
-    
-
-
-
-class Discriminator(nn.Module):
-    def __init__(self, dim_model=768, image_size=448, dropout=0.1):
-        super(Discriminator,self).__init__()
+        self.d_model = d_model
         
+        self.text_embedding_layer = nn.Embedding(6, self.d_model)
+        self.text_transformer = nn.Transformer(d_model=d_model, nhead=4, num_encoder_layers=2, num_decoder_layers=2, dropout=dropout)
+
+        self.image_embedding_layer = nn.Linear(768, self.d_model)
+
         self.activation = nn.ReLU()
 
-        self.model = nn.Sequential(
-            nn.Linear(dim_model, 512),
-            nn.ReLU(),
-            nn.Linear(512, 256),
-            nn.ReLU(),
-            nn.Linear(256, 1),
-            nn.Sigmoid()
-        )
+        self.loss_fn = nn.TripletMarginLoss(margin=1.0, p=2)
 
     def forward(self, image_feature, seq_feature):
-        x = x.reshape(x.size(0), -1)
+        # Image Feature is from Vit
+        # Max pooling the image feature
+        image_feature = image_feature.max(dim=1).values
+        image_embedding = self.image_embedding_layer(image_feature)
 
-        x = self.activation(x)
-
-        x = self.linear(x)
+        # Text Feature is should be re-analyzed using text_transformer
+        # But for now only use the text_embedding_layer
+        seq_feature = self.text_embedding_layer(seq_feature)
         
-        return x
+
+        
+        return image_embedding
