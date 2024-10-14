@@ -19,9 +19,9 @@ sys.path.append(os.path.dirname(script_file_path))
 
 # 모듈 임포트
 from models.model import TransformerDecoderModel, get_tgt_mask, create_pad_mask, RegressionModel, ViT_FeatureExtractor, CNN_FeatureExtractor
-from models.model import RegressionModel_Transformer
+from models.model import RegressionModel_Transformer, PositionalEncoding
 from src.plant_tokenizer import SOS_token, EOS_token, PAD_token, params_EOS_token_padded, params_SOS_token_padded
-from src.plant_tokenizer import randomize_plant_vec_params
+from src.plant_tokenizer import add_noise_plant_tokens, generate_noise_plant_tokens
 from src.plant_dataset import PlantDataset
 from src.plantstring2model import plantstring2model
 from src.plant_tokenizer import token2vec_new as token2vec
@@ -320,7 +320,6 @@ class MainModule(pl.LightningModule):
 class MainDataModule(pl.LightningDataModule):
     def __init__(self, dataset_dir, train_batch_size=16, val_batch_size=None,
                         num_workers=4, image_size=448, 
-                        param_dim=5 + 4 + 3 + 4,
                         load_depth=True,
                         process_leaf=False,
                         preload=False):
@@ -331,7 +330,6 @@ class MainDataModule(pl.LightningDataModule):
         self.num_workers = num_workers
         self.image_size = image_size
         self.preload = preload
-        self.param_dim = param_dim
         self.process_leaf = process_leaf
         self.load_depth = load_depth
 
@@ -428,7 +426,7 @@ class MainDataModule(pl.LightningDataModule):
     
 class SimpleRegressionTest(MainModule):
 
-    def __init__(self, image_size, lr, dropout, use_depth, vit_finetune, dim_model=768):
+    def __init__(self, image_size, lr, dropout, use_depth, vit_finetune, d_model=768):
         super(MainModule, self).__init__()
         self.save_hyperparameters()  # 전달된 모든 인수를 저장
 
@@ -437,39 +435,46 @@ class SimpleRegressionTest(MainModule):
         if self.use_depth:
             self.depth_est_img_proc = AutoImageProcessor.from_pretrained("depth-anything/Depth-Anything-V2-Small-hf")
             self.depth_est_model = AutoModelForDepthEstimation.from_pretrained("depth-anything/Depth-Anything-V2-Small-hf")
+            # Define a 4 ch to 3 ch conversion layer
+            self.ch4_to_ch3_conv = nn.Conv2d(4, 3, kernel_size=3, stride=1, padding=1) 
 
+        self.feature_extractor = ViT_FeatureExtractor(output_size=d_model, image_size=image_size)
+        #self.feature_extractor = CNN_FeatureExtractor(output_size=dim_model, use_depth=True)
         
-        # Define a 4 ch to 3 ch conversion layer
-        self.ch4_to_ch3_conv = nn.Conv2d(4, 3, kernel_size=3, stride=1, padding=1) 
-
-        self.feature_extractor = ViT_FeatureExtractor(output_size=dim_model, image_size=image_size)
         # Froze self.feature_extractor
         if vit_finetune == False:
             self.feature_extractor.eval()
 
-        #self.feature_extractor = CNN_FeatureExtractor(output_size=dim_model, use_depth=True)
-        self.regression_model = RegressionModel_Transformer(dim_model=dim_model, image_size=image_size, dropout=dropout)
-        #self.regression_model = RegressionModel(dim_model=dim_model, image_size=image_size, dropout=dropout)
+        #self.regression_model = RegressionModel_Transformer(dim_model=dim_model, image_size=image_size, dropout=dropout)
+        self.regression_model = RegressionModel(dim_model=d_model, image_size=image_size, dropout=dropout)
 
         self.lr = lr
 
         self.predicted_depth = None
+        self.activation = nn.ReLU() # Activation function
+        if 0:
+            self.seq_embedding_layer = nn.Linear(6, 64)
+        else:
+            self.seq_embedding_layer = nn.Linear(23, d_model)
+            #self.seq_embedding_transformer = nn.Transformer(d_model=d_model)
+            # self.seq_embedding_layer = nn.Sequential(
+            #                         nn.Linear(6,64),
+            #                         nn.ReLU(),
+            #                         nn.Linear(64,128),
+            #                         nn.ReLU(),
+            #                         nn.Linear(128,dim_model),
+            #                         )
 
-        # self.seq_embedding_layer = nn.Linear(6, 64)
-        self.seq_embedding_layer = nn.Sequential(
-                                    nn.Linear(6,64),
-                                    nn.ReLU(),
-                                    nn.Linear(64,128),
-                                    nn.ReLU(),
-                                    nn.Linear(128,64),
-                                    )
+            # Try smaller model
+            self.seq_embedding_transformer = nn.Transformer(d_model=d_model, nhead=8, num_encoder_layers=3, num_decoder_layers=3, dim_feedforward=512, dropout=0.1)
+            
+        self.image_embedding_layer = nn.Linear(257*d_model, d_model)
  
         self.transform_rgb = transforms.Compose([
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
         ])
 
-        self.loss_triplet = nn.TripletMarginLoss(margin=1.0, p=2)
 
         src_path = os.path.join(script_file_path,"../src") # script_file_path is models/
         self.image_generator = plantstring2model(program_path=os.path.join(src_path, "PlantString2Model/build"),
@@ -478,7 +483,17 @@ class SimpleRegressionTest(MainModule):
                                                  background_path=os.path.join(src_path, "assets/black.png"))
         
         # self.current_epoch = 0  # Initialize the epoch counter
-        self.triplet_loss_start_epoch = 20  # Set the epoch to start triplet loss calculation
+        self.triplet_loss_start_epoch = 50  # Set the epoch to start triplet loss calculation
+
+        # Loss functions
+        #self.triplet_loss_function = nn.TripletMarginLoss(margin=1.0, p=2)
+        self.triplet_loss_function = nn.TripletMarginWithDistanceLoss(distance_function=lambda x, y: 1.0 - F.cosine_similarity(x, y))
+        self.cosine_embedding_loss_function = nn.CosineEmbeddingLoss(margin=0.0, reduction='mean')
+
+        self.prev_epoch = -1
+
+        self.positional_encoding = PositionalEncoding(dim_model=d_model, max_len=2048, dropout_p=0.1)
+        self.positional_encoding.eval()
 
 
     def generate_image(self, plant_vec, idx, suffix="", image_size=224):
@@ -505,20 +520,40 @@ class SimpleRegressionTest(MainModule):
         return img
     
     def get_image_embedding(self, image):
-        with torch.no_grad():
-            if self.use_depth:
-                image = self.add_depth_to_image(image)
-            x = self.feature_extractor(image)
-            # Max pooling across the ViT Patches
+        #with torch.no_grad():
+        if self.use_depth:
+            image = self.add_depth_to_image(image)
+        x = self.feature_extractor(image)
+        
+        if 1:
+            x = x.reshape(x.size(0), -1)
+            x = self.activation(x)
+            x = self.image_embedding_layer(x)
+        elif 0:
+            # Get image embedding from ViT
+            x = torch.mean(x, dim=1) # avg_patch_embedding
+        else:
+            # Get the CLS token
+            # x = x[:, 0, :]
             x = x.max(dim=1).values
         return x
             
-    def get_seq_embedding(self, seq):
+    def get_seq_embedding(self, x):
         # This is a simple embedding layer
         # It will be replaced by a transformer model in the future
         # seq: (batch_size, seq_len)
-
-        return self.seq_embedding_layer(seq)
+    
+        # Make sequence first
+        x = self.seq_embedding_layer(x)
+        x = self.activation(x)
+        x = x.permute(1, 0, 2)
+        x = self.positional_encoding(x)
+        x = self.seq_embedding_transformer(x,x)
+        
+        # get the last token
+        x = x[-1]
+    
+        return x
     
     def add_depth_to_image(self, image):
         # prepare image for the model
@@ -560,77 +595,126 @@ class SimpleRegressionTest(MainModule):
         pred = self(image)
 
         y_expected = y[:, 1:]
-        label = y_expected[:, :, 0].long()
+        ones = y_expected[:, :, 0].long()
         values = y_expected[:, :, 1:].permute(0, 2, 1)
 
         # Calculate Loss using only for the first element
         mse_loss = F.mse_loss(pred.squeeze().squeeze(), values[:, :6, 0])
 
+
+        def generate_image_tensor(batch_idx, tokens, image, suffix):
+            plant_vec = token2vec(tokens[batch_idx].squeeze().squeeze().tolist())
+            
+            # Calculate Loss using only for the first element
+            plant_vec_predicted = copy.deepcopy(plant_vec)
+            result = pred[batch_idx].squeeze().squeeze().tolist()
+            plant_vec_predicted[0][2] = coordinates_to_angle(result[0], result[1], angle_max=180)
+            plant_vec_predicted[0][3] = coordinates_to_angle(result[2], result[3])
+            plant_vec_predicted[0][4] = coordinates_to_angle(result[4], result[5])
+
+            # Generate image
+            img = self.generate_image(plant_vec_predicted, idx=batch_idx, suffix=suffix, image_size=self.image_size)
+            img_tensor = torch.tensor(img).to(image.device).permute(2, 0, 1)  # (C, H, W)
+            return batch_idx, img_tensor
+        
+        embedding_loss =  0
+
+        # Make the A_seq_embedding to be close to the ground truth
+        gt_image_embedding = self.get_image_embedding(image)
+        gt_seq_embedding = self.get_seq_embedding(y)
+        if 0:
+            ones = torch.ones(gt_seq_embedding.size(0), device=gt_seq_embedding.device)
+            zeros = torch.zeros(gt_seq_embedding.size(0), device=gt_seq_embedding.device)
+            embedding_loss += self.cosine_embedding_loss_function(gt_seq_embedding, gt_image_embedding, ones)
+        else:
+            noise_token = generate_noise_plant_tokens(y, noise_level=0.2)
+            y_noise_added = y + noise_token
+            gt_noise_added_seq_embedding = self.get_seq_embedding(y_noise_added)
+            # Calculate triplet loss
+            embedding_loss += self.triplet_loss_function(gt_image_embedding, gt_seq_embedding, gt_noise_added_seq_embedding)
+
+        if 0:
+            # Get Seq Embeddings
+            # Replace the first element of the sequence with the predicted value by conserving grad flow
+            predicted_tokens = y.clone()
+            predicted_tokens[:, 1, 1:7] = pred
+            est_seq_embedding = self.get_seq_embedding(predicted_tokens)
+            # Most important loss ?? est seq embedding should be close to gt image embedding..?
+            embedding_loss += self.cosine_embedding_loss_function(est_seq_embedding, gt_image_embedding, ones)
+
         # Triplet Loss Calculation Part
-        if self.current_epoch >= self.triplet_loss_start_epoch:
-            P_generated_image = torch.zeros_like(image)
-            N_generated_image = torch.zeros_like(image)
+        if self.current_epoch >= self.triplet_loss_start_epoch and False: 
+            est_image = torch.zeros_like(image)
+            est_noise_added_image = torch.zeros_like(image)
 
-            def generate_image_tensor(batch_idx, y_expected, pred, image, suffix, randomize=False):
-                ground_truth = y_expected[batch_idx].squeeze().squeeze().tolist()
-                plant_vec = token2vec(ground_truth)
-
-                # Calculate Loss using only for the first element
-                plant_vec_predicted = copy.deepcopy(plant_vec)
-                result = pred[batch_idx].squeeze().squeeze().tolist()
-                plant_vec_predicted[0][2] = coordinates_to_angle(result[0], result[1], angle_max=180)
-                plant_vec_predicted[0][3] = coordinates_to_angle(result[2], result[3])
-                plant_vec_predicted[0][4] = coordinates_to_angle(result[4], result[5])
-
-                if randomize:
-                    plant_vec_predicted = randomize_plant_vec_params(plant_vec_predicted)
-
-                # Generate image
-                img = self.generate_image(plant_vec_predicted, idx=batch_idx, suffix=suffix, image_size=self.image_size)
-                img_tensor = torch.tensor(img).to(image.device).permute(2, 0, 1)  # (C, H, W)
-                return batch_idx, img_tensor
+            # Add noise to the plant tokens
+            if 0:
+                y_noise_added = add_noise_plant_tokens(predicted_tokens, noise_level=0.1)
+            else:
+                noise_token = generate_noise_plant_tokens(predicted_tokens, noise_level=0.1)
+                y_noise_added = predicted_tokens + noise_token
+            est_noise_seq_embedding = self.get_seq_embedding(y_noise_added)
 
             # Generate positive and negative images
             with ThreadPoolExecutor() as executor:
-                pos_results = list(executor.map(lambda idx: generate_image_tensor(idx, y_expected, pred, image, "P"), range(y_expected.size(0))))
-                neg_results = list(executor.map(lambda idx: generate_image_tensor(idx, y_expected, pred, image, "N", randomize=True), range(y_expected.size(0))))
-
-            # Initialize tensors for generated images
-            P_generated_image = torch.zeros_like(image)
-            N_generated_image = torch.zeros_like(image)
+                pos_results = list(executor.map(lambda idx: generate_image_tensor(idx, y_expected, image, "P"), range(y_expected.size(0))))
+                neg_results = list(executor.map(lambda idx: generate_image_tensor(idx, y_noise_added, image, "N"), range(y_expected.size(0))))
 
             # Assign generated images to tensors
             for (batch_idx, pos_img_tensor), (_, neg_img_tensor) in zip(pos_results, neg_results):
-                P_generated_image[batch_idx] = pos_img_tensor
-                N_generated_image[batch_idx] = neg_img_tensor
+                est_image[batch_idx] = pos_img_tensor
+                est_noise_added_image[batch_idx] = neg_img_tensor
 
             # Get image embeddings
-            P_image_embedding = self.get_image_embedding(P_generated_image)
-            N_image_embedding = self.get_image_embedding(N_generated_image)
-        else:
-            # If the epoch is not reached, train the A_seq_embedding to be close to the ground truth
-            P_image_embedding = self.get_image_embedding(image)
-            # Empty tensor for negative image
-            N_image_embedding = torch.zeros_like(P_image_embedding)
-            # Get Seq Embeddings
-            A_seq_embedding = self.get_seq_embedding(pred)
-            
-        # Calculate Triplet Loss
-        triplet_loss = self.loss_triplet(A_seq_embedding, P_image_embedding, N_image_embedding)
+            est_image_embedding = self.get_image_embedding(est_image)
+            est_noise_added_image_embedding = self.get_image_embedding(est_noise_added_image)
 
-    
-        loss = mse_loss + triplet_loss
+            # Add noise added seq embedding loss
+            embedding_loss += self.cosine_embedding_loss_function(est_seq_embedding, est_image_embedding, ones)
+
+            # est rand image <-> est rand seq
+            embedding_loss += self.cosine_embedding_loss_function(est_noise_seq_embedding, est_noise_added_image_embedding, ones)
+
+            # Add noise added seq embedding loss
+            embedding_loss += self.cosine_embedding_loss_function(est_seq_embedding, est_noise_added_image_embedding, zeros)
+
+            # Gt image <-> est rand seq
+            embedding_loss += self.cosine_embedding_loss_function(gt_seq_embedding, est_noise_added_image_embedding, zeros)
+
+
+        # loss = mse_loss + embedding_loss
+        loss = embedding_loss # Debug the embedding loss only to check if it is working
 
         self.log(f'{mode}/mse_loss', mse_loss, batch_size=image.size(0), sync_dist=True)
-        self.log(f'{mode}/triplet_loss', triplet_loss, batch_size=image.size(0), sync_dist=True)
+        self.log(f'{mode}/embedding_loss', embedding_loss, batch_size=image.size(0), sync_dist=True)
         self.log(f'{mode}/loss', loss, batch_size=image.size(0), sync_dist=True)
-        return mse_loss
+        return loss
+
+    def on_train_start(self):
+        tensorboard_logger = self.logger.experiment
+        prototype_array = torch.zeros(1,3, self.image_size, self.image_size).to(self.device)
+        tensorboard_logger.add_graph(self, prototype_array)
 
     def training_step(self, batch, batch_idx):
         return self.compute_loss(batch, 'train')
 
     def validation_step(self, batch, batch_idx):
         return self.compute_loss(batch, 'val')
+
+    def log_grads(self):
+         for name, param in self.named_parameters():
+            # if "seq_embedding_layer" in name:
+            #     print(f"Gradient of {name} is {param.grad}")
+            #     print(f"{name} requires_grad: {param.requires_grad}")
+            if param.grad is not None:
+                self.logger.experiment.add_histogram(f"{name}_grad", param.grad, self.current_epoch) # or global_step
+                self.logger.experiment.add_histogram(f"{name}", param, self.current_epoch) # or global_step
+
+    def on_after_backward(self):
+        if self.prev_epoch != self.current_epoch:
+            self.prev_epoch = self.current_epoch
+            self.log_grads()
+       
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.regression_model.parameters(), lr=self.lr)

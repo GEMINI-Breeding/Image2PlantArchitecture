@@ -7,6 +7,11 @@ import numpy as np
 from PIL import Image, ImageFile
 from tqdm import tqdm
 
+# Add . as a directory to import from
+import sys
+# Get the parent directory of the current file
+script_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(script_dir)
 from image_process import process_leaf_image
 from plant_tokenizer import SOS_token, EOS_token, PAD_token, params_EOS_token_padded, params_SOS_token_padded
 from string_to_xml_to_vec import string2vec, vec2string, vec2xml, pretty_print_xml

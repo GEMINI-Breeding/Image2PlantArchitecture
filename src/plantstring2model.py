@@ -34,13 +34,7 @@ class plantstring2model:
         command += f"cd {self.program_path} && ./{self.program_name} "
         # If self.background_path exists
         if self.background_path:
-            if self.background_path == "none":
-                # Do not copy 
-                pass
-            else:
-                shutil.copy(self.background_path, self.program_path)
-
-            file_name = os.path.basename(self.background_path)
+            file_name = os.path.abspath(self.background_path)
             # Copy the background tile to build
             command += f"-tile {file_name} "
             

@@ -150,15 +150,19 @@ class ViT_FeatureExtractor(nn.Module):
 
         #print("After")
         #print(self.model)
-        self.fc = nn.Linear(768, output_size)  # Reduce feature dimension
+        self.output_size = output_size
+        if self.output_size != 768:
+            self.fc = nn.Linear(768, output_size)  # Reduce feature dimension
+
 
     def forward(self, x):
         # x = self.img_proc(images=x, return_tensors="pt").to(x.device)
         # x = self.model(**x).last_hidden_state
         x = self.normalize(x)
         x = self.model(x).last_hidden_state
-        x = self.fc(x)
-        x = nn.ReLU()(x)
+        if self.output_size != 768:
+            x = self.fc(x)
+            x = nn.ReLU()(x)
         return x
     
     def get_last_selfattention(self, x):
@@ -323,12 +327,17 @@ class RegressionModel(nn.Module):
 
         #self.linear = nn.Linear(197*dim_model, 4)
         self.linear = nn.Linear(257*dim_model, 6)
+        #self.linear = nn.Linear(dim_model, 6)
+        self.positional_encoding = PositionalEncoding(dim_model=dim_model, max_len=2048, dropout_p=dropout)
 
     def forward(self, x):
-        x = x.reshape(x.size(0), -1)
-
-        x = self.activation(x)
-
+        if 1:
+            # Use all the decoded output
+            x = x.reshape(x.size(0), -1)
+        else:
+            # Get CLS Token
+            x = x[:, 0, :]
+        x = self.activation(x) # No activation function because the output is already nonlinearity
         x = self.linear(x)
         
         return x
@@ -352,42 +361,15 @@ class RegressionModel_Transformer(nn.Module):
         #x = x.reshape(x.size(0), -1)
         if 0:
             x = x.mean(dim=1)  # Pool along the sequence length dimension (aggregate features)
-        else:
+        elif 0:
             # Max pooling
             x = x.max(dim=1).values
+        else:
+            # Get the last token
+            x = x[:, -1, :]
 
         x = self.activation(x)
 
         x = self.linear(x)
 
         return x
-    
-class TripletLoss(nn.Module):
-    def __init__(self, d_model, image_size=224, dropout=0.1):
-        super(TripletLoss,self).__init__()
-        
-        self.activation = nn.ReLU()
-        self.d_model = d_model
-        
-        self.text_embedding_layer = nn.Embedding(6, self.d_model)
-        self.text_transformer = nn.Transformer(d_model=d_model, nhead=4, num_encoder_layers=2, num_decoder_layers=2, dropout=dropout)
-
-        self.image_embedding_layer = nn.Linear(768, self.d_model)
-
-        self.activation = nn.ReLU()
-
-        self.loss_fn = nn.TripletMarginLoss(margin=1.0, p=2)
-
-    def forward(self, image_feature, seq_feature):
-        # Image Feature is from Vit
-        # Max pooling the image feature
-        image_feature = image_feature.max(dim=1).values
-        image_embedding = self.image_embedding_layer(image_feature)
-
-        # Text Feature is should be re-analyzed using text_transformer
-        # But for now only use the text_embedding_layer
-        seq_feature = self.text_embedding_layer(seq_feature)
-        
-
-        
-        return image_embedding
