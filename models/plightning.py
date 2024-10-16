@@ -14,12 +14,12 @@ import cv2
 from concurrent.futures import ThreadPoolExecutor
 
 # 경로 설정
-script_file_path = os.path.dirname(os.path.abspath(__file__))
-sys.path.append(os.path.dirname(script_file_path))
+script_file_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(script_file_dir)
 
 # 모듈 임포트
 from models.model import TransformerDecoderModel, get_tgt_mask, create_pad_mask, RegressionModel, ViT_FeatureExtractor, CNN_FeatureExtractor
-from models.model import RegressionModel_Transformer, PositionalEncoding
+from models.model import RegressionModel_Transformer, PositionalEncoding, VAE
 from src.plant_tokenizer import SOS_token, EOS_token, PAD_token, params_EOS_token_padded, params_SOS_token_padded
 from src.plant_tokenizer import add_noise_plant_tokens, generate_noise_plant_tokens
 from src.plant_dataset import PlantDataset
@@ -83,7 +83,7 @@ class MainModule(pl.LightningModule):
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
         ])
-        self.feature_encoder = ViT_FeatureExtractor(output_size=seq_embedding_dim+param_embedding_dim, use_depth=True, image_size=image_size)
+        self.feature_encoder = ViT_FeatureExtractor(output_size=seq_embedding_dim+param_embedding_dim, use_depth=self.use_depth, image_size=image_size)
         self.sequence_decoder = TransformerDecoderModel(
             seq_embedding_dim=self.seq_embedding_dim,
             param_embedding_dim=self.param_embedding_dim,
@@ -172,11 +172,6 @@ class MainModule(pl.LightningModule):
 
         return y_input.squeeze(0).tolist()
     
-    def load_attn_weights(self):
-        self.multihead_attn_weights = self.sequence_decoder.multihead_attn_weights
-        self.self_attn_weights = self.sequence_decoder.self_attn_weights
-
-        return self.multihead_attn_weights, self.self_attn_weights
 
     def label_loss_fn(self, pred, label, ignore_index=PAD_token):
         return F.cross_entropy(pred, label, ignore_index=ignore_index)
@@ -201,10 +196,10 @@ class MainModule(pl.LightningModule):
 
         # Define mask patterns
         mask_patterns = [
-            [np.zeros(6), np.ones(4), np.ones(3), np.ones(5)],  # shoot_mask
-            [np.ones(6), np.zeros(4), np.ones(3), np.ones(5)],  # internode_mask
-            [np.ones(6), np.ones(4), np.zeros(3), np.ones(5)],  # petiole_mask
-            [np.ones(6), np.ones(4), np.ones(3), np.zeros(5)],  # leaf_mask
+            [np.zeros(8), np.ones(4), np.ones(3), np.ones(7)],  # shoot_mask
+            [np.ones(8), np.zeros(4), np.ones(3), np.ones(7)],  # internode_mask
+            [np.ones(8), np.ones(4), np.zeros(3), np.ones(7)],  # petiole_mask
+            [np.ones(8), np.ones(4), np.ones(3), np.zeros(7)],  # leaf_mask
             [np.ones(self.param_dim)]                         # all_mask
         ]
         # Create masks
@@ -302,7 +297,8 @@ class MainModule(pl.LightningModule):
         return self.compute_loss(batch, 'val')
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.sequence_decoder.parameters(), lr=self.lr)
+        #optimizer = torch.optim.Adam(self.sequence_decoder.parameters(), lr=self.lr)
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
         if 1:
             scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=10, min_lr=1e-6)
         else:
@@ -390,11 +386,11 @@ class MainDataModule(pl.LightningDataModule):
     def collate_fn(self, batch):
         images, vectors, lengths = zip(*batch)
         max_length = max(lengths)
-        param_dim = vectors[0].shape[-1]
+        vec_dim = vectors[0].shape[-1]
         if len(vectors[0].shape) == 1:
             vectors_padded = np.ones((len(vectors), max_length), dtype=int) * PAD_token
         else:
-            vectors_padded = np.ones((len(vectors), max_length, param_dim)) * PAD_token
+            vectors_padded = np.ones((len(vectors), max_length, vec_dim)) * PAD_token
             if 0:
                 vectors_padded[:, :, 1:] = 0
 
@@ -476,7 +472,7 @@ class SimpleRegressionTest(MainModule):
         ])
 
 
-        src_path = os.path.join(script_file_path,"../src") # script_file_path is models/
+        src_path = os.path.join(script_file_dir,"../src") # script_file_path is models/
         self.image_generator = plantstring2model(program_path=os.path.join(src_path, "PlantString2Model/build"),
                                                  program_name="PlantString2Model",
                                                  display=":11.0", height=1.0, 
@@ -643,7 +639,7 @@ class SimpleRegressionTest(MainModule):
             embedding_loss += self.cosine_embedding_loss_function(est_seq_embedding, gt_image_embedding, ones)
 
         # Triplet Loss Calculation Part
-        if self.current_epoch >= self.triplet_loss_start_epoch and False: 
+        if self.current_epoch >= self.triplet_loss_start_epoch: 
             est_image = torch.zeros_like(image)
             est_noise_added_image = torch.zeros_like(image)
 
@@ -669,21 +665,24 @@ class SimpleRegressionTest(MainModule):
             est_image_embedding = self.get_image_embedding(est_image)
             est_noise_added_image_embedding = self.get_image_embedding(est_noise_added_image)
 
-            # Add noise added seq embedding loss
-            embedding_loss += self.cosine_embedding_loss_function(est_seq_embedding, est_image_embedding, ones)
+            if 0:
+                # Add noise added seq embedding loss
+                embedding_loss += self.cosine_embedding_loss_function(est_seq_embedding, est_image_embedding, ones)
 
-            # est rand image <-> est rand seq
-            embedding_loss += self.cosine_embedding_loss_function(est_noise_seq_embedding, est_noise_added_image_embedding, ones)
+                # est rand image <-> est rand seq
+                embedding_loss += self.cosine_embedding_loss_function(est_noise_seq_embedding, est_noise_added_image_embedding, ones)
 
-            # Add noise added seq embedding loss
-            embedding_loss += self.cosine_embedding_loss_function(est_seq_embedding, est_noise_added_image_embedding, zeros)
+                # Add noise added seq embedding loss
+                embedding_loss += self.cosine_embedding_loss_function(est_seq_embedding, est_noise_added_image_embedding, zeros)
 
-            # Gt image <-> est rand seq
-            embedding_loss += self.cosine_embedding_loss_function(gt_seq_embedding, est_noise_added_image_embedding, zeros)
+                # Gt image <-> est rand seq
+                embedding_loss += self.cosine_embedding_loss_function(gt_seq_embedding, est_noise_added_image_embedding, zeros)
+            else:
+                embedding_loss += self.triplet_loss_function(est_image_embedding, est_seq_embedding, est_noise_seq_embedding)
+                embedding_loss += self.triplet_loss_function(est_noise_added_image_embedding, est_noise_seq_embedding, est_seq_embedding)
 
-
-        # loss = mse_loss + embedding_loss
-        loss = embedding_loss # Debug the embedding loss only to check if it is working
+        loss = mse_loss + embedding_loss
+        # loss = embedding_loss # Debug the embedding loss only to check if it is working
 
         self.log(f'{mode}/mse_loss', mse_loss, batch_size=image.size(0), sync_dist=True)
         self.log(f'{mode}/embedding_loss', embedding_loss, batch_size=image.size(0), sync_dist=True)
@@ -717,7 +716,7 @@ class SimpleRegressionTest(MainModule):
        
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.regression_model.parameters(), lr=self.lr)
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
         if 1:
             scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=10, min_lr=1e-6)
         else:
@@ -731,3 +730,314 @@ class SimpleRegressionTest(MainModule):
                 'frequency': 1
             }
         }
+
+
+def save_plant_string(plant_vec, idx, suffix=""):
+    plant_string = vec2string([plant_vec])
+    plant_string_file_name = f"temp/output_{suffix}_{idx}/plant_string_{suffix}_{idx}.txt"
+    # Create output folder
+    os.makedirs(os.path.dirname(plant_string_file_name), exist_ok=True)
+    with open(plant_string_file_name, "w") as f:
+        f.write(plant_string)
+    return plant_string_file_name
+
+        
+
+class SimpleRegressionVAE(pl.LightningModule):
+
+    def __init__(self, image_size, lr, dropout, use_depth, vit_finetune, d_model=768, latent_dim=128):
+        super(SimpleRegressionVAE, self).__init__()
+        self.save_hyperparameters()
+
+        self.image_size = image_size
+        self.use_depth = use_depth
+        if self.use_depth:
+            self.depth_est_img_proc = AutoImageProcessor.from_pretrained("depth-anything/Depth-Anything-V2-Small-hf")
+            self.depth_est_model = AutoModelForDepthEstimation.from_pretrained("depth-anything/Depth-Anything-V2-Small-hf")
+            # Define a 4 ch to 3 ch conversion layer
+            self.ch4_to_ch3_conv = nn.Conv2d(4, 3, kernel_size=3, stride=1, padding=1)
+
+
+        self.feature_extractor = ViT_FeatureExtractor(output_size=d_model, image_size=image_size)
+        
+        self.vae = VAE()
+        
+        if 1:
+            self.vae.load_state_dict(torch.load(os.path.join(script_file_dir,"../models/checkpoints/vae_best_20241015.pth")))
+
+        #self.regression_model = RegressionModel_Transformer(dim_model=d_model, image_size=image_size, dropout=dropout)
+        self.regression_model = RegressionModel(dim_model=d_model, image_size=image_size, dropout=dropout)
+        
+        self.lr = lr
+
+        self.seq_embedding_layer = nn.Linear(23, d_model)
+        transformer_encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=4)
+        self.seq_embedding_transformer = nn.TransformerEncoder(transformer_encoder_layer, num_layers=3)
+
+        self.seq_embedding2latent = nn.Sequential(
+            nn.Linear(d_model, 256),
+            nn.ReLU(),
+            nn.Linear(256, 512),
+            nn.ReLU(),
+            # nn.Linear(512, 1024),
+            # nn.ReLU(),
+            # nn.Linear(1024, 512),
+            nn.ReLU(),
+            nn.Linear(512, 256),
+            nn.ReLU(),
+            nn.Linear(256, latent_dim),
+        )
+
+        self.positional_encoding = PositionalEncoding(dim_model=d_model, max_len=2048, dropout_p=0.1)
+        self.positional_encoding.eval()
+
+        src_path = os.path.join(script_file_dir,"../src") # script_file_path is models/
+        self.image_generator = plantstring2model(program_path=os.path.join(src_path, "PlantString2Model/build"),
+                                                 program_name="PlantString2Model",
+                                                 display=":11.0", height=1.0, 
+                                                 background_path=os.path.join(src_path, "assets/black.png"))
+        
+        self.prev_epoch = -1
+        self.current_train_step = 0
+        self.current_val_step = 0
+        self.mse_loss_start_epoch = 25
+        self.helios_loss_start_epoch = 50
+
+        self.transform_rgb = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+        ])
+    
+    def generate_image(self, plant_vec, idx, suffix="", image_size=224):
+
+        plant_string_file_name = save_plant_string(plant_vec, idx, suffix)
+        self.image_generator.run(in_plantstring_path=os.path.abspath(plant_string_file_name), 
+                                    output_path=os.path.abspath(f"temp/output_{suffix}_{idx}"))
+        
+        generated_image_path = f"temp/output_{suffix}_{idx}/plant_string_{suffix}_{idx}_top.jpeg"
+        img = cv2.imread(generated_image_path)
+        leaf_area, plant_width, plant_height, leaf_img, _ = process_leaf_image(img, sqaure_crop=True, thr=0.2)
+        leaf_img = cv2.normalize(leaf_img, None, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+        leaf_img = cv2.resize(leaf_img, (image_size, image_size))
+
+        return leaf_img
+        
+    def generate_image_tensor(self, pred, batch_idx, tokens, image, suffix):
+        plant_vec = token2vec(tokens[batch_idx].squeeze().squeeze().tolist())
+        
+        # Calculate Loss using only for the first element
+        plant_vec_predicted = copy.deepcopy(plant_vec)
+        result = pred[batch_idx].squeeze().squeeze().tolist()
+        plant_vec_predicted[0][2] = coordinates_to_angle(result[0], result[1], angle_max=180)
+        plant_vec_predicted[0][3] = coordinates_to_angle(result[2], result[3])
+        plant_vec_predicted[0][4] = coordinates_to_angle(result[4], result[5])
+
+        # Generate image
+        img = self.generate_image(plant_vec_predicted, idx=batch_idx, suffix=suffix, image_size=self.image_size)
+        # img_tensor = torch.tensor(img).to(image.device).permute(2, 0, 1)  # (C, H, W)
+        return batch_idx, img
+    
+    # Forward hook for param estimation
+    def forward(self, image):
+        image_features = self.feature_extractor(image)
+        out = self.regression_model(image_features)
+        return out
+    
+
+    def get_image_embedding(self, image):
+        #with torch.no_grad():
+        if self.use_depth:
+            image = self.add_depth_to_image(image)
+        x = self.feature_extractor(image)
+        
+        if 1:
+            x = x.reshape(x.size(0), -1)
+            x = self.activation(x)
+            x = self.image_embedding_layer(x)
+        elif 0:
+            # Get image embedding from ViT
+            x = torch.mean(x, dim=1) # avg_patch_embedding
+        else:
+            # Get the CLS token
+            # x = x[:, 0, :]
+            x = x.max(dim=1).values
+        return x
+            
+    def get_seq_embedding(self, x):
+        # This is a simple embedding layer
+        # It will be replaced by a transformer model in the future
+        # seq: (batch_size, seq_len)
+    
+        # Make sequence first
+        x = self.seq_embedding_layer(x)
+        x = F.relu(x)
+        x = x.permute(1, 0, 2)
+        x = self.positional_encoding(x)
+        x = self.seq_embedding_transformer(x)
+        
+        # get the last token
+        x = x[-1]
+    
+        return x
+
+
+    def compute_loss(self, batch, mode):
+        image, y, lengths = batch
+        y_input = y[:, :-1] # Remove the EOS token
+        y_target = y[:, 1:] # Remove the SOS token
+
+        ##### 1. VAE Loss #####
+        recon_batch, mu, logvar, z = self.vae(image)
+        vae_loss = self.vae.loss_function(recon_batch, image, mu, logvar)
+
+        embedding_loss = 0
+        # image_loss = 0
+        ##### 2. Regression Loss #####
+        if self.current_epoch >= self.mse_loss_start_epoch or True:
+            pred = self(image)
+            pred = pred.squeeze()
+            # Simulate the predicted value to the y_expected
+            y_pred = y_target.clone()
+            y_pred[:, 0, 1:7] = pred
+            # Calculate Loss using only for the first element
+            mse_loss = F.mse_loss(y_target[:, 0, 1:7], pred)
+
+            ##### 3.Plant Architecture Embedding Loss
+            y_target_embedding = self.get_seq_embedding(y_target)
+            z_est_from_y_target = self.seq_embedding2latent(y_target_embedding)
+            # Detach the z from the graph to only calculate the embedding loss
+            z_inputImage = z.detach()
+            # Calculate the embedding loss
+            embedding_loss += F.mse_loss(z_est_from_y_target, z_inputImage)
+
+
+            # ##### 4. Image Generation Loss
+            # # Decode the latent vector using VAE decoder
+            with torch.no_grad():
+                recon_image_from_architecture = self.vae.decode(z_est_from_y_target)
+            # # Calculate the image generation loss
+            # image_loss += F.mse_loss(recon_image_from_architecture, image)
+
+        else:
+            mse_loss = 1.0
+            y_pred = torch.zeros_like(y)
+            recon_image_from_architecture = None
+
+
+
+        ##### Helios Loss #####
+        if self.current_epoch >= self.helios_loss_start_epoch:
+            y_pred_embedding = self.get_seq_embedding(y_pred)
+            z_est_from_y_pred = self.seq_embedding2latent(y_pred_embedding)
+
+            # Generate image
+            with ThreadPoolExecutor() as executor:
+                helios_results = list(executor.map(lambda idx: self.generate_image_tensor(pred, idx, y_target, image, "P"), range(y_target.size(0))))
+            # Assign generated images to tensors
+            helios_image = torch.zeros_like(image)
+            for (batch_idx, pos_img_tensor) in helios_results:
+                pos_img_tensor = transforms.ToTensor()(pos_img_tensor)
+                helios_image[batch_idx] = pos_img_tensor
+            # Get image embeddings using VAE encoder
+            with torch.no_grad():
+                _, _, _, z_helios = self.vae(helios_image)
+
+            # Calculate the embedding loss
+            embedding_loss += F.mse_loss(z_est_from_y_pred, z_helios)
+           
+            # ##### 4. Image Generation Loss
+            # # Decode the latent vector using VAE decoder
+            with torch.no_grad():
+                recon_image_from_est_architecture = self.vae.decode(z_est_from_y_pred)
+            # # Calculate the image generation loss
+            # image_loss += F.mse_loss(recon_image_from_est_architecture, helios_image)
+
+        else:
+            # Assign generated images to tensors
+            helios_image = None
+            recon_image_from_est_architecture = None
+
+        ##### 5. Total Loss
+        #loss = mse_loss
+        #loss = vae_loss + mse_loss + embedding_loss + image_loss
+        loss = 0.0001*vae_loss + mse_loss + 0.1*embedding_loss # I think image_loss is not necessary
+
+        # self.log(f'{mode}/image_loss', image_loss, batch_size=image.size(0), sync_dist=True)
+        self.log(f'{mode}/vae_loss', vae_loss, batch_size=image.size(0), sync_dist=True)
+        self.log(f'{mode}/mse_loss', mse_loss, batch_size=image.size(0), sync_dist=True)
+        self.log(f'{mode}/embedding_loss', embedding_loss, batch_size=image.size(0), sync_dist=True)
+        self.log(f'{mode}/loss', loss, batch_size=image.size(0), sync_dist=True)
+
+
+        # Add images to tensorboard
+        #if self.current_epoch % 10 == 0 and self.current_step == 0:
+        if (self.current_train_step == 0 and mode == "train") or (self.current_val_step == 0 and mode == "val"):
+            tensorboard_logger = self.logger.experiment
+            tensorboard_logger.add_images(f'{mode}/input_images', image, self.current_epoch)
+            tensorboard_logger.add_images(f'{mode}/recon_batch', recon_batch, self.current_epoch)
+            if recon_image_from_architecture is not None:
+                tensorboard_logger.add_images(f'{mode}/recon_image_from_architecture', recon_image_from_architecture, self.current_epoch)
+            if recon_image_from_est_architecture is not None:
+                tensorboard_logger.add_images(f'{mode}/recon_image_from_est_architecture', recon_image_from_est_architecture, self.current_epoch)
+            if helios_image is not None:
+                tensorboard_logger.add_images(f'{mode}/helios_images', helios_image, self.current_epoch)
+            
+        return loss
+
+    def on_train_start(self):
+        tensorboard_logger = self.logger.experiment
+        prototype_array = torch.zeros(1,3, self.image_size, self.image_size).to(self.device)
+        tensorboard_logger.add_graph(self, prototype_array)
+
+    def training_step(self, batch, batch_idx):
+        loss = self.compute_loss(batch, 'train')
+        self.current_train_step += 1
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+        loss = self.compute_loss(batch, 'val')
+        self.current_val_step += 1
+        return loss
+
+    def log_grads(self):
+         for name, param in self.named_parameters():
+            # if "seq_embedding_layer" in name:
+            #     print(f"Gradient of {name} is {param.grad}")
+            #     print(f"{name} requires_grad: {param.requires_grad}")
+            if param.grad is not None:
+                self.logger.experiment.add_histogram(f"{name}_grad", param.grad, self.current_epoch) # or global_step
+                self.logger.experiment.add_histogram(f"{name}", param, self.current_epoch) # or global_step
+
+    def on_after_backward(self):
+        if self.prev_epoch != self.current_epoch:
+            self.prev_epoch = self.current_epoch
+            # self.log_grads()
+            self.current_train_step = 0
+            self.current_val_step = 0
+       
+
+    def configure_optimizers(self):
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
+        if 1:
+            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, 
+                                                                   threshold=1e-3, patience=5, min_lr=1e-6)
+            #scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=self.lr_lambda)
+        else:
+            scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=50, gamma=0.5)
+        return {
+            'optimizer': optimizer,
+            'lr_scheduler': {
+                'scheduler': scheduler,
+                'monitor': 'val/loss',
+                'interval': 'epoch',
+                'frequency': 1
+            }
+        }
+    
+    # def lr_lambda(self, epoch):
+    #     if epoch >= self.embedding_loss_start_epoch:
+    #         return 0.1  # 학습률을 10%로 줄임
+    #     elif epoch >= self.mse_loss_start_epoch:
+    #         return 0.5  # 학습률을 50%로 줄임
+    #     else:
+    #         return 1.0  # 기본 학습률

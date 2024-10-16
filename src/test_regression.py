@@ -12,7 +12,7 @@ import torchvision.transforms as transforms
 # 경로 설정
 script_file_path = os.path.abspath(__file__)
 sys.path.append(os.path.dirname(os.path.dirname(script_file_path)))
-from models.plightning import MainModule, MainDataModule, FineTuneBatchSizeFinder, FineTuneLearningRateFinder, SimpleRegressionTest
+from models.plightning import MainModule, MainDataModule, FineTuneBatchSizeFinder, FineTuneLearningRateFinder, SimpleRegressionTest, SimpleRegressionVAE
 
 if __name__ == "__main__":
     # Tensor Cores 활용을 위한 설정
@@ -20,18 +20,19 @@ if __name__ == "__main__":
         torch.set_float32_matmul_precision('medium')
 
     dataset_dir = "/home/lion397/codes/Image2PlantArchitecture/data/generated_dataset_Sep22_black"
-    module = SimpleRegressionTest(
+    module = SimpleRegressionVAE(
+    #module = SimpleRegressionTest(
         image_size=224,
-        lr=1e-4,
+        lr=1e-3,
         dropout=0.10,
-        d_model=64,
+        d_model=128,
         use_depth=False,
         vit_finetune=True
     )
 
     datamodule = MainDataModule(dataset_dir,
                                 image_size=module.image_size,
-                                train_batch_size=32, num_workers=4,
+                                train_batch_size=4, num_workers=4,
                                 load_depth=False,
                                 process_leaf=True, preload=True)
     tqdm_cb = TQDMProgressBar(refresh_rate=10)
@@ -39,7 +40,8 @@ if __name__ == "__main__":
     # Generate today's date string in YYYYMMDD format
     today_date_str = datetime.now().strftime('%Y%m%d')
     tb_logger = TensorBoardLogger(
-        name=f'{today_date_str}_StraightForwardStructureNoDepth',
+        #name=f'{today_date_str}_TripletLossBugFixed',
+        name=f'{today_date_str}_VAE',
         save_dir='./log'
     )
 

@@ -11,6 +11,7 @@ from torch import Tensor
 
 from torch.nn import LayerNorm
 import torchvision.transforms as transforms
+import numpy as np
 
 def get_tgt_mask(size) -> torch.tensor:
     if 0:
@@ -46,7 +47,7 @@ class TransformerDecoderLayerWithAttention(nn.TransformerDecoderLayer):
     def forward(self, tgt, memory, tgt_mask=None, memory_mask=None, 
                 tgt_key_padding_mask=None, memory_key_padding_mask=None):
         # self-attention block
-        tgt2, self_attn_weights = self.self_attn(tgt, tgt, tgt, attn_mask=tgt_mask, is_causal=True,
+        tgt2, self_attn_weights = self.self_attn(tgt, tgt, tgt, attn_mask=tgt_mask,
                                                  key_padding_mask=tgt_key_padding_mask)
         self.self_attn_weights = self_attn_weights
         tgt = tgt + self.dropout1(tgt2)
@@ -328,7 +329,6 @@ class RegressionModel(nn.Module):
         #self.linear = nn.Linear(197*dim_model, 4)
         self.linear = nn.Linear(257*dim_model, 6)
         #self.linear = nn.Linear(dim_model, 6)
-        self.positional_encoding = PositionalEncoding(dim_model=dim_model, max_len=2048, dropout_p=dropout)
 
     def forward(self, x):
         if 1:
@@ -343,33 +343,93 @@ class RegressionModel(nn.Module):
         return x
     
 class RegressionModel_Transformer(nn.Module):
-    def __init__(self, dim_model=768, image_size=448, dropout=0.1):
+    def __init__(self, dim_model=768, image_size=224, dropout=0.1):
         super(RegressionModel_Transformer,self).__init__()
         
         self.activation = nn.ReLU()
 
         # self.linear = nn.Linear(197*dim_model, 4)
-        self.linear = nn.Linear(dim_model, 6) # Use EfficientNetB0 feature extractor. 49 is the number of patches
+        self.embedding_linear = nn.Linear(6, dim_model)
+        self.unembedding_linear = nn.Linear(dim_model, 6) 
         self.transformer = nn.Transformer(d_model=dim_model, nhead=4, num_encoder_layers=2, num_decoder_layers=2, dropout=dropout)
+        transformer_decoder_layer = TransformerDecoderLayerWithAttention(d_model=dim_model, nhead=4, dropout=dropout)
+        self.transformer_decoder = TransformerDecoderWithAttention(transformer_decoder_layer, num_layers=2)
+        self.positional_encoding = PositionalEncoding(dim_model=dim_model, max_len=2048, dropout_p=dropout)
 
+    def forward(self, memory):
+        memory = memory.permute(1,0,2) # Make Seq first
+        memory = self.positional_encoding(memory)
+        if 0:
+            # Create a empty tgt vector to decode
+            tgt = torch.zeros_like(memory[0]).unsqueeze(0)
+            out, self_attn_weights, multihead_attn_weights = self.transformer_decoder(tgt, memory)
+            # out = self.activation(out)
+            out = self.unembedding_linear(out)
+        else:
+            out = self.transformer(memory, memory)
+            out = out[-1]
+            out = self.unembedding_linear(out)
+        return out
+
+def frange_cycle_linear(n_iter, start=0.0, stop=100.0,  n_cycle=4, ratio=0.5):
+    L = np.ones(n_iter) * stop
+    period = n_iter/n_cycle
+    step = (stop-start)/(period*ratio) # linear schedule
+
+    for c in range(n_cycle):
+        v, i = start, 0
+        while v <= stop and (int(i+c*period) < n_iter):
+            L[int(i+c*period)] = v
+            v += step
+            i += 1
+    return L
+
+# VAE Model
+class VAE(nn.Module):
+    def __init__(self):
+        super(VAE, self).__init__()
+        # Encoder
+        self.conv1 = nn.Conv2d(3, 32, kernel_size=4, stride=2, padding=1)
+        self.conv2 = nn.Conv2d(32, 64, kernel_size=4, stride=2, padding=1)
+        self.fc1 = nn.Linear(64 * 56 * 56, 128)  # Mean
+        self.fc2 = nn.Linear(64 * 56 * 56, 128)  # Log Var
+        self.fc3 = nn.Linear(128, 64 * 56 * 56)  # Decoder input
+
+        # Decoder
+        self.deconv1 = nn.ConvTranspose2d(64, 32, kernel_size=4, stride=2, padding=1)
+        self.deconv2 = nn.ConvTranspose2d(32, 3, kernel_size=4, stride=2, padding=1)
+
+    def encode(self, x):
+        h1 = F.relu(self.conv1(x))
+        h2 = F.relu(self.conv2(h1))
+        h3 = h2.view(h2.size(0), -1)  # Flatten
+        return self.fc1(h3), self.fc2(h3)  # Mean and log variance
+
+    def reparameterize(self, mu, logvar):
+        std = torch.exp(0.5 * logvar)  # Standard deviation
+        eps = torch.randn_like(std)  # Random noise
+        return mu + eps * std
+
+    def decode(self, z):
+        h3 = self.fc3(z).view(-1, 64, 56, 56)  # Reshape
+        h4 = F.relu(self.deconv1(h3))
+        return torch.sigmoid(self.deconv2(h4))
 
     def forward(self, x):
-        x = x.permute(1,0,2)
-        x = self.transformer(x, x)
-        x = x.permute(1,0,2)
+        mu, logvar = self.encode(x)
+        z = self.reparameterize(mu, logvar)
+        return self.decode(z), mu, logvar, z
 
-        #x = x.reshape(x.size(0), -1)
+    def loss_function(self, recon_x, x, mu, logvar, beta=0.001):
         if 0:
-            x = x.mean(dim=1)  # Pool along the sequence length dimension (aggregate features)
-        elif 0:
-            # Max pooling
-            x = x.max(dim=1).values
+            MSE = F.mse_loss(recon_x, x)  # Reconstruction loss
+            KLD = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())  # KL divergence
+            return MSE + KLD * beta
         else:
-            # Get the last token
-            x = x[:, -1, :]
+            MSE = F.mse_loss(recon_x, x, reduction='sum')
+            KLD = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
 
-        x = self.activation(x)
-
-        x = self.linear(x)
-
-        return x
+            # Divide by batch size
+            MSE /= x.size(0)
+            KLD /= x.size(0)
+            return MSE + KLD

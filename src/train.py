@@ -23,24 +23,25 @@ if __name__ == "__main__":
         num_heads=8,
         seq_dim=43,
         seq_embedding_dim=768//2,
-        param_dim=18,
+        param_dim=22,
         param_embedding_dim=768//2,
         image_size=224,
         alpha=1.0,
-        lr=1e-5,
+        lr=1e-4,
+        use_depth=False,
         dropout=0.10,
     )
 
     datamodule = MainDataModule(dataset_dir,
-                                transform=module.transform,
                                 image_size=module.image_size,
-                                train_batch_size=4, num_workers=4, param_dim=module.param_dim, process_leaf=True, preload=False)
+                                load_depth=False,
+                                train_batch_size=4, num_workers=4, process_leaf=True, preload=True)
     tqdm_cb = TQDMProgressBar(refresh_rate=10)
 
     # Generate today's date string in YYYYMMDD format
     today_date_str = datetime.now().strftime('%Y%m%d')
     tb_logger = TensorBoardLogger(
-        name=f'Image2Helios_{today_date_str}_FullTransformer',
+        name=f'{today_date_str}_FullStructure_FixedBug',
         save_dir='./log'
     )
 
