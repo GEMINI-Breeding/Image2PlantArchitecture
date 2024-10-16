@@ -23,7 +23,7 @@ if __name__ == "__main__":
     module = SimpleRegressionVAE(
     #module = SimpleRegressionTest(
         image_size=224,
-        lr=1e-3,
+        lr=1e-4,
         dropout=0.10,
         d_model=128,
         use_depth=False,
@@ -40,8 +40,8 @@ if __name__ == "__main__":
     # Generate today's date string in YYYYMMDD format
     today_date_str = datetime.now().strftime('%Y%m%d')
     tb_logger = TensorBoardLogger(
-        #name=f'{today_date_str}_TripletLossBugFixed',
-        name=f'{today_date_str}_VAE',
+        name=f'{today_date_str}_SimpleRegressionVAE',
+        #name=f'{today_date_str}_SimpleRegressionTest',
         save_dir='./log'
     )
 
@@ -74,7 +74,7 @@ if __name__ == "__main__":
                    ],
         # callbacks=[tqdm_cb, ckpt_cb, lr_monitor],
         logger=tb_logger,
-        # precision="bf16" #"16, 16-mixed, bf16, bf16-mixed",
+        # precision="bf16-mixed" #"16, 16-mixed, bf16, bf16-mixed",
         #strategy=DDPStrategy(find_unused_parameters=True)  # Enable detection of unused parameters
     )
     # module = SimpleRegressionTest.load_from_checkpoint('log/20241007_RGBD_Dinov2Finetune/version_0/checkpoints/best_epoch=86.ckpt')

@@ -386,18 +386,19 @@ def frange_cycle_linear(n_iter, start=0.0, stop=100.0,  n_cycle=4, ratio=0.5):
 
 # VAE Model
 class VAE(nn.Module):
-    def __init__(self):
+    def __init__(self, latent_dim=128):
         super(VAE, self).__init__()
+        self.latent_dim = latent_dim
         # Encoder
-        self.conv1 = nn.Conv2d(3, 32, kernel_size=4, stride=2, padding=1)
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=4, stride=2, padding=1)
-        self.fc1 = nn.Linear(64 * 56 * 56, 128)  # Mean
-        self.fc2 = nn.Linear(64 * 56 * 56, 128)  # Log Var
-        self.fc3 = nn.Linear(128, 64 * 56 * 56)  # Decoder input
+        self.conv1 = nn.Conv2d(3, latent_dim//4, kernel_size=4, stride=2, padding=1)
+        self.conv2 = nn.Conv2d(latent_dim//4, latent_dim//2, kernel_size=4, stride=2, padding=1)
+        self.fc1 = nn.Linear(latent_dim//2 * 56 * 56, latent_dim)  # Mean
+        self.fc2 = nn.Linear(latent_dim//2 * 56 * 56, latent_dim)  # Log Var
+        self.fc3 = nn.Linear(latent_dim, latent_dim//2 * 56 * 56)  # Decoder input
 
         # Decoder
-        self.deconv1 = nn.ConvTranspose2d(64, 32, kernel_size=4, stride=2, padding=1)
-        self.deconv2 = nn.ConvTranspose2d(32, 3, kernel_size=4, stride=2, padding=1)
+        self.deconv1 = nn.ConvTranspose2d(latent_dim//2, latent_dim//4, kernel_size=4, stride=2, padding=1)
+        self.deconv2 = nn.ConvTranspose2d(latent_dim//4, 3, kernel_size=4, stride=2, padding=1)
 
     def encode(self, x):
         h1 = F.relu(self.conv1(x))
@@ -411,7 +412,7 @@ class VAE(nn.Module):
         return mu + eps * std
 
     def decode(self, z):
-        h3 = self.fc3(z).view(-1, 64, 56, 56)  # Reshape
+        h3 = self.fc3(z).view(-1, self.latent_dim//2, 56, 56)  # Reshape
         h4 = F.relu(self.deconv1(h3))
         return torch.sigmoid(self.deconv2(h4))
 

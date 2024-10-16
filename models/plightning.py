@@ -12,7 +12,6 @@ from pytorch_lightning.callbacks import BatchSizeFinder, LearningRateFinder
 from transformers import AutoImageProcessor, AutoModelForDepthEstimation
 import cv2
 from concurrent.futures import ThreadPoolExecutor
-
 # 경로 설정
 script_file_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(script_file_dir)
@@ -143,14 +142,14 @@ class MainModule(pl.LightningModule):
         for i in range(max_len):
             # Get source mask
             tgt_mask = get_tgt_mask(y_input.size(1)).to(device)
-            
+            feature = self.feature_encoder(image)
             # Use torch.cuda.amp for mixed precision
             try:
                 if stage == 'test':
                     with torch.no_grad():
-                        pred = self.sequence_decoder(image, y_input, tgt_mask)
+                        pred = self.sequence_decoder(feature, y_input, tgt_mask)
                 else:
-                    pred = self.sequence_decoder(image, y_input, tgt_mask)
+                    pred = self.sequence_decoder(feature, y_input, tgt_mask)
             except Exception as e:
                 print(e)
                 print(f"Error in {i} iteration")
@@ -453,16 +452,8 @@ class SimpleRegressionTest(MainModule):
         else:
             self.seq_embedding_layer = nn.Linear(23, d_model)
             #self.seq_embedding_transformer = nn.Transformer(d_model=d_model)
-            # self.seq_embedding_layer = nn.Sequential(
-            #                         nn.Linear(6,64),
-            #                         nn.ReLU(),
-            #                         nn.Linear(64,128),
-            #                         nn.ReLU(),
-            #                         nn.Linear(128,dim_model),
-            #                         )
-
             # Try smaller model
-            self.seq_embedding_transformer = nn.Transformer(d_model=d_model, nhead=8, num_encoder_layers=3, num_decoder_layers=3, dim_feedforward=512, dropout=0.1)
+            self.seq_embedding_transformer = nn.Transformer(d_model=d_model, nhead=4, num_encoder_layers=3, num_decoder_layers=3, dim_feedforward=512, dropout=0.1)
             
         self.image_embedding_layer = nn.Linear(257*d_model, d_model)
  
@@ -478,13 +469,12 @@ class SimpleRegressionTest(MainModule):
                                                  display=":11.0", height=1.0, 
                                                  background_path=os.path.join(src_path, "assets/black.png"))
         
-        # self.current_epoch = 0  # Initialize the epoch counter
-        self.triplet_loss_start_epoch = 50  # Set the epoch to start triplet loss calculation
+        self.triplet_loss_start_epoch = 25  # Set the epoch to start triplet loss calculation
 
         # Loss functions
         #self.triplet_loss_function = nn.TripletMarginLoss(margin=1.0, p=2)
         self.triplet_loss_function = nn.TripletMarginWithDistanceLoss(distance_function=lambda x, y: 1.0 - F.cosine_similarity(x, y))
-        self.cosine_embedding_loss_function = nn.CosineEmbeddingLoss(margin=0.0, reduction='mean')
+        # self.cosine_embedding_loss_function = nn.CosineEmbeddingLoss(margin=0.0, reduction='mean')
 
         self.prev_epoch = -1
 
@@ -629,12 +619,12 @@ class SimpleRegressionTest(MainModule):
             # Calculate triplet loss
             embedding_loss += self.triplet_loss_function(gt_image_embedding, gt_seq_embedding, gt_noise_added_seq_embedding)
 
+        predicted_tokens = y.clone()
+        predicted_tokens[:, 1, 1:7] = pred
+        est_seq_embedding = self.get_seq_embedding(predicted_tokens)
         if 0:
             # Get Seq Embeddings
             # Replace the first element of the sequence with the predicted value by conserving grad flow
-            predicted_tokens = y.clone()
-            predicted_tokens[:, 1, 1:7] = pred
-            est_seq_embedding = self.get_seq_embedding(predicted_tokens)
             # Most important loss ?? est seq embedding should be close to gt image embedding..?
             embedding_loss += self.cosine_embedding_loss_function(est_seq_embedding, gt_image_embedding, ones)
 
@@ -680,6 +670,9 @@ class SimpleRegressionTest(MainModule):
             else:
                 embedding_loss += self.triplet_loss_function(est_image_embedding, est_seq_embedding, est_noise_seq_embedding)
                 embedding_loss += self.triplet_loss_function(est_noise_added_image_embedding, est_noise_seq_embedding, est_seq_embedding)
+        else:
+            embedding_loss += 1.0
+            embedding_loss += 1.0
 
         loss = mse_loss + embedding_loss
         # loss = embedding_loss # Debug the embedding loss only to check if it is working
@@ -712,7 +705,7 @@ class SimpleRegressionTest(MainModule):
     def on_after_backward(self):
         if self.prev_epoch != self.current_epoch:
             self.prev_epoch = self.current_epoch
-            self.log_grads()
+            # self.log_grads()
        
 
     def configure_optimizers(self):
@@ -732,9 +725,9 @@ class SimpleRegressionTest(MainModule):
         }
 
 
-def save_plant_string(plant_vec, idx, suffix=""):
+def save_plant_string(plant_vec, output_path, idx, suffix=""):
     plant_string = vec2string([plant_vec])
-    plant_string_file_name = f"temp/output_{suffix}_{idx}/plant_string_{suffix}_{idx}.txt"
+    plant_string_file_name = f"{output_path}/plant_string_{suffix}_{idx}.txt"
     # Create output folder
     os.makedirs(os.path.dirname(plant_string_file_name), exist_ok=True)
     with open(plant_string_file_name, "w") as f:
@@ -742,6 +735,22 @@ def save_plant_string(plant_vec, idx, suffix=""):
     return plant_string_file_name
 
         
+from collections import OrderedDict
+class MLP(nn.Module):
+    def __init__(self, hidden_size, last_activation=True):
+        super(MLP, self).__init__()
+        q = []
+        for i in range(len(hidden_size) - 1):
+            in_dim = hidden_size[i]
+            out_dim = hidden_size[i + 1]
+            q.append(("Linear_%d" % i, nn.Linear(in_dim, out_dim)))
+            if (i < len(hidden_size) - 2) or ((i == len(hidden_size) - 2) and last_activation):
+                q.append(("BatchNorm_%d" % i, nn.BatchNorm1d(out_dim)))
+                q.append(("ReLU_%d" % i, nn.ReLU(inplace=True)))
+        self.mlp = nn.Sequential(OrderedDict(q))
+
+    def forward(self, x):
+        return self.mlp(x)
 
 class SimpleRegressionVAE(pl.LightningModule):
 
@@ -760,7 +769,7 @@ class SimpleRegressionVAE(pl.LightningModule):
 
         self.feature_extractor = ViT_FeatureExtractor(output_size=d_model, image_size=image_size)
         
-        self.vae = VAE()
+        self.vae = VAE(latent_dim=latent_dim)
         
         if 1:
             self.vae.load_state_dict(torch.load(os.path.join(script_file_dir,"../models/checkpoints/vae_best_20241015.pth")))
@@ -774,19 +783,21 @@ class SimpleRegressionVAE(pl.LightningModule):
         transformer_encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=4)
         self.seq_embedding_transformer = nn.TransformerEncoder(transformer_encoder_layer, num_layers=3)
 
-        self.seq_embedding2latent = nn.Sequential(
-            nn.Linear(d_model, 256),
-            nn.ReLU(),
-            nn.Linear(256, 512),
-            nn.ReLU(),
-            # nn.Linear(512, 1024),
-            # nn.ReLU(),
-            # nn.Linear(1024, 512),
-            nn.ReLU(),
-            nn.Linear(512, 256),
-            nn.ReLU(),
-            nn.Linear(256, latent_dim),
-        )
+        # self.seq_embedding2latent = nn.Sequential(
+        #     nn.Linear(d_model, 256),
+        #     nn.ReLU(),
+        #     nn.Linear(256, 512),
+        #     nn.ReLU(),
+        #     nn.Linear(512, 1024),
+        #     nn.ReLU(),
+        #     nn.Linear(1024, 512),
+        #     nn.ReLU(),
+        #     nn.Linear(512, 256),
+        #     nn.ReLU(),
+        #     nn.Linear(256, latent_dim),
+        # )
+        self.seq_embedding2latent = MLP([d_model, 256, 512, 1024, 512, 256, latent_dim])
+
 
         self.positional_encoding = PositionalEncoding(dim_model=d_model, max_len=2048, dropout_p=0.1)
         self.positional_encoding.eval()
@@ -800,8 +811,7 @@ class SimpleRegressionVAE(pl.LightningModule):
         self.prev_epoch = -1
         self.current_train_step = 0
         self.current_val_step = 0
-        self.mse_loss_start_epoch = 25
-        self.helios_loss_start_epoch = 50
+        self.helios_loss_start_epoch = 0
 
         self.transform_rgb = transforms.Compose([
             transforms.ToTensor(),
@@ -809,12 +819,13 @@ class SimpleRegressionVAE(pl.LightningModule):
         ])
     
     def generate_image(self, plant_vec, idx, suffix="", image_size=224):
-
-        plant_string_file_name = save_plant_string(plant_vec, idx, suffix)
+        #output_path = f"temp/output_{suffix}_{idx}"
+        output_path = f"/dev/shm/output_{suffix}_{idx}"  # Use RAM disk
+        plant_string_file_name = save_plant_string(plant_vec, output_path, idx, suffix)
         self.image_generator.run(in_plantstring_path=os.path.abspath(plant_string_file_name), 
-                                    output_path=os.path.abspath(f"temp/output_{suffix}_{idx}"))
+                                    output_path=os.path.abspath(output_path))
         
-        generated_image_path = f"temp/output_{suffix}_{idx}/plant_string_{suffix}_{idx}_top.jpeg"
+        generated_image_path = f"{output_path}/plant_string_{suffix}_{idx}_top.jpeg"
         img = cv2.imread(generated_image_path)
         leaf_area, plant_width, plant_height, leaf_img, _ = process_leaf_image(img, sqaure_crop=True, thr=0.2)
         leaf_img = cv2.normalize(leaf_img, None, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX, dtype=cv2.CV_8U)
@@ -887,48 +898,50 @@ class SimpleRegressionVAE(pl.LightningModule):
         y_target = y[:, 1:] # Remove the SOS token
 
         ##### 1. VAE Loss #####
-        recon_batch, mu, logvar, z = self.vae(image)
+        recon_batch, mu, logvar, _ = self.vae(image)
         vae_loss = self.vae.loss_function(recon_batch, image, mu, logvar)
 
         embedding_loss = 0
-        # image_loss = 0
+        image_loss = 0
         ##### 2. Regression Loss #####
-        if self.current_epoch >= self.mse_loss_start_epoch or True:
-            pred = self(image)
-            pred = pred.squeeze()
-            # Simulate the predicted value to the y_expected
-            y_pred = y_target.clone()
-            y_pred[:, 0, 1:7] = pred
-            # Calculate Loss using only for the first element
-            mse_loss = F.mse_loss(y_target[:, 0, 1:7], pred)
+        #if self.current_epoch >= self.mse_loss_start_epoch or True:
 
-            ##### 3.Plant Architecture Embedding Loss
+        pred = self(image)
+        pred = pred.squeeze()
+        # Simulate the predicted value to the y_expected
+        y_pred = y_target.clone()
+        y_pred[:, 0, 1:7] = pred
+        # Calculate Loss using only for the first element
+        mse_loss = F.mse_loss(y_target[:, 0, 1:7], pred)
+
+        ##### 3.Plant Architecture Embedding Loss
+        if 1:
             y_target_embedding = self.get_seq_embedding(y_target)
-            z_est_from_y_target = self.seq_embedding2latent(y_target_embedding)
-            # Detach the z from the graph to only calculate the embedding loss
-            z_inputImage = z.detach()
-            # Calculate the embedding loss
-            embedding_loss += F.mse_loss(z_est_from_y_target, z_inputImage)
-
-
-            # ##### 4. Image Generation Loss
-            # # Decode the latent vector using VAE decoder
-            with torch.no_grad():
-                recon_image_from_architecture = self.vae.decode(z_est_from_y_target)
-            # # Calculate the image generation loss
-            # image_loss += F.mse_loss(recon_image_from_architecture, image)
-
+            latent_est_from_y_target = self.seq_embedding2latent(y_target_embedding)
         else:
-            mse_loss = 1.0
-            y_pred = torch.zeros_like(y)
-            recon_image_from_architecture = None
+            latent_est_from_y_target = self.get_seq_embedding(y_target)
+        # Detach the z from the graph to only calculate the embedding loss
+        latent_inputImage = mu.detach()
+        # Calculate the embedding loss
+        embedding_loss += F.mse_loss(latent_est_from_y_target, latent_inputImage)
 
 
+        # ##### 4. Image Generation Loss
+        # # Decode the latent vector using VAE decoder
+        with torch.no_grad():
+            recon_image_from_architecture = self.vae.decode(latent_est_from_y_target)
+        # # Calculate the image generation loss
+        image_loss += F.mse_loss(recon_image_from_architecture, image, reduction='sum') / image.size(0)
+
+    
 
         ##### Helios Loss #####
         if self.current_epoch >= self.helios_loss_start_epoch:
-            y_pred_embedding = self.get_seq_embedding(y_pred)
-            z_est_from_y_pred = self.seq_embedding2latent(y_pred_embedding)
+            if 1:
+                y_pred_embedding = self.get_seq_embedding(y_pred)
+                latent_est_from_y_pred = self.seq_embedding2latent(y_pred_embedding)
+            else:
+                latent_est_from_y_pred = self.get_seq_embedding(y_pred)
 
             # Generate image
             with ThreadPoolExecutor() as executor:
@@ -940,17 +953,18 @@ class SimpleRegressionVAE(pl.LightningModule):
                 helios_image[batch_idx] = pos_img_tensor
             # Get image embeddings using VAE encoder
             with torch.no_grad():
-                _, _, _, z_helios = self.vae(helios_image)
+                recon_batch_helios, mu, _, _ = self.vae(helios_image)
+                latent_helios = mu
 
             # Calculate the embedding loss
-            embedding_loss += F.mse_loss(z_est_from_y_pred, z_helios)
+            embedding_loss += F.mse_loss(latent_est_from_y_pred, latent_helios)
            
             # ##### 4. Image Generation Loss
             # # Decode the latent vector using VAE decoder
             with torch.no_grad():
-                recon_image_from_est_architecture = self.vae.decode(z_est_from_y_pred)
+                recon_image_from_est_architecture = self.vae.decode(latent_est_from_y_pred)
             # # Calculate the image generation loss
-            # image_loss += F.mse_loss(recon_image_from_est_architecture, helios_image)
+            image_loss += F.mse_loss(recon_image_from_est_architecture, helios_image, reduction='sum') / image.size(0)
 
         else:
             # Assign generated images to tensors
@@ -960,9 +974,9 @@ class SimpleRegressionVAE(pl.LightningModule):
         ##### 5. Total Loss
         #loss = mse_loss
         #loss = vae_loss + mse_loss + embedding_loss + image_loss
-        loss = 0.0001*vae_loss + mse_loss + 0.1*embedding_loss # I think image_loss is not necessary
+        loss = 0.0001*vae_loss + mse_loss + 0.1*embedding_loss + 0.0001*image_loss # I think image_loss is not necessary
 
-        # self.log(f'{mode}/image_loss', image_loss, batch_size=image.size(0), sync_dist=True)
+        self.log(f'{mode}/image_loss', image_loss, batch_size=image.size(0), sync_dist=True)
         self.log(f'{mode}/vae_loss', vae_loss, batch_size=image.size(0), sync_dist=True)
         self.log(f'{mode}/mse_loss', mse_loss, batch_size=image.size(0), sync_dist=True)
         self.log(f'{mode}/embedding_loss', embedding_loss, batch_size=image.size(0), sync_dist=True)
