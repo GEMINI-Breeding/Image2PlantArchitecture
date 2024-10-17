@@ -18,7 +18,7 @@ sys.path.append(script_file_dir)
 
 # 모듈 임포트
 from models.model import TransformerDecoderModel, get_tgt_mask, create_pad_mask, RegressionModel, ViT_FeatureExtractor, CNN_FeatureExtractor
-from models.model import RegressionModel_Transformer, PositionalEncoding, VAE
+from models.model import RegressionModel_Transformer, PositionalEncoding, VAE, MLP
 from src.plant_tokenizer import SOS_token, EOS_token, PAD_token, params_EOS_token_padded, params_SOS_token_padded
 from src.plant_tokenizer import add_noise_plant_tokens, generate_noise_plant_tokens
 from src.plant_dataset import PlantDataset
@@ -30,6 +30,8 @@ from src.utils import coordinates_to_angle
 import pickle
 import copy
 
+# Disable fastpath for TransformerEncoder and MultiHeadAttention
+# torch.backends.mha.set_fastpath_enabled(False)
 
 class FineTuneBatchSizeFinder(BatchSizeFinder):
     def __init__(self, milestones, *args, **kwargs):
@@ -735,22 +737,7 @@ def save_plant_string(plant_vec, output_path, idx, suffix=""):
     return plant_string_file_name
 
         
-from collections import OrderedDict
-class MLP(nn.Module):
-    def __init__(self, hidden_size, last_activation=True):
-        super(MLP, self).__init__()
-        q = []
-        for i in range(len(hidden_size) - 1):
-            in_dim = hidden_size[i]
-            out_dim = hidden_size[i + 1]
-            q.append(("Linear_%d" % i, nn.Linear(in_dim, out_dim)))
-            if (i < len(hidden_size) - 2) or ((i == len(hidden_size) - 2) and last_activation):
-                q.append(("BatchNorm_%d" % i, nn.BatchNorm1d(out_dim)))
-                q.append(("ReLU_%d" % i, nn.ReLU(inplace=True)))
-        self.mlp = nn.Sequential(OrderedDict(q))
 
-    def forward(self, x):
-        return self.mlp(x)
 
 class SimpleRegressionVAE(pl.LightningModule):
 
@@ -779,9 +766,17 @@ class SimpleRegressionVAE(pl.LightningModule):
         
         self.lr = lr
 
-        self.seq_embedding_layer = nn.Linear(23, d_model)
-        transformer_encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=4)
-        self.seq_embedding_transformer = nn.TransformerEncoder(transformer_encoder_layer, num_layers=3)
+        self.seq_embedding_layer = nn.Sequential(
+                            nn.Linear(23, d_model),
+                            nn.ReLU(),
+        )
+        #self.seq_embedding_layer = MLP([23, d_model])
+        if 1:
+            transformer_encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=8)
+            self.seq_embedding_transformer = nn.TransformerEncoder(transformer_encoder_layer, num_layers=6)
+        else:
+            transformer_layer = nn.TransformerDecoderLayer(d_model=d_model, nhead=4)
+            self.seq_embedding_transformer = nn.TransformerDecoder(transformer_layer, num_layers=3)
 
         # self.seq_embedding2latent = nn.Sequential(
         #     nn.Linear(d_model, 256),
@@ -796,8 +791,8 @@ class SimpleRegressionVAE(pl.LightningModule):
         #     nn.ReLU(),
         #     nn.Linear(256, latent_dim),
         # )
-        self.seq_embedding2latent = MLP([d_model, 256, 512, 1024, 512, 256, latent_dim])
-
+        # self.seq_embedding2latent = MLP([d_model, 256, 512, 1024, 512, 256, latent_dim])
+        self.seq_embedding2latent = MLP([d_model, latent_dim], batch_norm=False)
 
         self.positional_encoding = PositionalEncoding(dim_model=d_model, max_len=2048, dropout_p=0.1)
         self.positional_encoding.eval()
@@ -811,7 +806,7 @@ class SimpleRegressionVAE(pl.LightningModule):
         self.prev_epoch = -1
         self.current_train_step = 0
         self.current_val_step = 0
-        self.helios_loss_start_epoch = 0
+        self.helios_loss_start_epoch = 100
 
         self.transform_rgb = transforms.Compose([
             transforms.ToTensor(),
@@ -881,7 +876,6 @@ class SimpleRegressionVAE(pl.LightningModule):
     
         # Make sequence first
         x = self.seq_embedding_layer(x)
-        x = F.relu(x)
         x = x.permute(1, 0, 2)
         x = self.positional_encoding(x)
         x = self.seq_embedding_transformer(x)
@@ -898,7 +892,7 @@ class SimpleRegressionVAE(pl.LightningModule):
         y_target = y[:, 1:] # Remove the SOS token
 
         ##### 1. VAE Loss #####
-        recon_batch, mu, logvar, _ = self.vae(image)
+        recon_batch, mu, logvar, z = self.vae(image)
         vae_loss = self.vae.loss_function(recon_batch, image, mu, logvar)
 
         embedding_loss = 0
@@ -919,9 +913,10 @@ class SimpleRegressionVAE(pl.LightningModule):
             y_target_embedding = self.get_seq_embedding(y_target)
             latent_est_from_y_target = self.seq_embedding2latent(y_target_embedding)
         else:
-            latent_est_from_y_target = self.get_seq_embedding(y_target)
+            #latent_est_from_y_target = self.get_seq_embedding(y_target)
+            latent_est_from_y_target = self.seq_embedding2latent(y_target[:, 0, 1:7])
         # Detach the z from the graph to only calculate the embedding loss
-        latent_inputImage = mu.detach()
+        latent_inputImage = z.detach()
         # Calculate the embedding loss
         embedding_loss += F.mse_loss(latent_est_from_y_target, latent_inputImage)
 
@@ -937,11 +932,6 @@ class SimpleRegressionVAE(pl.LightningModule):
 
         ##### Helios Loss #####
         if self.current_epoch >= self.helios_loss_start_epoch:
-            if 1:
-                y_pred_embedding = self.get_seq_embedding(y_pred)
-                latent_est_from_y_pred = self.seq_embedding2latent(y_pred_embedding)
-            else:
-                latent_est_from_y_pred = self.get_seq_embedding(y_pred)
 
             # Generate image
             with ThreadPoolExecutor() as executor:
@@ -951,20 +941,35 @@ class SimpleRegressionVAE(pl.LightningModule):
             for (batch_idx, pos_img_tensor) in helios_results:
                 pos_img_tensor = transforms.ToTensor()(pos_img_tensor)
                 helios_image[batch_idx] = pos_img_tensor
+
+            # Train the VAE to generate the helios image
+            recon_batch_helios, mu, logvar, z = self.vae(helios_image)
+            vae_loss2 = self.vae.loss_function(recon_batch_helios, helios_image, mu, logvar)
+            vae_loss = (vae_loss + vae_loss2) / 2
+
             # Get image embeddings using VAE encoder
+            latent_helios = z.detach()
+
+            # Get the seq embedding from the predicted value
             with torch.no_grad():
-                recon_batch_helios, mu, _, _ = self.vae(helios_image)
-                latent_helios = mu
+                if 1:
+                    y_pred_embedding = self.get_seq_embedding(y_pred)
+                    latent_est_from_y_pred = self.seq_embedding2latent(y_pred_embedding)
+                else:
+                    #latent_est_from_y_pred = self.get_seq_embedding(y_pred)
+                    latent_est_from_y_pred = self.seq_embedding2latent(pred)
 
             # Calculate the embedding loss
-            embedding_loss += F.mse_loss(latent_est_from_y_pred, latent_helios)
+            embedding_loss2 = F.mse_loss(latent_est_from_y_pred, latent_helios)
+            embedding_loss = (embedding_loss + embedding_loss2) / 2
            
             # ##### 4. Image Generation Loss
             # # Decode the latent vector using VAE decoder
             with torch.no_grad():
                 recon_image_from_est_architecture = self.vae.decode(latent_est_from_y_pred)
             # # Calculate the image generation loss
-            image_loss += F.mse_loss(recon_image_from_est_architecture, helios_image, reduction='sum') / image.size(0)
+            image_loss2 = F.mse_loss(recon_image_from_est_architecture, helios_image, reduction='sum') / image.size(0)
+            image_loss2 = (image_loss + image_loss2) / 2
 
         else:
             # Assign generated images to tensors
@@ -974,7 +979,7 @@ class SimpleRegressionVAE(pl.LightningModule):
         ##### 5. Total Loss
         #loss = mse_loss
         #loss = vae_loss + mse_loss + embedding_loss + image_loss
-        loss = 0.0001*vae_loss + mse_loss + 0.1*embedding_loss + 0.0001*image_loss # I think image_loss is not necessary
+        loss = 0.0001*vae_loss + mse_loss + 0.1*embedding_loss # + 0.0001*image_loss # I think image_loss is not necessary
 
         self.log(f'{mode}/image_loss', image_loss, batch_size=image.size(0), sync_dist=True)
         self.log(f'{mode}/vae_loss', vae_loss, batch_size=image.size(0), sync_dist=True)
@@ -1034,7 +1039,7 @@ class SimpleRegressionVAE(pl.LightningModule):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
         if 1:
             scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, 
-                                                                   threshold=1e-3, patience=5, min_lr=1e-6)
+                                                                   threshold=1e-3, patience=10, min_lr=1e-6)
             #scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=self.lr_lambda)
         else:
             scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=50, gamma=0.5)

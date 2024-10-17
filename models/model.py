@@ -13,6 +13,9 @@ from torch.nn import LayerNorm
 import torchvision.transforms as transforms
 import numpy as np
 
+from collections import OrderedDict
+
+
 def get_tgt_mask(size) -> torch.tensor:
     if 0:
         mask = torch.tril(torch.ones(size, size) == 1) # Lower triangular matrix
@@ -38,6 +41,23 @@ def create_pad_mask(matrix: torch.tensor, pad_token: int) -> torch.tensor:
     return mask
 
 
+class MLP(nn.Module):
+    def __init__(self, hidden_size, last_activation=True, batch_norm=True):
+        super(MLP, self).__init__()
+        q = []
+        for i in range(len(hidden_size) - 1):
+            in_dim = hidden_size[i]
+            out_dim = hidden_size[i + 1]
+            q.append(("Linear_%d" % i, nn.Linear(in_dim, out_dim)))
+            if (i < len(hidden_size) - 2) or ((i == len(hidden_size) - 2) and last_activation):
+                if batch_norm:
+                    q.append(("BatchNorm_%d" % i, nn.BatchNorm1d(out_dim)))
+                q.append(("ReLU_%d" % i, nn.ReLU(inplace=True)))
+        self.mlp = nn.Sequential(OrderedDict(q))
+
+    def forward(self, x):
+        return self.mlp(x)
+    
 class TransformerDecoderLayerWithAttention(nn.TransformerDecoderLayer):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
