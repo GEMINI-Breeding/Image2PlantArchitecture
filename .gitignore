@@ -166,7 +166,7 @@ cython_debug/
 
 # data folder
 data
-log
+log*
 saved
 models/checkpoints
 src/output
@@ -175,3 +175,4 @@ temp
 src/temp
 src/output*
 tests/lightning_logs
+*.pth

@@ -20,8 +20,8 @@ if __name__ == "__main__":
         torch.set_float32_matmul_precision('medium')
 
     dataset_dir = "/home/lion397/codes/Image2PlantArchitecture/data/generated_dataset_Sep22_black"
-    module = SimpleRegressionVAE(
-    #module = SimpleRegressionTest(
+    #module = SimpleRegressionVAE(
+    module = SimpleRegressionTest(
         image_size=224,
         lr=1e-5,
         dropout=0.00,
@@ -40,8 +40,8 @@ if __name__ == "__main__":
     # Generate today's date string in YYYYMMDD format
     today_date_str = datetime.now().strftime('%Y%m%d')
     tb_logger = TensorBoardLogger(
-        name=f'{today_date_str}_SimpleRegressionVAE_Batch32',
-        #name=f'{today_date_str}_SimpleRegressionTest',
+        #name=f'{today_date_str}_SimpleRegressionVAE_Batch32',
+        name=f'{today_date_str}_SimpleRegressionTest',
         save_dir='./log'
     )
 

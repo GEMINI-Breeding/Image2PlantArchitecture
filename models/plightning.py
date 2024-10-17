@@ -455,7 +455,11 @@ class SimpleRegressionTest(MainModule):
             self.seq_embedding_layer = nn.Linear(23, d_model)
             #self.seq_embedding_transformer = nn.Transformer(d_model=d_model)
             # Try smaller model
-            self.seq_embedding_transformer = nn.Transformer(d_model=d_model, nhead=4, num_encoder_layers=3, num_decoder_layers=3, dim_feedforward=512, dropout=0.1)
+            # self.seq_embedding_transformer = nn.Transformer(d_model=d_model, nhead=4, num_encoder_layers=3, num_decoder_layers=3, dim_feedforward=512, dropout=0.1)
+
+            transformer_encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=8)
+            self.seq_embedding_transformer = nn.TransformerEncoder(transformer_encoder_layer, num_layers=6)
+
             
         self.image_embedding_layer = nn.Linear(257*d_model, d_model)
  
@@ -471,12 +475,12 @@ class SimpleRegressionTest(MainModule):
                                                  display=":11.0", height=1.0, 
                                                  background_path=os.path.join(src_path, "assets/black.png"))
         
-        self.triplet_loss_start_epoch = 25  # Set the epoch to start triplet loss calculation
+        self.triplet_loss_start_epoch = 0  # Set the epoch to start triplet loss calculation
 
         # Loss functions
         #self.triplet_loss_function = nn.TripletMarginLoss(margin=1.0, p=2)
         self.triplet_loss_function = nn.TripletMarginWithDistanceLoss(distance_function=lambda x, y: 1.0 - F.cosine_similarity(x, y))
-        # self.cosine_embedding_loss_function = nn.CosineEmbeddingLoss(margin=0.0, reduction='mean')
+        self.cosine_embedding_loss_function = nn.CosineEmbeddingLoss(margin=0.0, reduction='mean')
 
         self.prev_epoch = -1
 
@@ -513,17 +517,17 @@ class SimpleRegressionTest(MainModule):
             image = self.add_depth_to_image(image)
         x = self.feature_extractor(image)
         
-        if 1:
+        if 0:
             x = x.reshape(x.size(0), -1)
-            x = self.activation(x)
             x = self.image_embedding_layer(x)
         elif 0:
             # Get image embedding from ViT
             x = torch.mean(x, dim=1) # avg_patch_embedding
+            # Or max pooling
+            # x = x.max(dim=1).values
         else:
             # Get the CLS token
-            # x = x[:, 0, :]
-            x = x.max(dim=1).values
+            x = x[:, 0, :]
         return x
             
     def get_seq_embedding(self, x):
@@ -536,7 +540,7 @@ class SimpleRegressionTest(MainModule):
         x = self.activation(x)
         x = x.permute(1, 0, 2)
         x = self.positional_encoding(x)
-        x = self.seq_embedding_transformer(x,x)
+        x = self.seq_embedding_transformer(x)
         
         # get the last token
         x = x[-1]
@@ -610,7 +614,7 @@ class SimpleRegressionTest(MainModule):
         # Make the A_seq_embedding to be close to the ground truth
         gt_image_embedding = self.get_image_embedding(image)
         gt_seq_embedding = self.get_seq_embedding(y)
-        if 0:
+        if 1:
             ones = torch.ones(gt_seq_embedding.size(0), device=gt_seq_embedding.device)
             zeros = torch.zeros(gt_seq_embedding.size(0), device=gt_seq_embedding.device)
             embedding_loss += self.cosine_embedding_loss_function(gt_seq_embedding, gt_image_embedding, ones)
@@ -623,7 +627,10 @@ class SimpleRegressionTest(MainModule):
 
         predicted_tokens = y.clone()
         predicted_tokens[:, 1, 1:7] = pred
-        est_seq_embedding = self.get_seq_embedding(predicted_tokens)
+
+        with torch.no_grad():
+            est_seq_embedding = self.get_seq_embedding(predicted_tokens)
+
         if 0:
             # Get Seq Embeddings
             # Replace the first element of the sequence with the predicted value by conserving grad flow
@@ -631,7 +638,8 @@ class SimpleRegressionTest(MainModule):
             embedding_loss += self.cosine_embedding_loss_function(est_seq_embedding, gt_image_embedding, ones)
 
         # Triplet Loss Calculation Part
-        if self.current_epoch >= self.triplet_loss_start_epoch: 
+        
+        if self.current_epoch >= self.triplet_loss_start_epoch:
             est_image = torch.zeros_like(image)
             est_noise_added_image = torch.zeros_like(image)
 
@@ -641,40 +649,53 @@ class SimpleRegressionTest(MainModule):
             else:
                 noise_token = generate_noise_plant_tokens(predicted_tokens, noise_level=0.1)
                 y_noise_added = predicted_tokens + noise_token
-            est_noise_seq_embedding = self.get_seq_embedding(y_noise_added)
+            
+            with torch.no_grad():
+                est_noise_seq_embedding = self.get_seq_embedding(y_noise_added)
 
             # Generate positive and negative images
             with ThreadPoolExecutor() as executor:
                 pos_results = list(executor.map(lambda idx: generate_image_tensor(idx, y_expected, image, "P"), range(y_expected.size(0))))
-                neg_results = list(executor.map(lambda idx: generate_image_tensor(idx, y_noise_added, image, "N"), range(y_expected.size(0))))
+                # neg_results = list(executor.map(lambda idx: generate_image_tensor(idx, y_noise_added, image, "N"), range(y_expected.size(0))))
 
             # Assign generated images to tensors
-            for (batch_idx, pos_img_tensor), (_, neg_img_tensor) in zip(pos_results, neg_results):
-                est_image[batch_idx] = pos_img_tensor
-                est_noise_added_image[batch_idx] = neg_img_tensor
+            if 0:
+                for (batch_idx, pos_img_tensor), (_, neg_img_tensor) in zip(pos_results, neg_results):
+                    est_image[batch_idx] = pos_img_tensor
+                    est_noise_added_image[batch_idx] = neg_img_tensor
+            else:
+                for (batch_idx, pos_img_tensor) in pos_results:
+                    est_image[batch_idx] = pos_img_tensor
 
             # Get image embeddings
-            est_image_embedding = self.get_image_embedding(est_image)
-            est_noise_added_image_embedding = self.get_image_embedding(est_noise_added_image)
+            with torch.no_grad():
+                est_image_embedding = self.get_image_embedding(est_image)
+                # est_noise_added_image_embedding = self.get_image_embedding(est_noise_added_image)
 
-            if 0:
-                # Add noise added seq embedding loss
-                embedding_loss += self.cosine_embedding_loss_function(est_seq_embedding, est_image_embedding, ones)
+            if 1:
+                if 0:
+                    # Add noise added seq embedding loss
+                    embedding_loss += self.cosine_embedding_loss_function(est_seq_embedding, est_image_embedding, ones)
 
-                # est rand image <-> est rand seq
-                embedding_loss += self.cosine_embedding_loss_function(est_noise_seq_embedding, est_noise_added_image_embedding, ones)
+                    # est rand image <-> est rand seq
+                    embedding_loss += self.cosine_embedding_loss_function(est_noise_seq_embedding, est_noise_added_image_embedding, ones)
 
-                # Add noise added seq embedding loss
-                embedding_loss += self.cosine_embedding_loss_function(est_seq_embedding, est_noise_added_image_embedding, zeros)
+                    # Add noise added seq embedding loss
+                    embedding_loss += self.cosine_embedding_loss_function(est_seq_embedding, est_noise_added_image_embedding, zeros)
 
-                # Gt image <-> est rand seq
-                embedding_loss += self.cosine_embedding_loss_function(gt_seq_embedding, est_noise_added_image_embedding, zeros)
+                    # Gt image <-> est rand seq
+                    embedding_loss += self.cosine_embedding_loss_function(gt_seq_embedding, est_noise_added_image_embedding, zeros)
+                else:
+                    # Make it simple, make the est seq embedding close to the helios generated image embedding
+                    embedding_loss2 = self.cosine_embedding_loss_function(est_seq_embedding, est_image_embedding, ones)
+                    embedding_loss = (embedding_loss + embedding_loss2) / 2
             else:
                 embedding_loss += self.triplet_loss_function(est_image_embedding, est_seq_embedding, est_noise_seq_embedding)
                 embedding_loss += self.triplet_loss_function(est_noise_added_image_embedding, est_noise_seq_embedding, est_seq_embedding)
         else:
-            embedding_loss += 1.0
-            embedding_loss += 1.0
+            # embedding_loss += 1.0
+            # embedding_loss += 1.0
+            pass
 
         loss = mse_loss + embedding_loss
         # loss = embedding_loss # Debug the embedding loss only to check if it is working
