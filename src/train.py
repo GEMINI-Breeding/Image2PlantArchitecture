@@ -27,7 +27,7 @@ if __name__ == "__main__":
         param_embedding_dim=768//2,
         image_size=224,
         alpha=1.0,
-        lr=1e-4,
+        lr=1e-5,
         use_depth=False,
         dropout=0.10,
     )
@@ -35,13 +35,13 @@ if __name__ == "__main__":
     datamodule = MainDataModule(dataset_dir,
                                 image_size=module.image_size,
                                 load_depth=False,
-                                train_batch_size=4, num_workers=4, process_leaf=True, preload=True)
+                                train_batch_size=4, num_workers=4, process_leaf=True, preload=False)
     tqdm_cb = TQDMProgressBar(refresh_rate=10)
 
     # Generate today's date string in YYYYMMDD format
     today_date_str = datetime.now().strftime('%Y%m%d')
     tb_logger = TensorBoardLogger(
-        name=f'{today_date_str}_FullStructure_FixedBug',
+        name=f'{today_date_str}_EmbeddingLoss',
         save_dir='./log'
     )
 
@@ -77,7 +77,7 @@ if __name__ == "__main__":
         precision="bf16-mixed",
         #strategy=DDPStrategy(find_unused_parameters=True)  # Enable detection of unused parameters
     )
-    # module = MainModule.load_from_checkpoint('./saved/last.ckpt')
+    module = MainModule.load_from_checkpoint('log/20241017_EmbeddingLoss/version_1/checkpoints/best_epoch=82.ckpt')
     trainer.fit(module, datamodule=datamodule)
 
     # To check the training progress,

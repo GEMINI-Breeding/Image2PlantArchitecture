@@ -431,6 +431,16 @@ def plant_string2words(plant_string):
 
     return words
 
+
+def save_plant_string(plant_vec, output_path, idx, suffix=""):
+    plant_string = vec2string([plant_vec])
+    plant_string_file_name = f"{output_path}/plant_string_{suffix}_{idx}.txt"
+    # Create output folder
+    os.makedirs(os.path.dirname(plant_string_file_name), exist_ok=True)
+    with open(plant_string_file_name, "w") as f:
+        f.write(plant_string)
+    return plant_string_file_name
+
 if __name__ == "__main__":
     # String to xml
     # Read plant strings from a file

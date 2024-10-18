@@ -16,7 +16,7 @@ from image_process import process_leaf_image
 from plant_tokenizer import SOS_token, EOS_token, PAD_token, params_EOS_token_padded, params_SOS_token_padded
 from string_to_xml_to_vec import string2vec, vec2string, vec2xml, pretty_print_xml
 
-from plant_tokenizer import vec2token_new as vec2token
+from plant_tokenizer import vec2token as vec2token
 
 # Enable loading of truncated images
 ImageFile.LOAD_TRUNCATED_IMAGES = True

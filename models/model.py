@@ -40,6 +40,32 @@ def create_pad_mask(matrix: torch.tensor, pad_token: int) -> torch.tensor:
     mask = mask.type(torch.FloatTensor)
     return mask
 
+def create_organ_mask():
+    # Define mask patterns
+    mask_patterns = [
+        [np.zeros(8), np.ones(4), np.ones(3), np.ones(7)],  # shoot_mask
+        [np.ones(8), np.zeros(4), np.ones(3), np.ones(7)],  # internode_mask
+        [np.ones(8), np.ones(4), np.zeros(3), np.ones(7)],  # petiole_mask
+        [np.ones(8), np.ones(4), np.ones(3), np.zeros(7)],  # leaf_mask
+        [np.ones(8), np.ones(4), np.ones(3), np.ones(7)]    # all_mask
+    ]
+    # Create masks
+    masks = torch.stack([torch.tensor(np.concatenate(pattern, axis=0), dtype=torch.bool) for pattern in mask_patterns])
+    return masks
+    
+def text_global_pool(x, text: Optional[torch.Tensor] = None, pool_type: str = 'argmax'):
+    if pool_type == 'first':
+        pooled, tokens = x[:, 0], x[:, 1:]
+    elif pool_type == 'last':
+        pooled, tokens = x[:, -1], x[:, :-1]
+    elif pool_type == 'argmax':
+        # take features from the eot embedding (eot_token is the highest number in each sequence)
+        assert text is not None
+        pooled, tokens = x[torch.arange(x.shape[0]), text.argmax(dim=-1)], x
+    else:
+        pooled = tokens = x
+
+    return pooled, tokens
 
 class MLP(nn.Module):
     def __init__(self, hidden_size, last_activation=True, batch_norm=True):

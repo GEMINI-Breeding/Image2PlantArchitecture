@@ -1,6 +1,17 @@
-import os
+import os, sys, copy
 import shutil
 import subprocess
+import cv2
+import torch
+
+# 경로 설정
+script_file_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(script_file_dir)
+from string_to_xml_to_vec import save_plant_string
+from image_process import process_leaf_image
+from plant_tokenizer import token2vec
+from utils import coordinates_to_angle
+
 class plantstring2model:
 
     def __init__(self, program_path, program_name, background_path=None, display=":10.0", height=2.0, verbose=False):
@@ -62,6 +73,29 @@ class plantstring2model:
             # print("Command failed")
             # print(result.stderr)  # Print the error output
             pass
+    
+    def plant_vec_to_image(self, plant_vec, idx, suffix="", image_size=224):
+        #output_path = f"temp/output_{suffix}_{idx}"
+        output_path = f"/dev/shm/output_{suffix}_{idx}"  # Use RAM disk
+        plant_string_file_name = save_plant_string(plant_vec, output_path, idx, suffix)
+        self.run(in_plantstring_path=os.path.abspath(plant_string_file_name), 
+                                    output_path=os.path.abspath(output_path))
+        
+        generated_image_path = f"{output_path}/plant_string_{suffix}_{idx}_top.jpeg"
+        img = cv2.imread(generated_image_path)
+        leaf_area, plant_width, plant_height, leaf_img, _ = process_leaf_image(img, sqaure_crop=True, thr=0.2)
+        leaf_img = cv2.normalize(leaf_img, None, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+        leaf_img = cv2.resize(leaf_img, (image_size, image_size))
+
+        return leaf_img
+        
+    def generate_image(self, batch_idx, tokens, image_size, suffix):
+        plant_vec = token2vec(tokens[batch_idx].squeeze().squeeze().tolist())
+        
+        # Generate image
+        img = self.plant_vec_to_image(plant_vec, idx=batch_idx, suffix=suffix, image_size=image_size)
+        # img_tensor = torch.tensor(img).to(tokens.device).permute(2, 0, 1)  # (C, H, W)
+        return batch_idx, img
             
 # Test 
 if __name__ == "__main__":
