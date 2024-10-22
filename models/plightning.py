@@ -195,11 +195,11 @@ class MainModule(pl.LightningModule):
         return F.cross_entropy(pred, label, ignore_index=ignore_index)
 
     def param_loss_fn(self, pred, params, ignore_index=PAD_token):
-        mask = (params != ignore_index)
-        if 0:
-            loss_mse = F.mse_loss(pred, params, reduction='none')
-        else:
-            loss_mse = F.smooth_l1_loss(pred, params, reduction='none')
+        # Create neg mask
+        neg_mask = (params == ignore_index)
+        # Create masks
+        mask = ~neg_mask
+        loss_mse = F.smooth_l1_loss(pred, params, reduction='none') # mse_loss or smooth_l1_loss
         masked_loss = loss_mse * mask
         return masked_loss.sum() / (mask).sum()
 
@@ -209,23 +209,21 @@ class MainModule(pl.LightningModule):
         # Masked values are not included in the loss
 
         # Create masks
-        masks = create_organ_mask().to(pred.device)
+        neg_organ_masks = create_organ_mask().to(pred.device) # Negative masks
 
         # Ensure label_mod and masks have compatible dimensions
         label_mod = label % 4
-        mask = (values == ignore_index)  # First mask is for padding
+        neg_mask = (values == ignore_index)  # First mask is for padding
         for i in range(4):
-            mask = mask | ((label_mod == i).unsqueeze(1).expand_as(mask) & masks[i].unsqueeze(0).unsqueeze(2).expand_as(mask))
+            neg_mask = neg_mask | ((label_mod == i).unsqueeze(1).expand_as(neg_mask) & neg_organ_masks[i].unsqueeze(0).unsqueeze(2).expand_as(neg_mask))
 
         # Compute loss
-        if 0:
-            loss_mse = F.mse_loss(pred, values, reduction='none')
-        else:
-            loss_mse = F.smooth_l1_loss(pred, values, reduction='none')
-        
-        masked_loss = loss_mse * ~mask
-        #return masked_loss.sum() / (~mask).sum()
-        return masked_loss.sum() / masked_loss.size(0)
+        loss_mse = F.smooth_l1_loss(pred, values, reduction='none') # mse_loss or smooth_l1_loss
+        # Create masks by negating the neg_mask
+        mask = ~neg_mask
+        masked_loss = loss_mse * mask
+        return masked_loss.sum() / (mask).sum()
+        #return masked_loss.sum() / masked_loss.size(0)
 
     def get_image_embedding(self, image):
         if self.use_depth:
@@ -299,8 +297,10 @@ class MainModule(pl.LightningModule):
         values = y_expected[:, :, 1:].permute(0, 2, 1)
 
         label_loss = self.label_loss_fn(pred[:, :self.seq_dim], label)
-        param_loss = self.param_loss_fn(pred[:, self.seq_dim:], values)
-        #param_loss = self.param_loss_fn_bylabel(label=label, values=values, pred=pred[:, self.seq_dim:])
+        if 1:
+            param_loss = self.param_loss_fn(pred[:, self.seq_dim:], values)
+        else:
+            param_loss = self.param_loss_fn_bylabel(label=label, values=values, pred=pred[:, self.seq_dim:])
 
 
         # Embedding loss
@@ -329,18 +329,29 @@ class MainModule(pl.LightningModule):
             est_seq_embedding = self.get_seq_embedding(pred)
 
         # Calculate embedding loss for estimated sequence embedding
-        embedding_loss_est = self.cosine_embedding_loss_function(est_seq_embedding, est_image_embedding.detach(), ones)
+        # embedding_loss_gen tries to make the seq embedding close to the image embedding
+        if 0:
+            # Use HELIOS generated image as the positive image training for image and seq embedding
+            # It will force the seq embedding to be close to the corresponding image embedding
+            embedding_loss_gen = self.cosine_embedding_loss_function(est_seq_embedding, est_image_embedding.detach(), ones)
+        else:
+            # Use GT image as the positive image training for image and seq embedding
+            # It will force the seq embedding to be close to the GT image embedding
+            embedding_loss_gen = self.cosine_embedding_loss_function(est_seq_embedding, gt_image_embedding.detach(), ones)
 
         # Use HELIOS generated image as the positive image training for image and seq embedding
         est_seq_embedding_helios = self.get_seq_embedding(pred.detach())
         embedding_loss_helios = self.cosine_embedding_loss_function(est_seq_embedding_helios, est_image_embedding, ones)
 
+        # embedding_loss_fit is teaching the seq embedding fits the image embedding
+        embedding_loss_fit = (embedding_loss_gt + embedding_loss_helios) / 2 
+
         # Calculate average embedding loss
-        embedding_loss = (embedding_loss_gt + embedding_loss_helios) / 2
-        embedding_loss_gen = embedding_loss_est
+        embedding_loss = embedding_loss_fit + embedding_loss_gen
 
         # Calculate final loss
-        loss = (label_loss + self.alpha * param_loss) + (embedding_loss + embedding_loss_gen) / 2
+        #loss = (label_loss + self.alpha * param_loss) + embedding_loss
+        loss = embedding_loss # Test only label loss
 
         self.log(f'{mode}/label_loss', label_loss, batch_size=image.size(0), sync_dist=True)
         self.log(f'{mode}/param_loss', param_loss, batch_size=image.size(0), sync_dist=True)

@@ -36,7 +36,9 @@ class PlantDataset(Dataset):
         self.preload = preload
         # Get list of images
         self.image_paths = os.listdir(self.images_path)
-        self.depth_images = os.listdir(self.depth_path)
+        if load_depth:
+            self.depth_images = os.listdir(self.depth_path)
+            self.depth_images.sort()
 
         # Get list of plant strings
         self.plant_string_files = [x.replace('.jpeg', '.txt') for x in self.image_paths]
@@ -44,19 +46,20 @@ class PlantDataset(Dataset):
         # Sort the lists
         self.image_paths.sort()
         self.plant_string_files.sort()
-        self.depth_images.sort()
 
         self.img_size = image_size
         # Filter with statges
         if stages:
             self.image_paths = [x for x in self.image_paths if x.split('_')[2] in stages]
             self.plant_string_files = [x for x in self.plant_string_files if x.split('_')[2] in stages]
-            self.depth_images = [x for x in self.depth_images if x.split('_')[2] in stages]
+            if self.load_depth:
+                self.depth_images = [x for x in self.depth_images if x.split('_')[2] in stages]
 
         if plot:
             self.image_paths = [x for x in self.image_paths if x.split('_')[3] in plot]
             self.plant_string_files = [x for x in self.plant_string_files if x.split('_')[3] in plot]
-            self.depth_images = [x for x in self.depth_images if x.split('_')[3] in plot]
+            if self.load_depth:
+                self.depth_images = [x for x in self.depth_images if x.split('_')[3] in plot]
                 
         self.transform = transform
 

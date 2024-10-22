@@ -253,21 +253,16 @@ class TransformerDecoderModel(nn.Module):
         #self.cnn = CNN_Dinov2(output_size=seq_embedding_dim+param_embedding_dim, use_depth=use_depth)
         #self.cnn = CNN(output_size=seq_embedding_dim+param_embedding_dim, use_depth=use_depth)
         self.dim_model = seq_embedding_dim + param_embedding_dim
-    
+
         self.seq_embedding_dim = seq_embedding_dim
-        self.seq_embedding = nn.Embedding(num_tokens, self.dim_model)
+        self.param_embedding_dim = param_embedding_dim
+        self.seq_embedding = nn.Embedding(num_tokens, self.seq_embedding_dim)
         self.param_dim_model = param_embedding_dim
         
         self.dropout = dropout
-        if 1:
-            self.param_embedding = nn.Linear(num_params, self.dim_model)
-        else:
-            # Make a sequencial model
-            self.param_embedding = nn.Sequential(
-                                    nn.Linear(num_params, self.dim_model),
-                                    # Normalize the output
-                                    nn.LayerNorm(self.dim_model)
-                                )
+
+        self.param_embedding = nn.Linear(num_params, self.param_embedding_dim)
+
         self.embedding_linear = nn.Linear(self.param_dim_model+self.seq_embedding_dim, self.dim_model)
         self.activation = nn.ReLU()
         self.self_attn_weights = None
@@ -289,20 +284,10 @@ class TransformerDecoderModel(nn.Module):
                                             num_decoder_layers=num_layers,
                                             dropout=0.1,
                                         )
-        if 0:
-            self.seq_decode_linear = nn.Linear(self.seq_embedding_dim, num_tokens)
-            self.param_decode_linear = nn.Linear(self.param_dim_model, num_params)
-        else:
-            self.seq_decode_linear = nn.Linear(self.dim_model, num_tokens)
-            #self.param_decode_linear = nn.Linear(self.dim_model, num_params)
-            # Make more deeper network
-            self.param_decode_linear = nn.Sequential(
-                                    nn.Linear(self.dim_model, self.dim_model),
-                                    nn.ReLU(),
-                                    nn.Linear(self.dim_model, self.dim_model),
-                                    nn.ReLU(),
-                                    nn.Linear(self.dim_model, num_params),
-                                )
+
+        self.seq_decode_linear = nn.Linear(self.seq_embedding_dim, num_tokens)
+        self.param_decode_linear = nn.Linear(self.param_dim_model, num_params)
+
     
     def forward(self, features, tgt_seq, tgt_mask=None, tgt_key_padding_mask=None):
         # features = self.cnn(images)
@@ -329,11 +314,10 @@ class TransformerDecoderModel(nn.Module):
         depth_organ_seq = self.seq_embedding(depth_organ_seq) * math.sqrt(self.dim_model)
         params = self.param_embedding(params) * math.sqrt(self.dim_model)
 
-        if 0:
-            tgt_seq = torch.cat((depth_organ_seq, params), dim=2)
-            tgt_seq = self.activation(self.embedding_linear(tgt_seq))
-        else:
-            tgt_seq = depth_organ_seq + params
+
+        tgt_seq = torch.cat((depth_organ_seq, params), dim=2)
+        tgt_seq = self.activation(self.embedding_linear(tgt_seq))
+
 
         # Make sequence length the first dimension 
         # PositionalEncoding은 시퀀스 차원에 대해 적용되므로, Positional Encoding을 적용하기 전에 반드시 시퀀스 차원이 첫 번째가 되어야 합니다.
@@ -349,17 +333,13 @@ class TransformerDecoderModel(nn.Module):
             decoded = self.transformer(features, tgt_seq, tgt_mask=tgt_mask, tgt_key_padding_mask=tgt_key_padding_mask, tgt_is_causal=True)
         # decoded = self.activation(decoded)
 
-        if 0:
-            # 0 ~ seq_embedding_dim is the sequence, seq_embedding_dim-64 is the parameters
-            decoded_seq = decoded[:, :, :self.seq_embedding_dim]
-            output_seq = self.seq_decode_linear(decoded_seq)
 
-            decoded_params = decoded[:, :, self.seq_embedding_dim:]
-            output_params = self.param_decode_linear(decoded_params)
-        else:
-            # Use all the decoded output
-            output_seq = self.seq_decode_linear(decoded)
-            output_params = self.param_decode_linear(decoded)
+        # 0 ~ seq_embedding_dim is the sequence, seq_embedding_dim-64 is the parameters
+        decoded_seq = decoded[:, :, :self.seq_embedding_dim]
+        output_seq = self.seq_decode_linear(decoded_seq)
+
+        decoded_params = decoded[:, :, self.seq_embedding_dim:]
+        output_params = self.param_decode_linear(decoded_params)
             
         # Cat the output_seq and output_params
         output_seq = torch.cat((output_seq, output_params), dim=2)

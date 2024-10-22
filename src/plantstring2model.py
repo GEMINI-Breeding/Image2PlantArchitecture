@@ -75,8 +75,8 @@ class plantstring2model:
             pass
     
     def plant_vec_to_image(self, plant_vec, idx, suffix="", image_size=224):
-        #output_path = f"temp/output_{suffix}_{idx}"
-        output_path = f"/dev/shm/output_{suffix}_{idx}"  # Use RAM disk
+        output_path = f"temp/output_{suffix}_{idx}"
+        #output_path = f"/dev/shm/output_{suffix}_{idx}"  # Use RAM disk
         plant_string_file_name = save_plant_string(plant_vec, output_path, idx, suffix)
         self.run(in_plantstring_path=os.path.abspath(plant_string_file_name), 
                                     output_path=os.path.abspath(output_path))
