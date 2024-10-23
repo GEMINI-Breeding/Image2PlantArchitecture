@@ -17,7 +17,8 @@ if __name__ == "__main__":
     if torch.cuda.is_available():
         torch.set_float32_matmul_precision('medium')
 
-    dataset_dir = "/home/lion397/codes/Image2PlantArchitecture/data/generated_dataset_Sep22_black_subset"
+    #dataset_dir = "/home/lion397/codes/Image2PlantArchitecture/data/generated_dataset_Sep22_black_subset"
+    dataset_dir = "/home/lion397/codes/Image2PlantArchitecture/data/generated_dataset_Sep22_black"
     module = MainModule(
         num_layers=6,
         num_heads=8,
@@ -27,15 +28,15 @@ if __name__ == "__main__":
         param_embedding_dim=768//2,
         image_size=224,
         alpha=1.0,
-        lr=1e-5,
-        use_depth=False,
+        lr=1e-4,
+        use_depth=True,
         dropout=0.10,
     )
 
     datamodule = MainDataModule(dataset_dir,
                                 image_size=module.image_size,
                                 load_depth=False,
-                                train_batch_size=16, num_workers=4, process_leaf=True, preload=True)
+                                train_batch_size=8, num_workers=4, process_leaf=True, preload=True)
     tqdm_cb = TQDMProgressBar(refresh_rate=10)
 
     # Generate today's date string in YYYYMMDD format
@@ -59,7 +60,7 @@ if __name__ == "__main__":
 
     early_stop_cb = EarlyStopping(
         monitor='val/loss',
-        patience=20,
+        patience=50,
         verbose=True,
         mode='min'
     )
@@ -77,7 +78,7 @@ if __name__ == "__main__":
         precision="bf16-mixed",
         #strategy=DDPStrategy(find_unused_parameters=True)  # Enable detection of unused parameters
     )
-    # module = MainModule.load_from_checkpoint('log/20241017_EmbeddingLoss/version_1/checkpoints/best_epoch=82.ckpt')
+    # module = MainModule.load_from_checkpoint('log/20241022_Test_label_loss/version_15/checkpoints/best_epoch=42.ckpt')
     trainer.fit(module, datamodule=datamodule)
 
     # To check the training progress,

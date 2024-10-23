@@ -57,7 +57,7 @@ class plantstring2model:
         command += f"-o {output_file_name} "
 
         if self.verbose == False:
-            command += " > log.txt 2>&1"
+            command += " > log.txt &1"
             
         # Run the command using os.system
         # os.system(f"{command}")
@@ -70,8 +70,9 @@ class plantstring2model:
             # print(result.stdout)  # Print the standard output
             pass
         else:
-            # print("Command failed")
-            # print(result.stderr)  # Print the error output
+            print(result.stdout)  # Print the standard output
+            print(result.stderr)  # Print the error output
+            raise("Command failed")
             pass
     
     def plant_vec_to_image(self, plant_vec, idx, suffix="", image_size=224):

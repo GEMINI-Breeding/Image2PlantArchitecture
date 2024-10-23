@@ -91,6 +91,12 @@ class MainModule(pl.LightningModule):
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
         ])
+
+
+        if self.use_depth:
+            self.depth_est_img_proc = AutoImageProcessor.from_pretrained("depth-anything/Depth-Anything-V2-Small-hf")
+            self.depth_est_model = AutoModelForDepthEstimation.from_pretrained("depth-anything/Depth-Anything-V2-Small-hf")
+
         self.image_encoder = ViT_FeatureExtractor(output_size=seq_embedding_dim+param_embedding_dim, use_depth=self.use_depth, image_size=image_size)
 
         # Froze self.feature_extractor
@@ -103,7 +109,7 @@ class MainModule(pl.LightningModule):
             num_heads=self.num_heads,
             num_tokens=self.seq_dim,
             num_params=self.param_dim,
-            decoder_only=False,
+            decoder_only=True,
             use_depth=self.use_depth,
             image_size=self.image_size,
             dropout=self.dropout,
@@ -121,11 +127,7 @@ class MainModule(pl.LightningModule):
         self.multihead_attn_weights = None
         self.self_attn_weights = None
 
-        if self.use_depth:
-            self.depth_est_img_proc = AutoImageProcessor.from_pretrained("depth-anything/Depth-Anything-V2-Small-hf")
-            self.depth_est_model = AutoModelForDepthEstimation.from_pretrained("depth-anything/Depth-Anything-V2-Small-hf")
-            # Define a 4 ch to 3 ch conversion layer
-            self.ch4_to_ch3_conv = nn.Conv2d(4, 3, kernel_size=3, stride=1, padding=1) 
+
 
         self.helios_path = os.path.join(self.current_script_dir, "../src/PlantString2Model/build")
         self.helios = plantstring2model(program_path=self.helios_path,
@@ -135,8 +137,9 @@ class MainModule(pl.LightningModule):
         
         # Test gen
         # Run 
-        self.helios.run(in_plantstring_path=os.path.abspath("plant_string.txt"),
-                        output_path=os.path.abspath("temp/batch_0"))
+        if 0:
+            self.helios.run(in_plantstring_path=os.path.abspath("plant_string.txt"),
+                            output_path=os.path.abspath("temp/batch_0"))
         
         self.cosine_embedding_loss_function = nn.CosineEmbeddingLoss(margin=0.0, reduction='mean')
         self.mse_loss = nn.MSELoss()
@@ -175,10 +178,10 @@ class MainModule(pl.LightningModule):
         y_input = y_input.unsqueeze(0).unsqueeze(0)
         y_input = y_input.to(device)
 
+        feature = self.image_encoder(image)
         for i in range(max_len):
             # Get source mask
             tgt_mask = get_tgt_mask(y_input.size(1)).to(device)
-            feature = self.image_encoder(image)
             # Use torch.cuda.amp for mixed precision
             try:
                 if stage == 'val':
@@ -249,7 +252,10 @@ class MainModule(pl.LightningModule):
         x = x[:, 0, :]
         return x
     
-    def add_depth_to_image(self, image):
+    def add_depth_to_image(self, image, add_background=False):
+        # if add_background:
+        #     # Add black background the images
+        #     for i in range(image.size(0)):
         # prepare image for the model
         inputs = self.depth_est_img_proc(images=image, return_tensors="pt").to(image.device)
         with torch.no_grad():
@@ -264,14 +270,13 @@ class MainModule(pl.LightningModule):
             align_corners=False,
         )
         self.predicted_depth = depth
+        
+        if 1:
+            # Normalize to 0-1
+            depth = (depth - depth.min()) / (depth.max() - depth.min())
         # cat depth to image
         image = torch.cat((image, depth), dim=1)
-        # Convert 4 channel to 3 channel
-        image = self.ch4_to_ch3_conv(image)
-        if 0:
-            # Normalize to 0-1
-            image = (image - image.min()) / (image.max() - image.min())
-
+    
         return image
     
     def make_negative_imgs(self, image):
@@ -292,7 +297,7 @@ class MainModule(pl.LightningModule):
 
         # Add noise to the plant images
         transform = transforms.Compose([
-                    transforms.RandomRotation(10),
+                    transforms.RandomRotation(20),
                     transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.2)])
 
         image = transform(image)
@@ -344,9 +349,10 @@ class MainModule(pl.LightningModule):
         else:
             param_loss = self.param_loss_fn_bylabel(label=label, values=values, pred=pred[:, self.seq_dim:])
 
-
+        # Make negative images and seqs samples
         neg_images = self.make_negative_imgs(image)
         neq_seqs = self.make_negative_seqs(y_expected_seq, shuffle=True)
+
         ############ Embedding loss
         # Teach embedding models with ground truth image and seqs
         # GT image embedding should be close to GT seq embedding
@@ -357,8 +363,8 @@ class MainModule(pl.LightningModule):
         ones = torch.ones(image.size(0), device=gt_seq_embedding.device)
         #embedding_loss_gt = self.cosine_embedding_loss_function(gt_seq_embedding, gt_image_embedding, ones)
         # embedding_loss_gt = self.mse_loss(gt_seq_embedding, gt_image_embedding)
-        embedding_loss_gt = self.triplet_loss(gt_seq_embedding, gt_image_embedding, neg_image_embedding) \
-                        + self.triplet_loss(gt_image_embedding, gt_seq_embedding, gt_neg_seq_embedding)
+        embedding_loss_gt = (self.triplet_loss(gt_seq_embedding, gt_image_embedding, neg_image_embedding) \
+                        + self.triplet_loss(gt_image_embedding, gt_seq_embedding, gt_neg_seq_embedding))/2
 
         # Helios in loop
         if 0:
@@ -399,11 +405,11 @@ class MainModule(pl.LightningModule):
                 param.requires_grad = True  # 파라미터의 기울기 계산 활성화
 
         # Calculate average embedding loss
-        embedding_loss = embedding_loss_gt + embedding_loss_gen
+        embedding_loss = (embedding_loss_gt + embedding_loss_gen) / 2
 
         # Calculate final loss
-        #loss = (label_loss + self.alpha * param_loss) + embedding_loss
-        loss = embedding_loss # Test only label loss
+        loss = (label_loss + self.alpha * param_loss) + embedding_loss
+        #loss = embedding_loss # Test only label loss
 
         self.log(f'{mode}/label_loss', label_loss, batch_size=image.size(0), sync_dist=True)
         self.log(f'{mode}/param_loss', param_loss, batch_size=image.size(0), sync_dist=True)
@@ -452,7 +458,7 @@ class MainModule(pl.LightningModule):
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
         if 1:
-            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=10, min_lr=1e-6)
+            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=10, min_lr=1e-7)
         else:
             scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=50, gamma=0.5)
 

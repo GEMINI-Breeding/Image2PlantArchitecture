@@ -183,10 +183,10 @@ class ViT_FeatureExtractor(nn.Module):
             self.img_proc = AutoImageProcessor.from_pretrained('facebook/dinov2-base')
             if self.use_depth:
                 self.normalize = transforms.Normalize(mean=[0.5, 0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5, 0.5])
+                self.model.embeddings.patch_embeddings.projection = nn.Conv2d(4, 768, kernel_size=(14, 14), stride=(14, 14))
+                self.model.embeddings.patch_embeddings.num_channels = 4
             else:
                 self.normalize = transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
-            # self.model.embeddings.patch_embeddings.projection = nn.Conv2d(4, 768, kernel_size=(14, 14), stride=(14, 14))
-            # self.model.embeddings.patch_embeddings.num_channels = 4
         else:
             # Use fully custom model
             config = ViTConfig(image_size=image_size, 
@@ -249,26 +249,24 @@ class TransformerDecoderModel(nn.Module):
                  num_layers, num_heads, num_tokens, num_params, 
                  max_seq_length=2048, use_depth=True, decoder_only=False, image_size=448, dropout=0.1):
         super(TransformerDecoderModel, self).__init__()
-        # self.cnn = CNN_ViT(output_size=seq_embedding_dim+param_embedding_dim, use_depth=use_depth, image_size=image_size)
-        #self.cnn = CNN_Dinov2(output_size=seq_embedding_dim+param_embedding_dim, use_depth=use_depth)
-        #self.cnn = CNN(output_size=seq_embedding_dim+param_embedding_dim, use_depth=use_depth)
+
         self.dim_model = seq_embedding_dim + param_embedding_dim
+        self.dropout = dropout
 
         self.seq_embedding_dim = seq_embedding_dim
         self.param_embedding_dim = param_embedding_dim
+
         self.seq_embedding = nn.Embedding(num_tokens, self.seq_embedding_dim)
-        self.param_dim_model = param_embedding_dim
-        
-        self.dropout = dropout
-
         self.param_embedding = nn.Linear(num_params, self.param_embedding_dim)
-
-        self.embedding_linear = nn.Linear(self.param_dim_model+self.seq_embedding_dim, self.dim_model)
+  
         self.activation = nn.ReLU()
         self.self_attn_weights = None
         self.multihead_attn_weights = None
         
-        self.positional_encoding = PositionalEncoding(dim_model=self.dim_model, max_len=max_seq_length, dropout_p=self.dropout)
+        # Positional Encoding for Sequence
+        self.Seq_positional_encoding = PositionalEncoding(dim_model=self.dim_model, max_len=max_seq_length, dropout_p=self.dropout)
+        # Positional Encoding for Image features
+        self.ImgFeature_positional_encoding = PositionalEncoding(dim_model=self.dim_model, max_len=257, dropout_p=self.dropout) 
         self.decoder_only = decoder_only
         if self.decoder_only:
             # self.transformer_decoder_layer = nn.TransformerDecoderLayer(d_model=self.dim_model, nhead=num_heads)
@@ -286,7 +284,7 @@ class TransformerDecoderModel(nn.Module):
                                         )
 
         self.seq_decode_linear = nn.Linear(self.seq_embedding_dim, num_tokens)
-        self.param_decode_linear = nn.Linear(self.param_dim_model, num_params)
+        self.param_decode_linear = nn.Linear(self.param_embedding_dim, num_params)
 
     
     def forward(self, features, tgt_seq, tgt_mask=None, tgt_key_padding_mask=None):
@@ -314,25 +312,21 @@ class TransformerDecoderModel(nn.Module):
         depth_organ_seq = self.seq_embedding(depth_organ_seq) * math.sqrt(self.dim_model)
         params = self.param_embedding(params) * math.sqrt(self.dim_model)
 
-
         tgt_seq = torch.cat((depth_organ_seq, params), dim=2)
-        tgt_seq = self.activation(self.embedding_linear(tgt_seq))
-
 
         # Make sequence length the first dimension 
         # PositionalEncoding은 시퀀스 차원에 대해 적용되므로, Positional Encoding을 적용하기 전에 반드시 시퀀스 차원이 첫 번째가 되어야 합니다.
         tgt_seq = tgt_seq.permute(1,0,2)
         features = features.permute(1,0,2)
 
-        tgt_seq = self.positional_encoding(tgt_seq)
-        features = self.positional_encoding(features)
+        tgt_seq = self.Seq_positional_encoding(tgt_seq)
+        features = self.ImgFeature_positional_encoding(features)
 
         if self.decoder_only:
             decoded, self.self_attn_weights, self.multihead_attn_weights = self.transformer_decoder(tgt_seq, features, tgt_mask=tgt_mask,tgt_key_padding_mask=tgt_key_padding_mask)
         else:
             decoded = self.transformer(features, tgt_seq, tgt_mask=tgt_mask, tgt_key_padding_mask=tgt_key_padding_mask, tgt_is_causal=True)
         # decoded = self.activation(decoded)
-
 
         # 0 ~ seq_embedding_dim is the sequence, seq_embedding_dim-64 is the parameters
         decoded_seq = decoded[:, :, :self.seq_embedding_dim]
