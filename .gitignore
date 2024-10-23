@@ -176,3 +176,4 @@ src/temp
 src/output*
 tests/lightning_logs
 *.pth
+*.mp4

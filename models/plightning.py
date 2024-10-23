@@ -18,7 +18,7 @@ sys.path.append(script_file_dir)
 
 # 모듈 임포트
 from models.model import TransformerDecoderModel, RegressionModel, ViT_FeatureExtractor, CNN_FeatureExtractor
-from models.model import RegressionModel_Transformer, PositionalEncoding, VAE, MLP
+from models.model import RegressionModel_Transformer, PositionalEncoding, VAE, MLP, SeqEmbeddingModel
 from models.model import create_organ_mask, get_tgt_mask, create_pad_mask, text_global_pool
 from src.plant_tokenizer import SOS_token, EOS_token, PAD_token, params_EOS_token_padded, params_SOS_token_padded
 from src.plant_tokenizer import generate_noise_plant_tokens
@@ -61,7 +61,11 @@ class FineTuneLearningRateFinder(LearningRateFinder):
             self.lr_find(trainer, pl_module)
 
 class MainModule(pl.LightningModule):
-    def __init__(self, num_layers, num_heads, seq_dim, seq_embedding_dim, param_dim, param_embedding_dim, image_size, alpha, lr, dropout, use_depth):
+    def __init__(self, num_layers=6, num_heads=8, 
+                 seq_dim=43, seq_embedding_dim=768//2, 
+                 param_dim=22, param_embedding_dim=768//2, 
+                 image_size=224, alpha=1.0, lr=1e-5, 
+                 dropout=0.10, use_depth=False):
         super(MainModule, self).__init__()
         self.save_hyperparameters()  # 전달된 모든 인수를 저장
 
@@ -87,7 +91,11 @@ class MainModule(pl.LightningModule):
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
         ])
-        self.feature_encoder = ViT_FeatureExtractor(output_size=seq_embedding_dim+param_embedding_dim, use_depth=self.use_depth, image_size=image_size)
+        self.image_encoder = ViT_FeatureExtractor(output_size=seq_embedding_dim+param_embedding_dim, use_depth=self.use_depth, image_size=image_size)
+
+        # Froze self.feature_extractor
+        # self.image_encoder.eval()
+        
         self.sequence_decoder = TransformerDecoderModel(
             seq_embedding_dim=self.seq_embedding_dim,
             param_embedding_dim=self.param_embedding_dim,
@@ -101,11 +109,14 @@ class MainModule(pl.LightningModule):
             dropout=self.dropout,
         )
 
-        self.seq_embedding_layer = nn.Linear(self.seq_dim+self.param_dim, self.seq_embedding_dim+self.param_embedding_dim)
-        transformer_encoder_layer = nn.TransformerEncoderLayer(d_model=self.seq_embedding_dim+self.param_embedding_dim, nhead=8)
-        self.seq_embedding_transformer = nn.TransformerEncoder(transformer_encoder_layer, num_layers=6)
-        self.positional_encoding = PositionalEncoding(dim_model=self.seq_embedding_dim+self.param_embedding_dim, max_len=2048, dropout_p=0.1)
-        self.positional_encoding.eval()
+        # self.seq_embedding_layer = nn.Linear(self.seq_dim+self.param_dim, self.seq_embedding_dim+self.param_embedding_dim)
+        # transformer_encoder_layer = nn.TransformerEncoderLayer(d_model=self.seq_embedding_dim+self.param_embedding_dim, nhead=8)
+        # self.seq_embedding_transformer = nn.TransformerEncoder(transformer_encoder_layer, num_layers=6)
+        # self.positional_encoding = PositionalEncoding(dim_model=self.seq_embedding_dim+self.param_embedding_dim, max_len=2048, dropout_p=0.1)
+        # self.positional_encoding.eval()
+        self.SeqEmbeddingModel = SeqEmbeddingModel(d_label=self.seq_dim,
+                                                   d_param=self.param_dim,
+                                                   d_model=seq_embedding_dim+param_embedding_dim)
 
         self.multihead_attn_weights = None
         self.self_attn_weights = None
@@ -128,6 +139,9 @@ class MainModule(pl.LightningModule):
                         output_path=os.path.abspath("temp/batch_0"))
         
         self.cosine_embedding_loss_function = nn.CosineEmbeddingLoss(margin=0.0, reduction='mean')
+        self.mse_loss = nn.MSELoss()
+        #self.triplet_loss = nn.TripletMarginLoss(margin=10.0, p=2)
+        self.triplet_loss = nn.TripletMarginWithDistanceLoss(distance_function=lambda x, y: 1.0 - F.cosine_similarity(x, y), margin=2.0)
         if 0:
             # Test to generate 2048 tokens if memory is not enough
             try:
@@ -147,7 +161,9 @@ class MainModule(pl.LightningModule):
     def forward(self, image, y_input):
         tgt_mask = get_tgt_mask(y_input.size(1))
         tgt_pad_mask = create_pad_mask(y_input, PAD_token)
-        features = self.feature_encoder(image)
+        if self.use_depth:
+            image = self.add_depth_to_image(image)
+        features = self.image_encoder(image)
         outputs = self.sequence_decoder(features, y_input, tgt_mask=tgt_mask, tgt_key_padding_mask=tgt_pad_mask)
         outputs = outputs.permute(1, 2, 0)
         return outputs
@@ -162,7 +178,7 @@ class MainModule(pl.LightningModule):
         for i in range(max_len):
             # Get source mask
             tgt_mask = get_tgt_mask(y_input.size(1)).to(device)
-            feature = self.feature_encoder(image)
+            feature = self.image_encoder(image)
             # Use torch.cuda.amp for mixed precision
             try:
                 if stage == 'val':
@@ -228,34 +244,9 @@ class MainModule(pl.LightningModule):
     def get_image_embedding(self, image):
         if self.use_depth:
             image = self.add_depth_to_image(image)
-        x = self.feature_encoder(image)
+        x = self.image_encoder(image)
         # Get the CLS token
         x = x[:, 0, :]
-        return x
-            
-    def get_seq_embedding(self,x):
-        # This is a simple embedding layer
-        # It will be replaced by a transformer model in the future
-        # seq: (batch_size, seq_len)
-        
-        # Get the label from the sequence 
-        # num with highest probability
-        label = x.permute(0,2,1)[:,:,:self.seq_dim].topk(1)[1].squeeze()  
-
-        # Make B X D X L to L X B X D
-        x = x.permute(2, 0, 1)
-        x = self.seq_embedding_layer(x)
-        x = self.positional_encoding(x)
-        x = self.seq_embedding_transformer(x)
-
-        if 0:        
-            # get the last token
-            x = x[-1]
-        else:
-            # Get the last token based on the EOS token (label == 42, the largest number)
-            x = x.permute(1, 0, 2)
-            x, _ = text_global_pool(x, label, 'argmax')
-            
         return x
     
     def add_depth_to_image(self, image):
@@ -283,6 +274,57 @@ class MainModule(pl.LightningModule):
 
         return image
     
+    def make_negative_imgs(self, image):
+        # Suffle the image along the batch dimension. make sure i != j
+        # Ensure i != j by checking for identity permutation and reshuffling if necessary
+        batch_size = image.size(0)
+        # 무작위로 인덱스를 섞음
+        idx = np.random.permutation(batch_size)
+        if 0:
+            # 인덱스가 동일한 경우 요소를 교환하여 섞인 인덱스를 생성
+            while np.array_equal(idx, np.arange(batch_size)):
+                for i in range(batch_size):
+                    if i == idx[i]:
+                        j = np.random.randint(0, batch_size)
+                        idx[i], idx[j] = idx[j], idx[i]
+        
+        image = image[idx]
+
+        # Add noise to the plant images
+        transform = transforms.Compose([
+                    transforms.RandomRotation(10),
+                    transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.2)])
+
+        image = transform(image)
+
+        return image
+    
+    def make_negative_seqs(self, seqs, shuffle=True, noise_level=0.2):
+        # Suffle the seqs along the batch dimension. make sure i != j
+        # Ensure i != j by checking for identity permutation and reshuffling if necessary
+        batch_size = seqs.size(0)
+        # 무작위로 인덱스를 섞음
+        if shuffle:
+            idx = np.random.permutation(batch_size)
+            if 0:
+                # 인덱스가 동일한 경우 요소를 교환하여 섞인 인덱스를 생성
+                while np.array_equal(idx, np.arange(batch_size)):
+                    for i in range(batch_size):
+                        if i == idx[i]:
+                            j = np.random.randint(0, batch_size)
+                            idx[i], idx[j] = idx[j], idx[i]
+            
+            seqs = seqs[idx]
+
+        # Add noise to seq
+        if 0:
+            noises = generate_noise_plant_tokens(seqs)
+        else:
+            noises = torch.randn_like(seqs) * noise_level
+        seqs = seqs + noises
+
+        return seqs
+    
     
     def compute_loss(self, batch, mode):
         image, y, lengths = batch
@@ -303,51 +345,61 @@ class MainModule(pl.LightningModule):
             param_loss = self.param_loss_fn_bylabel(label=label, values=values, pred=pred[:, self.seq_dim:])
 
 
-        # Embedding loss
-        # Make the A_seq_embedding to be close to the ground truth
-        gt_image_embedding = self.get_image_embedding(image)
-        gt_seq_embedding = self.get_seq_embedding(y_expected_seq)
-        
-        ones = torch.ones(image.size(0), device=gt_seq_embedding.device)
+        neg_images = self.make_negative_imgs(image)
+        neq_seqs = self.make_negative_seqs(y_expected_seq, shuffle=True)
+        ############ Embedding loss
+        # Teach embedding models with ground truth image and seqs
         # GT image embedding should be close to GT seq embedding
-        embedding_loss_gt = self.cosine_embedding_loss_function(gt_seq_embedding, gt_image_embedding, ones)
+        gt_image_embedding = self.get_image_embedding(image)     # Get the CLS token
+        neg_image_embedding = self.get_image_embedding(neg_images)     # Get the CLS token
+        gt_seq_embedding = self.SeqEmbeddingModel(y_expected_seq)
+        gt_neg_seq_embedding = self.SeqEmbeddingModel(neq_seqs)
+        ones = torch.ones(image.size(0), device=gt_seq_embedding.device)
+        #embedding_loss_gt = self.cosine_embedding_loss_function(gt_seq_embedding, gt_image_embedding, ones)
+        # embedding_loss_gt = self.mse_loss(gt_seq_embedding, gt_image_embedding)
+        embedding_loss_gt = self.triplet_loss(gt_seq_embedding, gt_image_embedding, neg_image_embedding) \
+                        + self.triplet_loss(gt_image_embedding, gt_seq_embedding, gt_neg_seq_embedding)
 
-        est_image = torch.zeros_like(image)
-        # Generate positive and negative images
-        with ThreadPoolExecutor() as executor:
-            pos_results = list(executor.map(lambda idx: self.helios.generate_image(idx, y_expected, self.image_size, "P"), range(y_expected.size(0))))
+        # Helios in loop
+        if 0:
+            est_image = torch.zeros_like(image)
+            # Generate positive and negative images
+            with ThreadPoolExecutor() as executor:
+                pos_results = list(executor.map(lambda idx: self.helios.generate_image(idx, y_expected, self.image_size, "P"), range(y_expected.size(0))))
 
-        for (batch_idx, pos_img) in pos_results:
-            pos_img = transforms.ToTensor()(pos_img)
-            est_image[batch_idx] = pos_img
+            for (batch_idx, pos_img) in pos_results:
+                pos_img = transforms.ToTensor()(pos_img)
+                est_image[batch_idx] = pos_img
 
-        # Get image embeddings, seq embeddings with no grad
-        # It will focus more on predicting the correct plant structure, not updating the embedding models
-        est_image_embedding = self.get_image_embedding(est_image)
-
-        with torch.no_grad():
-            est_seq_embedding = self.get_seq_embedding(pred)
-
+            # Get image embeddings, seq embeddings with no grad
+            # It will focus more on predicting the correct plant structure, not updating the embedding models
+            est_image_embedding = self.get_image_embedding(est_image)[:, 0, :]        # Get the CLS token
+        else:
+            est_image = None
         # Calculate embedding loss for estimated sequence embedding
         # embedding_loss_gen tries to make the seq embedding close to the image embedding
-        if 0:
-            # Use HELIOS generated image as the positive image training for image and seq embedding
-            # It will force the seq embedding to be close to the corresponding image embedding
-            embedding_loss_gen = self.cosine_embedding_loss_function(est_seq_embedding, est_image_embedding.detach(), ones)
-        else:
-            # Use GT image as the positive image training for image and seq embedding
-            # It will force the seq embedding to be close to the GT image embedding
-            embedding_loss_gen = self.cosine_embedding_loss_function(est_seq_embedding, gt_image_embedding.detach(), ones)
+        # It will force the seq embedding to be close to the GT image embedding
+        
+        # Calculate embedding loss for estimated sequence embedding
+        # no_grad() and detach() is used to prevent the model from updating the embedding models\
+        #with torch.no_grad():
+        # est_seq_embedding = self.get_seq_embedding(pred)
 
-        # Use HELIOS generated image as the positive image training for image and seq embedding
-        est_seq_embedding_helios = self.get_seq_embedding(pred.detach())
-        embedding_loss_helios = self.cosine_embedding_loss_function(est_seq_embedding_helios, est_image_embedding, ones)
+        no_update_embedding_on_gen = True
+        if no_update_embedding_on_gen:
+            for param in self.SeqEmbeddingModel.parameters():
+                param.requires_grad = False  # 파라미터의 기울기 계산 비활성화
 
-        # embedding_loss_fit is teaching the seq embedding fits the image embedding
-        embedding_loss_fit = (embedding_loss_gt + embedding_loss_helios) / 2 
+        est_seq_embedding = self.SeqEmbeddingModel(pred)
+        #embedding_loss_gen = self.cosine_embedding_loss_function(est_seq_embedding, gt_image_embedding.detach(), ones)
+        # embedding_loss_gen = self.mse_loss(est_seq_embedding, gt_image_embedding.detach())
+        embedding_loss_gen = self.triplet_loss(est_seq_embedding, gt_image_embedding.detach(), neg_image_embedding.detach())
+        if no_update_embedding_on_gen:
+            for param in self.SeqEmbeddingModel.parameters():
+                param.requires_grad = True  # 파라미터의 기울기 계산 활성화
 
         # Calculate average embedding loss
-        embedding_loss = embedding_loss_fit + embedding_loss_gen
+        embedding_loss = embedding_loss_gt + embedding_loss_gen
 
         # Calculate final loss
         #loss = (label_loss + self.alpha * param_loss) + embedding_loss
@@ -363,8 +415,7 @@ class MainModule(pl.LightningModule):
         if (self.current_train_step == 0 and mode == "train") or (self.current_val_step == 0 and mode == "val"):
             tensorboard_logger = self.logger.experiment
             tensorboard_logger.add_images(f'{mode}/input_images', image, self.current_epoch)
-            if est_image is not None:
-                tensorboard_logger.add_images(f'{mode}/helios_images', est_image, self.current_epoch)
+            tensorboard_logger.add_images(f'{mode}/neg_images', neg_images, self.current_epoch)
         return loss
 
     # def on_train_start(self):

@@ -460,3 +460,42 @@ class VAE(nn.Module):
             MSE /= x.size(0)
             KLD /= x.size(0)
             return MSE + KLD
+        
+
+class SeqEmbeddingModel(nn.Module):
+    def __init__(self, d_label,d_param, d_model, max_seq_length=2048, dropout=0.1):
+        super(SeqEmbeddingModel, self).__init__()
+        
+        self.d_label = d_label
+        self.d_param = d_param
+        self.d_model = d_model
+        self.max_seq_length = max_seq_length
+
+        self.seq_embedding_layer = nn.Linear(d_label+d_param, d_model)
+        transformer_encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=8)
+        self.seq_embedding_transformer = nn.TransformerEncoder(transformer_encoder_layer, num_layers=6)
+        self.positional_encoding = PositionalEncoding(dim_model=d_model, max_len=2048, dropout_p=0.1)
+        self.positional_encoding.eval()
+
+    def forward(self, x, label=None):
+        # This is a simple embedding layer
+        # It will be replaced by a transformer model in the future
+        # seq: (batch_size, seq_len)
+        
+        # Get the label from the sequence 
+        # num with highest probability
+        if label is None:
+            label = x.permute(0,2,1)[:,:,:self.d_label].topk(1)[1].squeeze()  
+    
+        # Make B X D X L to L X B X D
+        x = x.permute(2, 0, 1)
+        x = self.seq_embedding_layer(x)
+        x = self.positional_encoding(x)
+        x = self.seq_embedding_transformer(x)
+
+        # Get the last token based on the EOS token (label == 42, the largest number)
+        x = x.permute(1, 0, 2)
+        x, _ = text_global_pool(x, label, 'argmax')
+            
+        return x
+        

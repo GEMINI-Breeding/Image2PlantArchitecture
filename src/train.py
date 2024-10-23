@@ -35,7 +35,7 @@ if __name__ == "__main__":
     datamodule = MainDataModule(dataset_dir,
                                 image_size=module.image_size,
                                 load_depth=False,
-                                train_batch_size=4, num_workers=4, process_leaf=True, preload=True)
+                                train_batch_size=16, num_workers=4, process_leaf=True, preload=True)
     tqdm_cb = TQDMProgressBar(refresh_rate=10)
 
     # Generate today's date string in YYYYMMDD format
