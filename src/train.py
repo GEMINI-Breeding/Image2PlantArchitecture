@@ -59,8 +59,8 @@ if __name__ == "__main__":
     lr_monitor = LearningRateMonitor(logging_interval='epoch')
 
     early_stop_cb = EarlyStopping(
-        monitor='val/loss',
-        patience=50,
+        monitor='val/loss', # Metric to monitor
+        patience=60,
         verbose=True,
         mode='min'
     )

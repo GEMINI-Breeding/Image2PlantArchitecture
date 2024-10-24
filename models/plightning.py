@@ -69,6 +69,8 @@ class MainModule(pl.LightningModule):
         super(MainModule, self).__init__()
         self.save_hyperparameters()  # 전달된 모든 인수를 저장
 
+        self.automatic_optimization = False
+
         self.current_script_dir = os.path.dirname(os.path.abspath(__file__))
         self.num_layers = num_layers
         self.num_heads = num_heads
@@ -360,8 +362,13 @@ class MainModule(pl.LightningModule):
         ones = torch.ones(image.size(0), device=gt_seq_embedding.device)
         #embedding_loss_gt = self.cosine_embedding_loss_function(gt_seq_embedding, gt_image_embedding, ones)
         # embedding_loss_gt = self.mse_loss(gt_seq_embedding, gt_image_embedding)
-        embedding_loss_gt = (self.triplet_loss(gt_seq_embedding.detach(), gt_image_embedding, neg_image_embedding) \
-                        + self.triplet_loss(gt_image_embedding.detach(), gt_seq_embedding, gt_neg_seq_embedding))/2
+        if 0:
+            embedding_loss_gt = (self.triplet_loss(gt_seq_embedding.detach(), gt_image_embedding, neg_image_embedding) \
+                            + self.triplet_loss(gt_image_embedding.detach(), gt_seq_embedding, gt_neg_seq_embedding))/2
+        else:
+            image_embedding_loss = self.triplet_loss(gt_seq_embedding.detach(), gt_image_embedding, neg_image_embedding)
+            seq_embedding_loss = self.triplet_loss(gt_image_embedding.detach(), gt_seq_embedding, gt_neg_seq_embedding)
+            embedding_loss_gt = (image_embedding_loss + seq_embedding_loss) / 2
 
         # Helios in loop
         if 0:
@@ -388,9 +395,9 @@ class MainModule(pl.LightningModule):
         #with torch.no_grad():
         # est_seq_embedding = self.get_seq_embedding(pred)
         
-        self.SeqEmbeddingModel.eval()
+        #self.SeqEmbeddingModel.eval()
         est_seq_embedding = self.SeqEmbeddingModel(pred)
-        self.SeqEmbeddingModel.train()
+        # self.SeqEmbeddingModel.train()
         #embedding_loss_gen = self.cosine_embedding_loss_function(est_seq_embedding, gt_image_embedding.detach(), ones)
         # embedding_loss_gen = self.mse_loss(est_seq_embedding, gt_image_embedding.detach())
         embedding_loss_gen = self.triplet_loss(est_seq_embedding, gt_image_embedding.detach(), neg_image_embedding.detach())
@@ -404,20 +411,29 @@ class MainModule(pl.LightningModule):
         # else:
         #     loss = (label_loss + param_loss) + embedding_loss
         
-        loss = embedding_loss # Test only label loss
+        # loss = embedding_loss # Test only label loss
+        total_loss = label_loss + param_loss + 0.1*embedding_loss # Metric for checkpoint saving and early stopping
 
         self.log(f'{mode}/label_loss', label_loss, batch_size=image.size(0), sync_dist=True)
         self.log(f'{mode}/param_loss', param_loss, batch_size=image.size(0), sync_dist=True)
         self.log(f'{mode}/embedding_loss', embedding_loss, batch_size=image.size(0), sync_dist=True)
         self.log(f'{mode}/embedding_loss_gen', embedding_loss_gen, batch_size=image.size(0), sync_dist=True)
-        self.log(f'{mode}/loss', loss, batch_size=image.size(0), sync_dist=True)
+        self.log(f'{mode}/loss', total_loss, batch_size=image.size(0), sync_dist=True)
 
         # Add images to tensorboard
         if (self.current_train_step == 0 and mode == "train") or (self.current_val_step == 0 and mode == "val"):
             tensorboard_logger = self.logger.experiment
             tensorboard_logger.add_images(f'{mode}/input_images', image, self.current_epoch)
             tensorboard_logger.add_images(f'{mode}/neg_images', neg_images, self.current_epoch)
-        return loss
+
+        #return loss
+        decoder_loss = label_loss + param_loss + embedding_loss_gen
+        embedding_loss = embedding_loss_gt
+
+        self.log(f'{mode}/decoder_loss', decoder_loss, batch_size=image.size(0), sync_dist=True)
+        self.log(f'{mode}/embedding_loss', embedding_loss, batch_size=image.size(0), sync_dist=True)
+
+        return decoder_loss, embedding_loss
 
     # def on_train_start(self):
     #     tensorboard_logger = self.logger.experiment
@@ -425,9 +441,26 @@ class MainModule(pl.LightningModule):
     #     tensorboard_logger.add_graph(self, prototype_array)
 
     def training_step(self, batch, batch_idx):
-        loss = self.compute_loss(batch, 'train')
+        opt_decoder, opt_emb = self.optimizers()
+        opt_decoder.zero_grad()
+        opt_emb.zero_grad()
+        losses = self.compute_loss(batch, 'train')
+        self.manual_backward(losses[0])
+        self.manual_backward(losses[1])
+        opt_decoder.step()
+        opt_emb.step()
         self.current_train_step += 1
-        return loss
+        # return losses
+
+    def on_train_epoch_end(self):
+        sch_decoder, sch_emb = self.lr_schedulers()
+        # If the selected scheduler is a ReduceLROnPlateau scheduler.
+        if isinstance(sch_decoder, torch.optim.lr_scheduler.ReduceLROnPlateau):
+            sch_decoder.step(self.trainer.callback_metrics["val/decoder_loss"])
+
+        if isinstance(sch_emb, torch.optim.lr_scheduler.ReduceLROnPlateau):
+            sch_emb.step(self.trainer.callback_metrics["val/embedding_loss"])
+
 
     def validation_step(self, batch, batch_idx):
         loss = self.compute_loss(batch, 'val')
@@ -451,31 +484,37 @@ class MainModule(pl.LightningModule):
             self.current_val_step = 0
 
     def configure_optimizers(self):
-        if 0:
-            optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
-        else:
-            optimizer = torch.optim.Adam([
-                {'params': self.SeqEmbeddingModel.parameters(), 'lr': self.lr * 0.01},  # 임베딩 모듈
-                {'params': self.image_encoder.parameters()},  # 다른 모듈 1
-                {'params': self.sequence_decoder.parameters()},  # 다른 모듈 2
-            ], lr=self.lr) # Default lr for the rest of the model
+
+        optimizer = torch.optim.Adam([
+            {'params': self.sequence_decoder.parameters()},  # 다른 모듈 2
+        ], lr=self.lr) # Default lr for the rest of the model
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=20, min_lr=1e-6)
+
+        optimizer_seq = torch.optim.Adam([
+            {'params': self.image_encoder.parameters(), 'lr': self.lr*1e-2},  # 다른 모듈 1
+            {'params': self.SeqEmbeddingModel.parameters(), 'lr': self.lr*1e-2},  # 임베딩 모듈
+        ], lr=self.lr)
+        scheduler_seq = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer_seq, mode='min', factor=0.1, patience=20, min_lr=1e-8)
         
-        if 1:
-            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=10, min_lr=1e-7)
-        else:
-            scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=50, gamma=0.5)
-
-        # return optimizer
-        return {
-            'optimizer': optimizer,
-            'lr_scheduler': {
-                'scheduler': scheduler,
-                'monitor': 'val/loss',
-                'interval': 'epoch',
-                'frequency': 1
-            }
-        }
-
+        # Return optimizers
+        # return ({
+        #     'optimizer': optimizer,
+        #     'lr_scheduler': {
+        #         'scheduler': scheduler,
+        #         'monitor': 'val/loss',
+        #         'interval': 'epoch',
+        #         'frequency': 1
+        #     },
+        #     'optimizer': optimizer_seq,
+        #     'lr_scheduler': {
+        #         'scheduler': scheduler_seq,
+        #         'monitor': 'val/loss',
+        #         'interval': 'epoch',
+        #         'frequency': 1
+        #     }
+        # })
+        return [optimizer, optimizer_seq], [scheduler, scheduler_seq]
+    
 class MainDataModule(pl.LightningDataModule):
     def __init__(self, dataset_dir, train_batch_size=16, val_batch_size=None,
                         num_workers=4, image_size=448, 
