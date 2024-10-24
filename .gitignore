@@ -177,3 +177,4 @@ src/output*
 tests/lightning_logs
 *.pth
 *.mp4
+src/attention_output*

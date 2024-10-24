@@ -57,7 +57,7 @@ class plantstring2model:
         command += f"-o {output_file_name} "
 
         if self.verbose == False:
-            command += " > log.txt &1"
+            command += " > log.txt 2>&1"
             
         # Run the command using os.system
         # os.system(f"{command}")

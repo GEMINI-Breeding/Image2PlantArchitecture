@@ -115,18 +115,12 @@ class MainModule(pl.LightningModule):
             dropout=self.dropout,
         )
 
-        # self.seq_embedding_layer = nn.Linear(self.seq_dim+self.param_dim, self.seq_embedding_dim+self.param_embedding_dim)
-        # transformer_encoder_layer = nn.TransformerEncoderLayer(d_model=self.seq_embedding_dim+self.param_embedding_dim, nhead=8)
-        # self.seq_embedding_transformer = nn.TransformerEncoder(transformer_encoder_layer, num_layers=6)
-        # self.positional_encoding = PositionalEncoding(dim_model=self.seq_embedding_dim+self.param_embedding_dim, max_len=2048, dropout_p=0.1)
-        # self.positional_encoding.eval()
         self.SeqEmbeddingModel = SeqEmbeddingModel(d_label=self.seq_dim,
                                                    d_param=self.param_dim,
                                                    d_model=seq_embedding_dim+param_embedding_dim)
 
         self.multihead_attn_weights = None
         self.self_attn_weights = None
-
 
 
         self.helios_path = os.path.join(self.current_script_dir, "../src/PlantString2Model/build")
@@ -177,6 +171,9 @@ class MainModule(pl.LightningModule):
 
         y_input = y_input.unsqueeze(0).unsqueeze(0)
         y_input = y_input.to(device)
+
+        if self.use_depth:
+            image = self.add_depth_to_image(image)
 
         feature = self.image_encoder(image)
         for i in range(max_len):
@@ -363,8 +360,8 @@ class MainModule(pl.LightningModule):
         ones = torch.ones(image.size(0), device=gt_seq_embedding.device)
         #embedding_loss_gt = self.cosine_embedding_loss_function(gt_seq_embedding, gt_image_embedding, ones)
         # embedding_loss_gt = self.mse_loss(gt_seq_embedding, gt_image_embedding)
-        embedding_loss_gt = (self.triplet_loss(gt_seq_embedding, gt_image_embedding, neg_image_embedding) \
-                        + self.triplet_loss(gt_image_embedding, gt_seq_embedding, gt_neg_seq_embedding))/2
+        embedding_loss_gt = (self.triplet_loss(gt_seq_embedding.detach(), gt_image_embedding, neg_image_embedding) \
+                        + self.triplet_loss(gt_image_embedding.detach(), gt_seq_embedding, gt_neg_seq_embedding))/2
 
         # Helios in loop
         if 0:
@@ -390,26 +387,24 @@ class MainModule(pl.LightningModule):
         # no_grad() and detach() is used to prevent the model from updating the embedding models\
         #with torch.no_grad():
         # est_seq_embedding = self.get_seq_embedding(pred)
-
-        no_update_embedding_on_gen = True
-        if no_update_embedding_on_gen:
-            for param in self.SeqEmbeddingModel.parameters():
-                param.requires_grad = False  # 파라미터의 기울기 계산 비활성화
-
+        
+        self.SeqEmbeddingModel.eval()
         est_seq_embedding = self.SeqEmbeddingModel(pred)
+        self.SeqEmbeddingModel.train()
         #embedding_loss_gen = self.cosine_embedding_loss_function(est_seq_embedding, gt_image_embedding.detach(), ones)
         # embedding_loss_gen = self.mse_loss(est_seq_embedding, gt_image_embedding.detach())
         embedding_loss_gen = self.triplet_loss(est_seq_embedding, gt_image_embedding.detach(), neg_image_embedding.detach())
-        if no_update_embedding_on_gen:
-            for param in self.SeqEmbeddingModel.parameters():
-                param.requires_grad = True  # 파라미터의 기울기 계산 활성화
 
         # Calculate average embedding loss
         embedding_loss = (embedding_loss_gt + embedding_loss_gen) / 2
 
-        # Calculate final loss
-        loss = (label_loss + self.alpha * param_loss) + embedding_loss
-        #loss = embedding_loss # Test only label loss
+        # # Calculate final loss
+        # if self.lr > 1e-5:
+        #     loss = label_loss + param_loss + 2 # Max embedding loss is 2 
+        # else:
+        #     loss = (label_loss + param_loss) + embedding_loss
+        
+        loss = embedding_loss # Test only label loss
 
         self.log(f'{mode}/label_loss', label_loss, batch_size=image.size(0), sync_dist=True)
         self.log(f'{mode}/param_loss', param_loss, batch_size=image.size(0), sync_dist=True)
@@ -456,7 +451,15 @@ class MainModule(pl.LightningModule):
             self.current_val_step = 0
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
+        if 0:
+            optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
+        else:
+            optimizer = torch.optim.Adam([
+                {'params': self.SeqEmbeddingModel.parameters(), 'lr': self.lr * 0.01},  # 임베딩 모듈
+                {'params': self.image_encoder.parameters()},  # 다른 모듈 1
+                {'params': self.sequence_decoder.parameters()},  # 다른 모듈 2
+            ], lr=self.lr) # Default lr for the rest of the model
+        
         if 1:
             scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=10, min_lr=1e-7)
         else:
@@ -893,7 +896,7 @@ class SimpleRegressionTest(MainModule):
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
         if 1:
-            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=10, min_lr=1e-6)
+            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=10, min_lr=1e-8)
         else:
             scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=50, gamma=0.5)
         return {
