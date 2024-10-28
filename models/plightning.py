@@ -31,6 +31,8 @@ from src.utils import coordinates_to_angle
 import pickle
 import copy
 
+from models.model import PlantArchitectureTransformer
+
 # from open_clip.transformer import text_global_pool
 
 # Disable fastpath for TransformerEncoder and MultiHeadAttention
@@ -116,10 +118,14 @@ class MainModule(pl.LightningModule):
             image_size=self.image_size,
             dropout=self.dropout,
         )
-
-        self.SeqEmbeddingModel = SeqEmbeddingModel(d_label=self.seq_dim,
-                                                   d_param=self.param_dim,
-                                                   d_model=seq_embedding_dim+param_embedding_dim)
+        if 0:
+            self.SeqEmbeddingModel = SeqEmbeddingModel(d_label=self.seq_dim,
+                                                    d_param=self.param_dim,
+                                                    d_model=seq_embedding_dim+param_embedding_dim)
+        else:
+            self.SeqEmbeddingModel = PlantArchitectureTransformer(d_label=self.seq_dim,
+                                                                d_param=self.param_dim,
+                                                                d_model=seq_embedding_dim+param_embedding_dim,)
 
         self.multihead_attn_weights = None
         self.self_attn_weights = None
@@ -164,7 +170,7 @@ class MainModule(pl.LightningModule):
             image = self.add_depth_to_image(image)
         features = self.image_encoder(image)
         outputs = self.sequence_decoder(features, y_input, tgt_mask=tgt_mask, tgt_key_padding_mask=tgt_pad_mask)
-        outputs = outputs.permute(1, 2, 0)
+        outputs = outputs.permute(1, 0, 2)
         return outputs
     
     def generate(self, image, max_len=2048, stage='val'):
@@ -197,8 +203,8 @@ class MainModule(pl.LightningModule):
             params = pred[:,:,self.seq_dim:]
 
             # Stop if model predicts end of sentencplant_structure_vit_transformer_withpsudodepth_paramEste
-            # if label == EOS_token or label == PAD_token:
-            if label == EOS_token:
+            ## if label == EOS_token:
+            if label == EOS_token or label == PAD_token:
                 break
 
             # Make next tensor using label and params
@@ -317,58 +323,66 @@ class MainModule(pl.LightningModule):
                         if i == idx[i]:
                             j = np.random.randint(0, batch_size)
                             idx[i], idx[j] = idx[j], idx[i]
-            
             seqs = seqs[idx]
 
         # Add noise to seq
         if 0:
             noises = generate_noise_plant_tokens(seqs)
         else:
-            noises = torch.randn_like(seqs) * noise_level
+            noises = torch.randn_like(seqs, requires_grad=True) * noise_level
         seqs = seqs + noises
 
         return seqs
     
     
     def compute_loss(self, batch, mode):
+        # Load optimizers
+        if mode == "train":
+            opt_decoder, opt_emb = self.optimizers()
+
+        # Load batch and preprocess
         image, y, lengths = batch
         y_input = y[:, :-1]
-        pred = self(image, y_input)
-
         y_expected = y[:, 1:]
         label = y_expected[:, :, 0].long()
         label_onehot = F.one_hot(label, num_classes=self.seq_dim).float()
         y_expected_seq = torch.cat((label_onehot, y_expected[:, :, 1:]), dim=2)
-        y_expected_seq = y_expected_seq.permute(0, 2, 1)
-        values = y_expected[:, :, 1:].permute(0, 2, 1)
-
-        label_loss = self.label_loss_fn(pred[:, :self.seq_dim], label)
-        if 1:
-            param_loss = self.param_loss_fn(pred[:, self.seq_dim:], values)
-        else:
-            param_loss = self.param_loss_fn_bylabel(label=label, values=values, pred=pred[:, self.seq_dim:])
-
-        # Make negative images and seqs samples
-        neg_images = self.make_negative_imgs(image)
-        neq_seqs = self.make_negative_seqs(y_expected_seq, shuffle=True)
+        values = y_expected[:, :, 1:]
 
         ############ Embedding loss
         # Teach embedding models with ground truth image and seqs
         # GT image embedding should be close to GT seq embedding
+        # Make negative images and seqs samples
+        neg_images = self.make_negative_imgs(image)
+        y_expected_seq_neg = self.make_negative_seqs(y_expected_seq, shuffle=True)
+
         gt_image_embedding = self.get_image_embedding(image)     # Get the CLS token
         neg_image_embedding = self.get_image_embedding(neg_images)     # Get the CLS token
         gt_seq_embedding = self.SeqEmbeddingModel(y_expected_seq)
-        gt_neg_seq_embedding = self.SeqEmbeddingModel(neq_seqs)
+        gt_neg_seq_embedding = self.SeqEmbeddingModel(y_expected_seq_neg)
         ones = torch.ones(image.size(0), device=gt_seq_embedding.device)
         #embedding_loss_gt = self.cosine_embedding_loss_function(gt_seq_embedding, gt_image_embedding, ones)
         # embedding_loss_gt = self.mse_loss(gt_seq_embedding, gt_image_embedding)
         if 0:
-            embedding_loss_gt = (self.triplet_loss(gt_seq_embedding.detach(), gt_image_embedding, neg_image_embedding) \
+            embedding_loss_fit = (self.triplet_loss(gt_seq_embedding.detach(), gt_image_embedding, neg_image_embedding) \
                             + self.triplet_loss(gt_image_embedding.detach(), gt_seq_embedding, gt_neg_seq_embedding))/2
         else:
             image_embedding_loss = self.triplet_loss(gt_seq_embedding.detach(), gt_image_embedding, neg_image_embedding)
             seq_embedding_loss = self.triplet_loss(gt_image_embedding.detach(), gt_seq_embedding, gt_neg_seq_embedding)
-            embedding_loss_gt = (image_embedding_loss + seq_embedding_loss) / 2
+            embedding_loss_fit = (image_embedding_loss + seq_embedding_loss) / 2
+
+        if mode == "train":
+            opt_emb.zero_grad()
+            self.manual_backward(embedding_loss_fit)
+            opt_emb.step()
+
+        # Decoder loss
+        pred = self(image, y_input)
+        label_loss = self.label_loss_fn(pred[:, :, :self.seq_dim].permute(0, 2, 1), label) # (N, C, L)
+        if 1:
+            param_loss = self.param_loss_fn(pred[:, :, self.seq_dim:], values)
+        else:
+            param_loss = self.param_loss_fn_bylabel(label=label, values=values, pred=pred[:, :, self.seq_dim:])
 
         # Helios in loop
         if 0:
@@ -395,44 +409,41 @@ class MainModule(pl.LightningModule):
         #with torch.no_grad():
         # est_seq_embedding = self.get_seq_embedding(pred)
         
-        #self.SeqEmbeddingModel.eval()
+        self.SeqEmbeddingModel.eval()
         est_seq_embedding = self.SeqEmbeddingModel(pred)
-        # self.SeqEmbeddingModel.train()
+        neg_est_seq_embedding = self.SeqEmbeddingModel(self.make_negative_seqs(pred, shuffle=True))
+        # embedding_loss_gen = self.triplet_loss(est_seq_embedding, gt_image_embedding.detach(), neg_image_embedding.detach())
+        embedding_loss_gen = self.triplet_loss(gt_image_embedding.detach(), est_seq_embedding, neg_est_seq_embedding)
         #embedding_loss_gen = self.cosine_embedding_loss_function(est_seq_embedding, gt_image_embedding.detach(), ones)
-        # embedding_loss_gen = self.mse_loss(est_seq_embedding, gt_image_embedding.detach())
-        embedding_loss_gen = self.triplet_loss(est_seq_embedding, gt_image_embedding.detach(), neg_image_embedding.detach())
 
-        # Calculate average embedding loss
-        embedding_loss = (embedding_loss_gt + embedding_loss_gen) / 2
+        decoder_loss = label_loss + param_loss + embedding_loss_gen
 
-        # # Calculate final loss
-        # if self.lr > 1e-5:
-        #     loss = label_loss + param_loss + 2 # Max embedding loss is 2 
-        # else:
-        #     loss = (label_loss + param_loss) + embedding_loss
+        if mode == "train":
+            opt_decoder.zero_grad()
+            self.manual_backward(decoder_loss)
+            opt_decoder.step()
         
+        self.SeqEmbeddingModel.train()
+
+        ######### Tensorboard logging
+        # Calculate average embedding loss
+        embedding_loss = (embedding_loss_fit + embedding_loss_gen) / 2
         # loss = embedding_loss # Test only label loss
-        total_loss = label_loss + param_loss + 0.1*embedding_loss # Metric for checkpoint saving and early stopping
+        total_loss_metric = label_loss + param_loss + 0.1*embedding_loss # Metric for checkpoint saving and early stopping
 
         self.log(f'{mode}/label_loss', label_loss, batch_size=image.size(0), sync_dist=True)
         self.log(f'{mode}/param_loss', param_loss, batch_size=image.size(0), sync_dist=True)
         self.log(f'{mode}/embedding_loss', embedding_loss, batch_size=image.size(0), sync_dist=True)
         self.log(f'{mode}/embedding_loss_gen', embedding_loss_gen, batch_size=image.size(0), sync_dist=True)
-        self.log(f'{mode}/loss', total_loss, batch_size=image.size(0), sync_dist=True)
+        self.log(f'{mode}/decoder_loss', decoder_loss, batch_size=image.size(0), sync_dist=True)
+        self.log(f'{mode}/loss', total_loss_metric, batch_size=image.size(0), sync_dist=True)
 
         # Add images to tensorboard
         if (self.current_train_step == 0 and mode == "train") or (self.current_val_step == 0 and mode == "val"):
             tensorboard_logger = self.logger.experiment
             tensorboard_logger.add_images(f'{mode}/input_images', image, self.current_epoch)
             tensorboard_logger.add_images(f'{mode}/neg_images', neg_images, self.current_epoch)
-
-        #return loss
-        decoder_loss = label_loss + param_loss + embedding_loss_gen
-        embedding_loss = embedding_loss_gt
-
-        self.log(f'{mode}/decoder_loss', decoder_loss, batch_size=image.size(0), sync_dist=True)
-        self.log(f'{mode}/embedding_loss', embedding_loss, batch_size=image.size(0), sync_dist=True)
-
+        
         return decoder_loss, embedding_loss
 
     # def on_train_start(self):
@@ -441,14 +452,7 @@ class MainModule(pl.LightningModule):
     #     tensorboard_logger.add_graph(self, prototype_array)
 
     def training_step(self, batch, batch_idx):
-        opt_decoder, opt_emb = self.optimizers()
-        opt_decoder.zero_grad()
-        opt_emb.zero_grad()
         losses = self.compute_loss(batch, 'train')
-        self.manual_backward(losses[0])
-        self.manual_backward(losses[1])
-        opt_decoder.step()
-        opt_emb.step()
         self.current_train_step += 1
         # return losses
 
@@ -460,7 +464,6 @@ class MainModule(pl.LightningModule):
 
         if isinstance(sch_emb, torch.optim.lr_scheduler.ReduceLROnPlateau):
             sch_emb.step(self.trainer.callback_metrics["val/embedding_loss"])
-
 
     def validation_step(self, batch, batch_idx):
         loss = self.compute_loss(batch, 'val')
@@ -485,16 +488,17 @@ class MainModule(pl.LightningModule):
 
     def configure_optimizers(self):
 
-        optimizer = torch.optim.Adam([
+        optimizer_main = torch.optim.Adam([
+            {'params': self.image_encoder.parameters(), 'lr': self.lr*1e-2},  # Optimzer for plant architecture model
             {'params': self.sequence_decoder.parameters()},  # 다른 모듈 2
         ], lr=self.lr) # Default lr for the rest of the model
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=20, min_lr=1e-6)
+        scheduler_main = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer_main, mode='min', factor=0.1, patience=20, min_lr=1e-6)
 
-        optimizer_seq = torch.optim.Adam([
-            {'params': self.image_encoder.parameters(), 'lr': self.lr*1e-2},  # 다른 모듈 1
+        optimizer_emb = torch.optim.Adam([
+            # {'params': self.image_encoder.parameters(), 'lr': self.lr*1e-2},  # Optimzer from enmbedding model
             {'params': self.SeqEmbeddingModel.parameters(), 'lr': self.lr*1e-2},  # 임베딩 모듈
         ], lr=self.lr)
-        scheduler_seq = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer_seq, mode='min', factor=0.1, patience=20, min_lr=1e-8)
+        scheduler_emb = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer_emb, mode='min', factor=0.1, patience=20, min_lr=1e-8)
         
         # Return optimizers
         # return ({
@@ -513,7 +517,7 @@ class MainModule(pl.LightningModule):
         #         'frequency': 1
         #     }
         # })
-        return [optimizer, optimizer_seq], [scheduler, scheduler_seq]
+        return [optimizer_main, optimizer_emb], [scheduler_main, scheduler_emb]
     
 class MainDataModule(pl.LightningDataModule):
     def __init__(self, dataset_dir, train_batch_size=16, val_batch_size=None,

@@ -42,7 +42,7 @@ if __name__ == "__main__":
     # Generate today's date string in YYYYMMDD format
     today_date_str = datetime.now().strftime('%Y%m%d')
     tb_logger = TensorBoardLogger(
-        name=f'{today_date_str}_TotalLoss_SubsetData',
+        name=f'{today_date_str}_SeqEmbTest',
         save_dir='./log'
     )
 
@@ -68,7 +68,7 @@ if __name__ == "__main__":
     trainer = pl.Trainer(
         accelerator="gpu",
         devices="auto",
-        max_epochs=200,
+        max_epochs=400,
         callbacks=[tqdm_cb, ckpt_cb, lr_monitor, early_stop_cb, 
                 #    FineTuneBatchSizeFinder(milestones=(5, 10)),
                 #    FineTuneLearningRateFinder(milestones=(5, 10))

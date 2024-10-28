@@ -203,10 +203,13 @@ class ViT_FeatureExtractor(nn.Module):
 
 
     def forward(self, x):
-        # x = self.img_proc(images=x, return_tensors="pt").to(x.device)
-        # x = self.model(**x).last_hidden_state
-        x = self.normalize(x)
-        x = self.model(x).last_hidden_state
+        if 0:
+            # Use Dinov2 image processor
+            x = self.img_proc(images=x, return_tensors="pt").to(x.device)
+            x = self.model(**x).last_hidden_state
+        else:
+            x = self.normalize(x)
+            x = self.model(x).last_hidden_state
         if self.output_size != 768:
             x = self.fc(x)
             x = nn.ReLU()(x)
@@ -465,7 +468,9 @@ class SeqEmbeddingModel(nn.Module):
         self.d_model = d_model
         self.max_seq_length = max_seq_length
 
-        self.seq_embedding_layer = nn.Linear(d_label+d_param, d_model)
+        self.label_embedding = nn.Linear(d_label, d_model)
+        self.param_embedding = nn.Linear(d_param, d_model)
+        # self.seq_embedding_layer = nn.Linear(d_label+d_param, d_model)
         transformer_encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=8)
         self.seq_embedding_transformer = nn.TransformerEncoder(transformer_encoder_layer, num_layers=6)
         self.positional_encoding = PositionalEncoding(dim_model=d_model, max_len=2048, dropout_p=0.1)
@@ -479,11 +484,13 @@ class SeqEmbeddingModel(nn.Module):
         # Get the label from the sequence 
         # num with highest probability
         if label is None:
-            label = x.permute(0,2,1)[:,:,:self.d_label].topk(1)[1].squeeze()  
-    
-        # Make B X D X L to L X B X D
-        x = x.permute(2, 0, 1)
-        x = self.seq_embedding_layer(x)
+            label = x[:,:,:self.d_label].topk(1)[1].squeeze()  
+        
+        label_embedding = self.label_embedding(x[:,:,:self.d_label])
+        param_embedding = self.param_embedding(x[:,:,self.d_label:])
+        x = label_embedding + param_embedding
+
+        x = x.permute(1, 0, 2) # Make BLD -> LBD
         x = self.positional_encoding(x)
         x = self.seq_embedding_transformer(x)
 
@@ -493,3 +500,66 @@ class SeqEmbeddingModel(nn.Module):
             
         return x
         
+from open_clip.model import TextTransformer
+
+def _expand_token(token, batch_size: int):
+    return token.view(1, 1, -1).expand(batch_size, -1, -1)
+
+class PlantArchitectureTransformer(TextTransformer):
+    def __init__(self, d_label, d_param, d_model, max_seq_length=2048, dropout=0.1):
+        super(PlantArchitectureTransformer, self).__init__(context_length=max_seq_length,
+                                                           vocab_size=d_label,
+                                                           layers=6,
+                                                           width=d_model,
+                                                           output_dim=d_model)
+        
+        self.token_embedding = nn.Linear(d_label, d_model)
+        self.parameter_embedding = nn.Linear(d_param, d_model)
+        self.d_param = d_param
+        self.d_label = d_label
+
+    
+    def forward(self, plant_architecture):
+
+        cast_dtype = self.transformer.get_cast_dtype()
+        seq_len = plant_architecture.shape[1]
+        
+        label_p = plant_architecture[:, :, :self.d_label]
+        label = label_p.argmax(dim=-1)
+        param = plant_architecture[:, :, self.d_label:]
+
+        x = self.token_embedding(label_p).to(cast_dtype)  # [batch_size, n_ctx, d_model]
+        x = x + self.parameter_embedding(param).to(cast_dtype)
+
+        attn_mask = self.attn_mask
+        if self.cls_emb is not None:
+            seq_len += 1
+            x = torch.cat([x, _expand_token(self.cls_emb, x.shape[0])], dim=1)
+            cls_mask = self.build_cls_mask(plant_architecture, cast_dtype)
+            if attn_mask is not None:
+                attn_mask = attn_mask[None, :seq_len, :seq_len] + cls_mask[:, :seq_len, :seq_len]
+        attn_mask = attn_mask[None, :seq_len, :seq_len].squeeze(0)
+        x = x + self.positional_embedding[:seq_len].to(cast_dtype)
+        x = x.permute(1, 0, 2)  # NLD -> LND
+        x = self.transformer(x, attn_mask=attn_mask)
+        x = x.permute(1, 0, 2)  # LND -> NLD
+
+        # x.shape = [batch_size, n_ctx, transformer.width]
+        if self.cls_emb is not None:
+            # presence of appended cls embed (CoCa) overrides pool_type, always take last token
+            pooled, tokens = text_global_pool(x, pool_type='last')
+            pooled = self.ln_final(pooled)  # final LN applied after pooling in this case
+        else:
+            x = self.ln_final(x)
+            pooled, tokens = text_global_pool(x, label, pool_type=self.pool_type)
+
+        if self.text_projection is not None:
+            if isinstance(self.text_projection, nn.Linear):
+                pooled = self.text_projection(pooled)
+            else:
+                pooled = pooled @ self.text_projection
+
+        if self.output_tokens:
+            return pooled, tokens
+
+        return pooled
