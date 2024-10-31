@@ -67,7 +67,9 @@ class MainModule(pl.LightningModule):
                  seq_dim=43, seq_embedding_dim=768//2, 
                  param_dim=22, param_embedding_dim=768//2, 
                  image_size=224, alpha=1.0, lr=1e-5, 
-                 dropout=0.10, use_depth=False):
+                 dropout=0.10, 
+                 latent_dim=128,
+                 use_depth=False):
         super(MainModule, self).__init__()
         self.save_hyperparameters()  # 전달된 모든 인수를 저장
 
@@ -96,6 +98,12 @@ class MainModule(pl.LightningModule):
             transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
         ])
 
+        self.latent_dim = latent_dim
+        self.use_vae = True
+        if self.use_vae:
+            self.vae = VAE(latent_dim=latent_dim)
+            if 1:
+                self.vae.load_state_dict(torch.load(os.path.join(script_file_dir,"../models/checkpoints/vae_best_20241015.pth")))
 
         if self.use_depth:
             self.depth_est_img_proc = AutoImageProcessor.from_pretrained("depth-anything/Depth-Anything-V2-Small-hf")
@@ -125,7 +133,7 @@ class MainModule(pl.LightningModule):
         else:
             self.SeqEmbeddingModel = PlantArchitectureTransformer(d_label=self.seq_dim,
                                                                 d_param=self.param_dim,
-                                                                d_model=seq_embedding_dim+param_embedding_dim,)
+                                                                d_model=latent_dim)
 
         self.multihead_attn_weights = None
         self.self_attn_weights = None
@@ -145,8 +153,9 @@ class MainModule(pl.LightningModule):
         
         self.cosine_embedding_loss_function = nn.CosineEmbeddingLoss(margin=0.0, reduction='mean')
         self.mse_loss = nn.MSELoss()
-        #self.triplet_loss = nn.TripletMarginLoss(margin=10.0, p=2)
-        self.triplet_loss = nn.TripletMarginWithDistanceLoss(distance_function=lambda x, y: 1.0 - F.cosine_similarity(x, y), margin=2.0)
+        self.triplet_margin = 5
+        self.triplet_loss = nn.TripletMarginLoss(margin=self.triplet_margin, p=2)
+        #self.triplet_loss = nn.TripletMarginWithDistanceLoss(distance_function=lambda x, y: 1.0 - F.cosine_similarity(x, y), margin=2.0)
         if 0:
             # Test to generate 2048 tokens if memory is not enough
             try:
@@ -252,9 +261,15 @@ class MainModule(pl.LightningModule):
     def get_image_embedding(self, image):
         if self.use_depth:
             image = self.add_depth_to_image(image)
-        x = self.image_encoder(image)
-        # Get the CLS token
-        x = x[:, 0, :]
+            
+        if self.use_vae:
+            #x, _ = self.vae.encode(image)
+            recon, mu, logvar, z = self.vae(image)
+            x = z
+        else:
+            x = self.image_encoder(image)
+            # Get the CLS token
+            x = x[:, 0, :]
         return x
     
     def add_depth_to_image(self, image, add_background=False):
@@ -338,7 +353,7 @@ class MainModule(pl.LightningModule):
     def compute_loss(self, batch, mode):
         # Load optimizers
         if mode == "train":
-            opt_decoder, opt_emb = self.optimizers()
+            opt_decoder, opt_emb, opt_vae = self.optimizers()
 
         # Load batch and preprocess
         image, y, lengths = batch
@@ -349,15 +364,24 @@ class MainModule(pl.LightningModule):
         y_expected_seq = torch.cat((label_onehot, y_expected[:, :, 1:]), dim=2)
         values = y_expected[:, :, 1:]
 
+        ##### 1. VAE Loss #####
+        if self.use_vae:
+            recon_batch, mu, logvar, z = self.vae(image)
+            vae_loss = self.vae.loss_function(recon_batch, image, mu, logvar)
+            if mode == "train":
+                opt_vae.zero_grad()
+                self.manual_backward(vae_loss)
+                opt_vae.step()
+
         ############ Embedding loss
         # Teach embedding models with ground truth image and seqs
         # GT image embedding should be close to GT seq embedding
         # Make negative images and seqs samples
         neg_images = self.make_negative_imgs(image)
-        y_expected_seq_neg = self.make_negative_seqs(y_expected_seq, shuffle=True)
+        y_expected_seq_neg = self.make_negative_seqs(y_expected_seq, shuffle=True, noise_level=0.5)
 
-        gt_image_embedding = self.get_image_embedding(image)     # Get the CLS token
-        neg_image_embedding = self.get_image_embedding(neg_images)     # Get the CLS token
+        gt_image_embedding = self.get_image_embedding(image)     # Get Image Embedding
+        neg_image_embedding = self.get_image_embedding(neg_images)      # Get Image Embedding
         gt_seq_embedding = self.SeqEmbeddingModel(y_expected_seq)
         gt_neg_seq_embedding = self.SeqEmbeddingModel(y_expected_seq_neg)
         ones = torch.ones(image.size(0), device=gt_seq_embedding.device)
@@ -367,9 +391,14 @@ class MainModule(pl.LightningModule):
             embedding_loss_fit = (self.triplet_loss(gt_seq_embedding.detach(), gt_image_embedding, neg_image_embedding) \
                             + self.triplet_loss(gt_image_embedding.detach(), gt_seq_embedding, gt_neg_seq_embedding))/2
         else:
-            image_embedding_loss = self.triplet_loss(gt_seq_embedding.detach(), gt_image_embedding, neg_image_embedding)
-            seq_embedding_loss = self.triplet_loss(gt_image_embedding.detach(), gt_seq_embedding, gt_neg_seq_embedding)
-            embedding_loss_fit = (image_embedding_loss + seq_embedding_loss) / 2
+            # image_embedding_loss = self.triplet_loss(gt_seq_embedding.detach(), gt_image_embedding, neg_image_embedding)
+            # seq_embedding_loss = self.triplet_loss(gt_image_embedding.detach(), gt_seq_embedding, gt_neg_seq_embedding)
+            # embedding_loss_fit = (image_embedding_loss + seq_embedding_loss) / 2
+            #embedding_loss_fit = self.triplet_loss(gt_image_embedding.detach(), gt_seq_embedding, gt_neg_seq_embedding)
+            embedding_loss_fit = self.triplet_loss(gt_seq_embedding, gt_image_embedding.detach(), neg_image_embedding.detach())
+            # recon_image_from_est_architecture = self.vae.decode(gt_seq_embedding)
+            # embedding_loss_fit = self.triplet_loss(recon_image_from_est_architecture, image, neg_images)
+            #embedding_loss_fit = F.mse_loss(recon_image_from_est_architecture, image)
 
         if mode == "train":
             opt_emb.zero_grad()
@@ -412,11 +441,18 @@ class MainModule(pl.LightningModule):
         self.SeqEmbeddingModel.eval()
         est_seq_embedding = self.SeqEmbeddingModel(pred)
         neg_est_seq_embedding = self.SeqEmbeddingModel(self.make_negative_seqs(pred, shuffle=True))
-        # embedding_loss_gen = self.triplet_loss(est_seq_embedding, gt_image_embedding.detach(), neg_image_embedding.detach())
-        embedding_loss_gen = self.triplet_loss(gt_image_embedding.detach(), est_seq_embedding, neg_est_seq_embedding)
+        embedding_loss_gen = self.triplet_loss(est_seq_embedding, gt_image_embedding.detach(), neg_image_embedding.detach())
+        #embedding_loss_gen = self.triplet_loss(gt_image_embedding.detach(), est_seq_embedding, neg_est_seq_embedding)
         #embedding_loss_gen = self.cosine_embedding_loss_function(est_seq_embedding, gt_image_embedding.detach(), ones)
 
-        decoder_loss = label_loss + param_loss + embedding_loss_gen
+        # Reconstruction loss
+        if self.use_vae:
+            recon_image_from_est_architecture = self.vae.decode(est_seq_embedding)
+            # image_loss = F.mse_loss(recon_image_from_est_architecture, image)
+            image_loss = self.triplet_loss(recon_image_from_est_architecture, image, neg_images)
+            #image_loss = F.mse_loss(recon_image_from_est_architecture, image)
+
+        decoder_loss = label_loss + param_loss + embedding_loss_gen/self.triplet_margin
 
         if mode == "train":
             opt_decoder.zero_grad()
@@ -429,13 +465,15 @@ class MainModule(pl.LightningModule):
         # Calculate average embedding loss
         embedding_loss = (embedding_loss_fit + embedding_loss_gen) / 2
         # loss = embedding_loss # Test only label loss
-        total_loss_metric = label_loss + param_loss + 0.1*embedding_loss # Metric for checkpoint saving and early stopping
+        total_loss_metric = decoder_loss # Metric for checkpoint saving and early stopping
 
+        self.log(f'{mode}/image_loss', image_loss, batch_size=image.size(0), sync_dist=True)
         self.log(f'{mode}/label_loss', label_loss, batch_size=image.size(0), sync_dist=True)
         self.log(f'{mode}/param_loss', param_loss, batch_size=image.size(0), sync_dist=True)
         self.log(f'{mode}/embedding_loss', embedding_loss, batch_size=image.size(0), sync_dist=True)
         self.log(f'{mode}/embedding_loss_gen', embedding_loss_gen, batch_size=image.size(0), sync_dist=True)
         self.log(f'{mode}/decoder_loss', decoder_loss, batch_size=image.size(0), sync_dist=True)
+        self.log(f'{mode}/vae_loss', vae_loss, batch_size=image.size(0), sync_dist=True)
         self.log(f'{mode}/loss', total_loss_metric, batch_size=image.size(0), sync_dist=True)
 
         # Add images to tensorboard
@@ -443,6 +481,11 @@ class MainModule(pl.LightningModule):
             tensorboard_logger = self.logger.experiment
             tensorboard_logger.add_images(f'{mode}/input_images', image, self.current_epoch)
             tensorboard_logger.add_images(f'{mode}/neg_images', neg_images, self.current_epoch)
+
+            # VAE Reconstruction
+            if self.use_vae:
+                tensorboard_logger.add_images(f'{mode}/recon_image_from_est_architecture', recon_image_from_est_architecture, self.current_epoch)
+                tensorboard_logger.add_images(f'{mode}/recon_images', recon_batch, self.current_epoch)
         
         return decoder_loss, embedding_loss
 
@@ -457,13 +500,22 @@ class MainModule(pl.LightningModule):
         # return losses
 
     def on_train_epoch_end(self):
-        sch_decoder, sch_emb = self.lr_schedulers()
+        sch_decoder, sch_emb, sch_vae = self.lr_schedulers()
         # If the selected scheduler is a ReduceLROnPlateau scheduler.
         if isinstance(sch_decoder, torch.optim.lr_scheduler.ReduceLROnPlateau):
             sch_decoder.step(self.trainer.callback_metrics["val/decoder_loss"])
+        else:
+            sch_decoder.step()
 
         if isinstance(sch_emb, torch.optim.lr_scheduler.ReduceLROnPlateau):
             sch_emb.step(self.trainer.callback_metrics["val/embedding_loss"])
+        else:
+            sch_emb.step()
+
+        if isinstance(sch_vae, torch.optim.lr_scheduler.ReduceLROnPlateau):
+            sch_vae.step(self.trainer.callback_metrics["val/vae_loss"])
+        else:
+            sch_vae.step()
 
     def validation_step(self, batch, batch_idx):
         loss = self.compute_loss(batch, 'val')
@@ -488,36 +540,24 @@ class MainModule(pl.LightningModule):
 
     def configure_optimizers(self):
 
-        optimizer_main = torch.optim.Adam([
+        optimizer_decoder = torch.optim.Adam([
             {'params': self.image_encoder.parameters(), 'lr': self.lr*1e-2},  # Optimzer for plant architecture model
             {'params': self.sequence_decoder.parameters()},  # 다른 모듈 2
         ], lr=self.lr) # Default lr for the rest of the model
-        scheduler_main = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer_main, mode='min', factor=0.1, patience=20, min_lr=1e-6)
+        scheduler_decoder = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer_decoder, mode='min', factor=0.1, patience=40, min_lr=1e-8)
 
         optimizer_emb = torch.optim.Adam([
             # {'params': self.image_encoder.parameters(), 'lr': self.lr*1e-2},  # Optimzer from enmbedding model
-            {'params': self.SeqEmbeddingModel.parameters(), 'lr': self.lr*1e-2},  # 임베딩 모듈
+            {'params': self.SeqEmbeddingModel.parameters(), 'lr': self.lr},  # 임베딩 모듈
         ], lr=self.lr)
-        scheduler_emb = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer_emb, mode='min', factor=0.1, patience=20, min_lr=1e-8)
+        scheduler_emb = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer_emb, mode='min', factor=0.1, patience=40, min_lr=1e-8)
         
-        # Return optimizers
-        # return ({
-        #     'optimizer': optimizer,
-        #     'lr_scheduler': {
-        #         'scheduler': scheduler,
-        #         'monitor': 'val/loss',
-        #         'interval': 'epoch',
-        #         'frequency': 1
-        #     },
-        #     'optimizer': optimizer_seq,
-        #     'lr_scheduler': {
-        #         'scheduler': scheduler_seq,
-        #         'monitor': 'val/loss',
-        #         'interval': 'epoch',
-        #         'frequency': 1
-        #     }
-        # })
-        return [optimizer_main, optimizer_emb], [scheduler_main, scheduler_emb]
+        optimizer_vae = torch.optim.Adam([
+            {'params': self.vae.parameters(), 'lr': self.lr} # Optimizer for VAE
+        ], lr=self.lr)
+        scheduler_vae = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer_vae, mode='min', factor=0.1, patience=40, min_lr=1e-8)
+
+        return [optimizer_decoder, optimizer_emb, optimizer_vae], [scheduler_decoder, scheduler_emb, scheduler_vae]
     
 class MainDataModule(pl.LightningDataModule):
     def __init__(self, dataset_dir, train_batch_size=16, val_batch_size=None,
@@ -972,8 +1012,8 @@ class SimpleRegressionVAE(pl.LightningModule):
 
         self.feature_extractor = ViT_FeatureExtractor(output_size=d_model, image_size=image_size)
         
+    
         self.vae = VAE(latent_dim=latent_dim)
-        
         if 1:
             self.vae.load_state_dict(torch.load(os.path.join(script_file_dir,"../models/checkpoints/vae_best_20241015.pth")))
 

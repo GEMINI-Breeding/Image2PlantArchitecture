@@ -36,13 +36,13 @@ if __name__ == "__main__":
     datamodule = MainDataModule(dataset_dir,
                                 image_size=module.image_size,
                                 load_depth=False,
-                                train_batch_size=8, num_workers=4, process_leaf=True, preload=True)
+                                train_batch_size=8, num_workers=4, process_leaf=False, preload=True)
     tqdm_cb = TQDMProgressBar(refresh_rate=10)
 
     # Generate today's date string in YYYYMMDD format
     today_date_str = datetime.now().strftime('%Y%m%d')
     tb_logger = TensorBoardLogger(
-        name=f'{today_date_str}_SeqEmbTest',
+        name=f'{today_date_str}_ProfessLeafFalse',
         save_dir='./log'
     )
 
@@ -60,7 +60,7 @@ if __name__ == "__main__":
 
     early_stop_cb = EarlyStopping(
         monitor='val/loss', # Metric to monitor
-        patience=60,
+        patience=100,
         verbose=True,
         mode='min'
     )
@@ -78,7 +78,7 @@ if __name__ == "__main__":
         precision="bf16-mixed",
         #strategy=DDPStrategy(find_unused_parameters=True)  # Enable detection of unused parameters
     )
-    # module = MainModule.load_from_checkpoint('log/20241022_Test_label_loss/version_15/checkpoints/best_epoch=42.ckpt')
+    # module = MainModule.load_from_checkpoint('log/20241028_VAEImageLossTriplet/version_0/checkpoints/best_epoch=84.ckpt')
     trainer.fit(module, datamodule=datamodule)
 
     # To check the training progress,

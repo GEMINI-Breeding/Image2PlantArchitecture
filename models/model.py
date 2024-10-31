@@ -426,7 +426,11 @@ class VAE(nn.Module):
     def encode(self, x):
         h1 = F.relu(self.conv1(x))
         h2 = F.relu(self.conv2(h1))
-        h3 = h2.view(h2.size(0), -1)  # Flatten
+         # Check if the tensor is contiguous
+        if h2.is_contiguous():
+            h3 = h2.view(h2.size(0), -1)  # Flatten using view
+        else:
+            h3 = h2.reshape(h2.size(0), -1)  # Flatten using reshape. shuffling the x will make x.contiguous() == False
         return self.fc1(h3), self.fc2(h3)  # Mean and log variance
 
     def reparameterize(self, mu, logvar):
@@ -506,15 +510,15 @@ def _expand_token(token, batch_size: int):
     return token.view(1, 1, -1).expand(batch_size, -1, -1)
 
 class PlantArchitectureTransformer(TextTransformer):
-    def __init__(self, d_label, d_param, d_model, max_seq_length=2048, dropout=0.1):
+    def __init__(self, d_label, d_param, d_model, width=512, max_seq_length=2048, dropout=0.1):
         super(PlantArchitectureTransformer, self).__init__(context_length=max_seq_length,
                                                            vocab_size=d_label,
                                                            layers=6,
-                                                           width=d_model,
+                                                           width=width,
                                                            output_dim=d_model)
         
-        self.token_embedding = nn.Linear(d_label, d_model)
-        self.parameter_embedding = nn.Linear(d_param, d_model)
+        self.token_embedding = nn.Linear(d_label, width)
+        self.parameter_embedding = nn.Linear(d_param, width)
         self.d_param = d_param
         self.d_label = d_label
 
