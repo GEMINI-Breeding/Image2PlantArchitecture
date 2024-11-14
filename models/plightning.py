@@ -27,7 +27,7 @@ from src.plantstring2model import plantstring2model
 from src.plant_tokenizer import token2vec as token2vec
 from src.string_to_xml_to_vec import vec2string
 from src.image_process import process_leaf_image
-from src.utils import coordinates_to_angle
+from plant_architecture_utils import coordinates_to_angle
 import pickle
 import copy
 

@@ -12,7 +12,6 @@ void printUsage(const char* programName) {
 }
 
 int main(int argc, char* argv[]){
-    std::string plant_string_file = "../plantstring.txt";
     std::string save_dir = "output";
     bool debug = false;
     bool save_xml = false;
@@ -20,7 +19,8 @@ int main(int argc, char* argv[]){
     bool rotation_view = false;
     float height = 0;
     std::string tile_file = "plugins/visualizer/textures/dirt.jpg";
-
+    
+    std::string output_name = "cowpea";
     // Parse command-line arguments
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -36,20 +36,15 @@ int main(int argc, char* argv[]){
             height = std::stof(argv[i+1]);
         } else if (arg == "-tile" && i + 1 < argc) {
             tile_file = argv[i+1];
-        } else if (arg == "-f" && i + 1 < argc) {
-            plant_string_file = argv[i+1];
         } else if (arg == "-o" && i + 1 < argc) {
             save_dir = argv[i+1];
             printf("Save dir: ", save_dir.c_str());
+        } else if (arg == "-name" && i + 1 < argc) {
+            output_name = argv[i+1];
+            printf("output_name: ", output_name.c_str());
         } else {
             printf("Unknown argument: %s\n", arg.c_str());
         }
-    }
-
-    std::ifstream file(plant_string_file);
-    if (!file.is_open()) {
-        std::cerr << "Could not open file: " << plant_string_file << std::endl;
-        return 1;
     }
 
     // Output the parsed flags for debugging purposes
@@ -59,8 +54,6 @@ int main(int argc, char* argv[]){
     if (!tile_file.empty()) {
         std::cout << "Tile file: " << tile_file << std::endl;
     }
-    std::cout << "Plant string file: " << plant_string_file << std::endl;
-
 
     // Create a save directory if it does not exist
     std::string command = "mkdir -p " + save_dir;
@@ -70,56 +63,20 @@ int main(int argc, char* argv[]){
         return 1;
     }
 
-    // Set Paths
-
-    std::stringstream framefile;
-    // Generate output file name by replacing .txt with .jpeg
-    // Get the file name only
-    std::string name_only = plant_string_file.substr(plant_string_file.find_last_of("/\\") + 1);
-    name_only = name_only.substr(0, name_only.size() - 4); // Remove .txt and add .jpeg
-    std::string save_name = name_only + "_top.jpeg"; // Remove .txt and add "_top.jpeg");    
-    // Save to save dir
-    std::string save_path = save_dir + "/" + save_name;
-
-
-    std::stringstream buffer;
-    buffer << file.rdbuf();
-    std::string plantstring = buffer.str();
-    
-    // Remove plant ID if start with <int> and end with " "
-    if (plantstring[0] >= '0' && plantstring[0] <= '9') {
-        size_t pos = plantstring.find(" ");
-        plantstring.erase(0, pos + 1);
-    }
     // Print input plant string
     Context context;
-
     context.seedRandomGenerator(60);
-    
     // Add a ground surface with a center position of (0,0,0) and size of row_spacing x plant_spacing
     // Check if tile_file is not none
     if(tile_file != "none"){
         std::vector<uint> UUIDs_ground = context.addTile(make_vec3(0, 0, 0), make_vec2(3, 3), nullrotation, make_int2(3,3),tile_file.c_str());
     }
     
-
     PlantArchitecture plantarchitecture(&context);
-
     plantarchitecture.loadPlantModelFromLibrary("cowpea");
-
-#if 1
     auto nullorigin = make_vec3(0, 0, 0);
     uint plantID = plantarchitecture.buildPlantInstanceFromLibrary(nullorigin, 0);
-    //uint plantID = plantarchitecture.generatePlantFromString(plantstring, plantarchitecture.getCurrentPhytomerParameters());
 
-    // if(save_xml){
-    //     // Write the plant structure to an XML file
-    //     std::string xml_file = save_dir + "/" + name_only + ".xml";
-    //     plantarchitecture.writePlantStructureXML(plantID, xml_file);
-    // }
-#elif 1
-    std::vector<uint> plantIDs = plantarchitecture.readPlantStructureXML("output/plant_structure.xml");
-#endif
 
     Visualizer vis(1200);
     vis.buildContextGeometry(&context);
@@ -127,6 +84,7 @@ int main(int argc, char* argv[]){
     vis.disableMessages();
     vis.setLightingModel(Visualizer::LIGHTING_PHONG);
 
+    // Set the camera position
     float x = 0;
     float y = 0;
     float z = 1.0;
@@ -135,13 +93,7 @@ int main(int argc, char* argv[]){
         z = height;
     }
     vis.setCameraPosition(make_vec3(x,y,z), make_vec3(0, 0, 0));
-    // Bug: Have to update twice to get the image
-    vis.plotUpdate(true);
-    vis.plotUpdate(true);
-    //vis.plotDepthMap();
 
-    vis.printWindow(save_path.c_str());
-    
 
     if (rotation_view)
     {
@@ -171,7 +123,7 @@ int main(int argc, char* argv[]){
 
             // Generate output file name by replacing .txt with _angle.jpeg to differentiate between images
             std::stringstream framefile;
-            framefile << name_only << "_" << i << ".jpeg"; // Append angle index to filename
+            framefile << output_name << "_" << i << ".jpeg"; // Append angle index to filename
 
             // Save to save dir
             std::string save_path = save_dir + "/" + framefile.str();
@@ -196,7 +148,7 @@ int main(int argc, char* argv[]){
             // Convert day to secs
             int secs = accum_day * 24 * 60 * 60;
             //framefile << name_only << "_time_" << std::setfill('0') << std::setw(8) << secs << ".jpeg"; // Append angle index to filename
-            framefile << name_only << "_day_" 
+            framefile << output_name << "_day_" 
                     << std::setfill('0') << std::setw(2)
                     << accum_day << ".jpg"; // Append angle index to filename
 

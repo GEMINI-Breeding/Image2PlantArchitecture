@@ -161,8 +161,9 @@ cython_debug/
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
-*/build
 
+src/PlantString2Model/build*
+src/GenerateDataset/build*
 
 # data folder
 data
@@ -178,3 +179,4 @@ tests/lightning_logs
 *.pth
 *.mp4
 src/attention_output*
+.DS_Store

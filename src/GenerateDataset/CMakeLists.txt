@@ -18,11 +18,11 @@ set( BASE_DIRECTORY "../libs/Helios" )
 # include_directories(libs/yaml-cpp/include)
 
 #define the name of the executable to be created
-set( EXECUTABLE_NAME "PlantString2Model" )
+set( EXECUTABLE_NAME "main" )
 
 #provide name of source file(s) (separate multiple file names with semicolon)
 #set( SOURCE_FILES "main_cowpea_yaml_grow.cpp" )
-set( SOURCE_FILES "generate_cowpea_from_string.cpp" )
+set( SOURCE_FILES "main.cpp" )
 
 #specify which plug-ins to use (separate plug-in names with semicolon)
 #set( PLUGINS "visualizer;canopygenerator;radiation;syntheticannotation;solarposition;energybalance")

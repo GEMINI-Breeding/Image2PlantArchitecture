@@ -10,11 +10,12 @@ sys.path.append(script_file_dir)
 from string_to_xml_to_vec import save_plant_string
 from image_process import process_leaf_image
 from plant_tokenizer import token2vec
-from utils import coordinates_to_angle
+from plant_architecture_utils import coordinates_to_angle
 
 class plantstring2model:
 
-    def __init__(self, program_path, program_name, background_path=None, display=":10.0", height=2.0, verbose=False):
+    def __init__(self, program_path, program_name, background_path=None, display=":10.0", height=2.0,
+                 save_xml=False, verbose=False):
         
 
         self.program_path = program_path
@@ -29,7 +30,7 @@ class plantstring2model:
         self.verbose = verbose
 
         self.output_path_name = "output"
-
+        self.save_xml = save_xml
         # Create the output directory
         os.makedirs(self.output_path_name, exist_ok=True)
 
@@ -56,6 +57,10 @@ class plantstring2model:
         command += f"-f {in_plantstring_path} "
         command += f"-o {output_file_name} "
 
+        # Add the save_xml flag
+        if self.save_xml:
+            command += "-xml "
+            
         if self.verbose == False:
             command += " > log.txt 2>&1"
             
