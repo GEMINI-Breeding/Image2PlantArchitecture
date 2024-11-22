@@ -19,12 +19,13 @@ int main(int argc, char* argv[]){
     bool rotation_view = false;
     float height = 0;
     std::string tile_file = "plugins/visualizer/textures/dirt.jpg";
-    
+    std::string plant_model_file = "";
     std::string output_name = "cowpea";
+    uint seed = 60; // Default seed value
     // Parse command-line arguments
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
-        if (arg =="-r") {
+        if (arg == "-r") {
             rotation_view = true;
         } else if (arg == "-g") {
             grow = true;
@@ -33,15 +34,20 @@ int main(int argc, char* argv[]){
         } else if (arg == "-xml") {
             save_xml = true;
         } else if (arg == "-h" && i + 1 < argc) {
-            height = std::stof(argv[i+1]);
+            height = std::stof(argv[++i]); // i를 증가시켜 다음 값을 건너뜁니다
         } else if (arg == "-tile" && i + 1 < argc) {
-            tile_file = argv[i+1];
+            tile_file = argv[++i];
         } else if (arg == "-o" && i + 1 < argc) {
-            save_dir = argv[i+1];
-            printf("Save dir: ", save_dir.c_str());
+            save_dir = argv[++i];
+            printf("Save dir: %s\n", save_dir.c_str());
+        } else if (arg == "-f" && i + 1 < argc) {
+            plant_model_file = argv[++i];
+        } else if (arg == "-seed" && i + 1 < argc) {
+            seed = std::stoi(argv[++i]);
+            printf("Seed: %u\n", seed);
         } else if (arg == "-name" && i + 1 < argc) {
-            output_name = argv[i+1];
-            printf("output_name: ", output_name.c_str());
+            output_name = argv[++i];
+            printf("Output name: %s\n", output_name.c_str());
         } else {
             printf("Unknown argument: %s\n", arg.c_str());
         }
@@ -65,20 +71,38 @@ int main(int argc, char* argv[]){
 
     // Print input plant string
     Context context;
-    context.seedRandomGenerator(60);
+    context.seedRandomGenerator(seed);
     // Add a ground surface with a center position of (0,0,0) and size of row_spacing x plant_spacing
     // Check if tile_file is not none
-    if(tile_file != "none"){
+    if (tile_file=="black"){
+        std::vector<uint> UUIDs_ground = context.addTile(make_vec3(0, 0, 0), make_vec2(3, 3), nullrotation, make_int2(3,3), RGB::black);
+    }else if(tile_file != "none"){
         std::vector<uint> UUIDs_ground = context.addTile(make_vec3(0, 0, 0), make_vec2(3, 3), nullrotation, make_int2(3,3),tile_file.c_str());
     }
     
     PlantArchitecture plantarchitecture(&context);
     plantarchitecture.loadPlantModelFromLibrary("cowpea");
     auto nullorigin = make_vec3(0, 0, 0);
-    uint plantID = plantarchitecture.buildPlantInstanceFromLibrary(nullorigin, 0);
+    uint plantID;
 
+    // Check if plant_model_file is not empty
+    if(plant_model_file.empty()){
+        plantID = plantarchitecture.buildPlantInstanceFromLibrary(nullorigin, 0);
+    }else{
+        std::vector<uint> plantIDs = plantarchitecture.readPlantStructureXML(plant_model_file);
+        plantID = plantIDs.front();
+    }
+
+    // Save xml
+    if (save_xml)
+    {
+        // Write the plant structure to an XML file
+        std::string xml_file = output_name + ".xml";
+        plantarchitecture.writePlantStructureXML(plantID, xml_file);
+    }
 
     Visualizer vis(1200);
+    vis.clearGeometry();
     vis.buildContextGeometry(&context);
     vis.hideWatermark();
     vis.disableMessages();
@@ -93,8 +117,12 @@ int main(int argc, char* argv[]){
         z = height;
     }
     vis.setCameraPosition(make_vec3(x,y,z), make_vec3(0, 0, 0));
-
-
+    
+    vis.plotUpdate(true);
+    vis.plotUpdate(true);
+    std::string output_file = save_dir + "/" + output_name + ".jpeg";
+    vis.printWindow(output_file.c_str());
+    
     if (rotation_view)
     {
         // Assuming you want to rotate the camera around the origin (0,0,0) in a circular path
@@ -137,10 +165,13 @@ int main(int argc, char* argv[]){
         for (int i = 0; i < 30; ++i) {
             float dt = 1.0;
             vis.clearGeometry();
-            plantarchitecture.advanceTime(plantID, dt);
-            accum_day += dt;
+            if(i > 0){
+                plantarchitecture.advanceTime(plantID, dt);
+            }
+            //accum_day += dt;
+            accum_day = plantarchitecture.getPlantAge(plantID);
             vis.buildContextGeometry(&context);
-            vis.plotUpdate(true);
+            //vis.plotUpdate(true);
             vis.plotUpdate(true); // Update twice due to the mentioned bug
             
             // Generate output file name by replacing .txt with _angle.jpeg to differentiate between images
@@ -150,7 +181,7 @@ int main(int argc, char* argv[]){
             //framefile << name_only << "_time_" << std::setfill('0') << std::setw(8) << secs << ".jpeg"; // Append angle index to filename
             framefile << output_name << "_day_" 
                     << std::setfill('0') << std::setw(2)
-                    << accum_day << ".jpg"; // Append angle index to filename
+                    << accum_day << ".jpeg"; // Append angle index to filename
 
             // Save to save dir
             std::string save_path = save_dir + "/" + framefile.str();
@@ -160,7 +191,7 @@ int main(int argc, char* argv[]){
             if (save_xml)
             {
                 // Write the plant structure to an XML file
-                std::string xml_file = save_path.replace(save_path.find(".jpg"), 5, ".xml");
+                std::string xml_file = save_path.replace(save_path.find(".jpeg"), 5, ".xml");
                 plantarchitecture.writePlantStructureXML(plantID, xml_file);
             }
         }

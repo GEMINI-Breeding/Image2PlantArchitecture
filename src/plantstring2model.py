@@ -3,6 +3,7 @@ import shutil
 import subprocess
 import cv2
 import torch
+import numpy as np
 
 # 경로 설정
 script_file_dir = os.path.dirname(os.path.abspath(__file__))
@@ -55,6 +56,55 @@ class plantstring2model:
         
         # Add the plantstring path
         command += f"-f {in_plantstring_path} "
+        command += f"-o {output_file_name} "
+
+        # Add the save_xml flag
+        if self.save_xml:
+            command += "-xml "
+            
+        if self.verbose == False:
+            command += " > log.txt 2>&1"
+            
+        # Run the command using os.system
+        # os.system(f"{command}")
+        # Replace os.system(f"{command}") with subprocess.run
+        result = subprocess.run(command, shell=True, capture_output=True, text=True)
+
+        # Check if the command was successful
+        if result.returncode == 0:
+            print("Command executed successfully")
+            print(result.stdout)  # Print the standard output
+            pass
+        else:
+            print(result.stdout)  # Print the standard output
+            print(result.stderr)  # Print the error output
+            raise("Command failed")
+            pass
+
+    def generate(self, output_path=None, seed=None):
+        # Generate random seed
+        if seed:
+            seed = seed
+        else:
+            seed = np.random.randint(0, 1000000)
+
+        if output_path:
+            output_file_name = output_path
+        else:
+            output_file_name = f"{seed}_"
+        # Construct the command
+        command = ""
+        command += f"cd {self.program_path} && ./{self.program_name} "
+        # If self.background_path exists
+        if self.background_path:
+            file_name = self.background_path
+            # Copy the background tile to build
+            command += f"-tile {file_name} "
+            
+        # Add height
+        command += f"-h {self.height} "
+        
+        # Add the plantstring path
         command += f"-o {output_file_name} "
 
         # Add the save_xml flag

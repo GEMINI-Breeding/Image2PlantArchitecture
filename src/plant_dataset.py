@@ -14,8 +14,8 @@ script_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(script_dir)
 from image_process import process_leaf_image
 from plant_tokenizer import SOS_token, EOS_token, PAD_token, params_EOS_token_padded, params_SOS_token_padded
-from string_to_xml_to_vec import string2vec, vec2string, vec2xml, pretty_print_xml
-
+from string_to_xml_to_vec import string2vec, vec2string, vec2xml, pretty_print_xml, xml2vec
+import xml.etree.ElementTree as ET
 from plant_tokenizer import vec2token as vec2token
 
 # Enable loading of truncated images
@@ -24,7 +24,7 @@ ImageFile.LOAD_TRUNCATED_IMAGES = True
 class PlantDataset(Dataset):
     def __init__(self, root_dir, plot=None, stages=None, transform=None, 
                  image_size=224, load_depth=True, preload=True, 
-                 dry_run=False, process_leaf=False):
+                 process_leaf=False):
 
         self.root_dir = root_dir
         self.load_depth = load_depth          
@@ -32,7 +32,7 @@ class PlantDataset(Dataset):
         self.images_path = os.path.join(root_dir, 'images')
         self.depth_path = os.path.join(root_dir, 'depth')
         # plant_string_path
-        self.plant_string_path = os.path.join(root_dir, 'plantstrings')
+        self.plant_xml_path = os.path.join(root_dir, 'xml')
         self.preload = preload
         # Get list of images
         self.image_paths = os.listdir(self.images_path)
@@ -41,25 +41,25 @@ class PlantDataset(Dataset):
             self.depth_images.sort()
 
         # Get list of plant strings
-        self.plant_string_files = [x.replace('.jpeg', '.txt') for x in self.image_paths]
+        self.plant_xml_files = [x.replace('.jpeg', '.xml') for x in self.image_paths]
 
         # Sort the lists
         self.image_paths.sort()
-        self.plant_string_files.sort()
+        self.plant_xml_files.sort()
 
         self.img_size = image_size
         # Filter with statges
         if stages:
-            self.image_paths = [x for x in self.image_paths if x.split('_')[2] in stages]
-            self.plant_string_files = [x for x in self.plant_string_files if x.split('_')[2] in stages]
+            self.image_paths = [x for x in self.image_paths if x.split('_')[3] in stages]
+            self.plant_xml_files = [x for x in self.plant_xml_files if x.split('_')[3] in stages]
             if self.load_depth:
-                self.depth_images = [x for x in self.depth_images if x.split('_')[2] in stages]
+                self.depth_images = [x for x in self.depth_images if x.split('_')[3] in stages]
 
         if plot:
-            self.image_paths = [x for x in self.image_paths if x.split('_')[3] in plot]
-            self.plant_string_files = [x for x in self.plant_string_files if x.split('_')[3] in plot]
+            self.image_paths = [x for x in self.image_paths if x.split('_')[1] in plot]
+            self.plant_xml_files = [x for x in self.plant_xml_files if x.split('_')[1] in plot]
             if self.load_depth:
-                self.depth_images = [x for x in self.depth_images if x.split('_')[3] in plot]
+                self.depth_images = [x for x in self.depth_images if x.split('_')[1] in plot]
                 
         self.transform = transform
 
@@ -122,11 +122,23 @@ class PlantDataset(Dataset):
 
         image = leaf_img
 
-        # Load plant string
-        with open(os.path.join(self.plant_string_path, self.plant_string_files[idx]), 'r') as f:
-            self.plant_string_raw = f.read()
-        
-        vec = string2vec(self.plant_string_raw)[0]
+        if 0:
+            # Load plant string
+            with open(os.path.join(self.plant_xml_path, self.plant_xml_files[idx]), 'r') as f:
+                self.plant_string_raw = f.read()
+            
+            vec = string2vec(self.plant_string_raw)[0]
+        else:
+            # Load XML file
+            # Load and parse the XML file
+            tree = ET.parse(os.path.join(self.plant_xml_path, self.plant_xml_files[idx]))
+
+            # Get the root element
+            root = tree.getroot()
+            plant_array = []
+
+            vec = xml2vec(root, plant_array)
+        vec = None
 
         return image, vec
 
@@ -144,12 +156,16 @@ class PlantDataset(Dataset):
         if self.transform:
             image = self.transform(image)
 
-        # Tokenize the plant structure
-        out = vec2token(vec)
-            
-        # Add SOS and EOS tokens
-        out = np.concatenate(([params_SOS_token_padded], out, [params_EOS_token_padded]))
-        out_len = len(out)
+        if vec:
+            # Tokenize the plant structure
+            out = vec2token(vec)
+                
+            # Add SOS and EOS tokens
+            out = np.concatenate(([params_SOS_token_padded], out, [params_EOS_token_padded]))
+            out_len = len(out)
+        else:
+            out = None
+            out_len = 0
 
         return image, out, out_len
         
