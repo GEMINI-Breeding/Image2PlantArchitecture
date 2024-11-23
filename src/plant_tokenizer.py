@@ -36,12 +36,12 @@ if 0:
     params_EOS_token_padded = np.ones(15)*EOS_token
 else:
     # Zero padded params. SOS and EOS token are zero padded
-    params_SOS_token_padded = np.zeros(23)
+    params_SOS_token_padded = np.zeros(24+1)
     params_SOS_token_padded[0] = SOS_token
-    params_EOS_token_padded = np.zeros(23)
+    params_EOS_token_padded = np.zeros(24+1)
     params_EOS_token_padded[0] = EOS_token
 
-def vec2token(vec, n_params=23):
+def vec2token(vec, n_params=24+1):
     """
     Convert vec to tokens
     vec: converted plant vector from plant string. (depth, organ, [params])
@@ -59,13 +59,15 @@ def vec2token(vec, n_params=23):
 
         if x[1] == 0:
             # Shoot params
-            # x[2]: shoot_base_pitch
-            # x[3]: shoot_base_yaw
-            # x[4]: shoot_base_roll
+            # x[2]: shoot_base_rotation_pitch
+            # x[3]: shoot_base_rotation_yaw
+            # x[4]: shoot_base_rotation_roll
+            # x[5]: plant_age
+            # x[6]: shoot type
             token[1],token[2] = angle_to_coordinates(x[2])
             token[3],token[4] = angle_to_coordinates(x[3])
             token[5],token[6] = angle_to_coordinates(x[4])
-            token[7] = x[5] / 100           # shoot_gravitropic_curvature
+            token[7] = x[5] / 100           # plant_age
             token[8] = x[6]                 # shoot_type
         elif x[1] == 1:
             # Internode params
@@ -78,12 +80,14 @@ def vec2token(vec, n_params=23):
             token[13] = x[2] * 100 # petiole_length
             token[14] = x[3] * 100 # petiole_radius
             token[15] = x[4] / 180 * math.pi # petiole_pitch
+            token[16] = x[5] / 180 * math.pi # petiole_curvature
+            token[17] = x[6] # leaflet_scale
         elif x[1] == 3:
             # Leaf params
-            token[16] = x[2] * 100 # leaf_scale
-            token[17],token[18] = angle_to_coordinates(x[3]) # leaf pitch
-            token[19],token[20] = angle_to_coordinates(x[4]) # leaf yaw
-            token[21],token[22] = angle_to_coordinates(x[5]) # leaf roll
+            token[18] = x[2] * 100 # leaf_scale
+            token[19],token[20] = angle_to_coordinates(x[3]) # leaf pitch
+            token[21],token[22] = angle_to_coordinates(x[4]) # leaf yaw
+            token[23],token[24] = angle_to_coordinates(x[5]) # leaf roll
         else:
             raise ValueError(f"Invalid organ type {x[1]}")
         
@@ -106,7 +110,7 @@ def token2vec(tokens):
         else:
             i = label // 4
             j = label % 4
-            params_padded = np.zeros(5)
+            params_padded = np.zeros(6)
             # Scale the params to match the original scale
    
             if j == 0:
@@ -127,12 +131,14 @@ def token2vec(tokens):
                 params_padded[0] = token[13] / 100 # petiole_length
                 params_padded[1] = token[14] / 100 # petiole radius, random.uniform(0.00075, 0.00125)
                 params_padded[2] = token[15] * 180 / math.pi # petiole_pitch
+                params_padded[3] = token[16] * 180 / math.pi # petiole_curvature
+                params_padded[4] = token[17] # leaflet_scale
             elif j == 3:
                 # Leaf
-                params_padded[0] = token[16] / 100 # leaf_scale
-                params_padded[1] = coordinates_to_angle(token[17], token[18])
-                params_padded[2] = coordinates_to_angle(token[19], token[20])
-                params_padded[3] = coordinates_to_angle(token[21], token[22])
+                params_padded[0] = token[18] / 100 # leaf_scale
+                params_padded[1] = coordinates_to_angle(token[19], token[20])
+                params_padded[2] = coordinates_to_angle(token[21], token[22])
+                params_padded[3] = coordinates_to_angle(token[23], token[24])
             else:
                 raise ValueError(f"Invalid organ type {j}")
 

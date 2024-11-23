@@ -165,10 +165,8 @@ def attrib2vec(attrib,max_len = 5):
 
 
 organ2num = {'shoot': 0, 'internode': 1, 'petiole': 2, 'leaf': 3}
-plant_age = 0
-def xml2vec(root, plant_array, depth=0):
+def xml2vec(root, plant_array=[], depth=0, plant_age=0):
     tag = root.tag
-    global plant_age
     if tag == 'plant_instance':
         # Get attributes
         for subelem in root:
@@ -180,7 +178,7 @@ def xml2vec(root, plant_array, depth=0):
                 plant_age = float(subelem.text)
             elif subelem.tag == 'shoot':
                 # Make the first shoot
-                xml2vec(subelem, plant_array, depth=depth)
+                xml2vec(subelem, plant_array, depth=depth, plant_age=plant_age)
             
 
     elif tag == 'shoot':
@@ -190,7 +188,7 @@ def xml2vec(root, plant_array, depth=0):
         for subsubelem in root:
             if subsubelem.tag == 'shoot_type_label':
                 shoot_type = subsubelem.text.strip()
-                line[-1] = shoottype2num[shoot_type]
+                line[6] = shoottype2num[shoot_type]
             elif subsubelem.tag == 'base_rotation':
                 # Parse the base rotation. example:" 8.37393 304.62 189.694 "
                 base_rotation = subsubelem.text.strip().split(" ")
@@ -201,7 +199,7 @@ def xml2vec(root, plant_array, depth=0):
                 plant_array.append(line)
             elif subsubelem.tag == 'phytomer':
                 # Parse the phytomer
-                xml2vec(subsubelem, plant_array, depth=depth)
+                xml2vec(subsubelem, plant_array, depth=depth,plant_age=plant_age)
             else:
                 # Skip the other elements
                 pass
@@ -227,9 +225,9 @@ def xml2vec(root, plant_array, depth=0):
                 # Append the line to the plant_array
                 plant_array.append(line)
             elif "petiole" in subelem.tag:
-                xml2vec(subelem, plant_array, depth=depth)
+                xml2vec(subelem, plant_array, depth=depth,plant_age=plant_age)
             elif "shoot" in subelem.tag:
-                xml2vec(subelem, plant_array, depth=depth+1)
+                xml2vec(subelem, plant_array, depth=depth+1,plant_age=plant_age)
 
     elif tag == 'petiole':
         # Define the petiole vector
@@ -249,7 +247,7 @@ def xml2vec(root, plant_array, depth=0):
                 # Append the line to the plant_array
                 plant_array.append(line)
             elif "leaf" in subelem.tag:
-                xml2vec(subelem, plant_array, depth=depth)
+                xml2vec(subelem, plant_array, depth=depth,plant_age=plant_age)
 
     elif tag == 'leaf':
         # Define the leaf vector
@@ -268,6 +266,7 @@ def xml2vec(root, plant_array, depth=0):
         # Append the line to the plant_array
         plant_array.append(line)
 
+    return plant_array
 
 def xml2string(root, outstring=""):
     # Iterate with the plants

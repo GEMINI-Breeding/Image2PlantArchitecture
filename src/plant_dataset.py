@@ -14,9 +14,10 @@ script_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(script_dir)
 from image_process import process_leaf_image
 from plant_tokenizer import SOS_token, EOS_token, PAD_token, params_EOS_token_padded, params_SOS_token_padded
-from string_to_xml_to_vec import string2vec, vec2string, vec2xml, pretty_print_xml, xml2vec
+from string_to_xml_to_vec import string2vec, vec2string, vec2xml, pretty_print_xml, xml2vec, linked_to_recursive
 import xml.etree.ElementTree as ET
 from plant_tokenizer import vec2token as vec2token
+import re
 
 # Enable loading of truncated images
 ImageFile.LOAD_TRUNCATED_IMAGES = True
@@ -49,17 +50,19 @@ class PlantDataset(Dataset):
 
         self.img_size = image_size
         # Filter with statges
+        # Regular expression to extract plot and day numbers
+        pattern = r"cowpea_(\d+)_day_(\d+)"
         if stages:
-            self.image_paths = [x for x in self.image_paths if x.split('_')[3] in stages]
-            self.plant_xml_files = [x for x in self.plant_xml_files if x.split('_')[3] in stages]
+            self.image_paths = [x for x in self.image_paths if re.match(pattern, x).group(2) in stages]
+            self.plant_xml_files = [x for x in self.plant_xml_files if re.match(pattern, x).group(2) in stages]
             if self.load_depth:
-                self.depth_images = [x for x in self.depth_images if x.split('_')[3] in stages]
+                self.depth_images = [x for x in self.depth_images if re.match(pattern, x).group(2) in stages]
 
         if plot:
-            self.image_paths = [x for x in self.image_paths if x.split('_')[1] in plot]
-            self.plant_xml_files = [x for x in self.plant_xml_files if x.split('_')[1] in plot]
+            self.image_paths = [x for x in self.image_paths if re.match(pattern, x).group(1) in plot]
+            self.plant_xml_files = [x for x in self.plant_xml_files if re.match(pattern, x).group(1) in plot]
             if self.load_depth:
-                self.depth_images = [x for x in self.depth_images if x.split('_')[1] in plot]
+                self.depth_images = [x for x in self.depth_images if re.match(pattern, x).group(1) in plot]
                 
         self.transform = transform
 
@@ -122,25 +125,18 @@ class PlantDataset(Dataset):
 
         image = leaf_img
 
-        if 0:
-            # Load plant string
-            with open(os.path.join(self.plant_xml_path, self.plant_xml_files[idx]), 'r') as f:
-                self.plant_string_raw = f.read()
-            
-            vec = string2vec(self.plant_string_raw)[0]
-        else:
-            # Load XML file
-            # Load and parse the XML file
-            tree = ET.parse(os.path.join(self.plant_xml_path, self.plant_xml_files[idx]))
+        # Load XML file
+        # Load and parse the XML file
+        tree = ET.parse(os.path.join(self.plant_xml_path, self.plant_xml_files[idx]))
 
-            # Get the root element
-            root = tree.getroot()
-            plant_array = []
+        # Get the root element
+        root = tree.getroot()
 
-            vec = xml2vec(root, plant_array)
-        vec = None
+        root = linked_to_recursive(root)
 
-        return image, vec
+        plant_array = xml2vec(root[0]) # Assume single plant
+
+        return image, plant_array
 
     
     def __getitem__(self, idx):

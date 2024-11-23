@@ -93,13 +93,6 @@ int main(int argc, char* argv[]){
         plantID = plantIDs.front();
     }
 
-    // Save xml
-    if (save_xml)
-    {
-        // Write the plant structure to an XML file
-        std::string xml_file = output_name + ".xml";
-        plantarchitecture.writePlantStructureXML(plantID, xml_file);
-    }
 
     Visualizer vis(1200);
     vis.clearGeometry();
@@ -117,11 +110,20 @@ int main(int argc, char* argv[]){
         z = height;
     }
     vis.setCameraPosition(make_vec3(x,y,z), make_vec3(0, 0, 0));
+    vis.plotUpdate(true);
+    vis.plotUpdate(true);
     
-    vis.plotUpdate(true);
-    vis.plotUpdate(true);
-    std::string output_file = save_dir + "/" + output_name + ".jpeg";
-    vis.printWindow(output_file.c_str());
+    // // Save xml
+    // if (save_xml)
+    // {
+    //     // Write the plant structure to an XML file
+    //     std::string xml_file = output_name + ".xml";
+    //     plantarchitecture.writePlantStructureXML(plantID, xml_file);
+    // }
+    if(~plant_model_file.empty()){
+        std::string output_file = save_dir + "/" + output_name + ".jpeg";
+        vis.printWindow(output_file.c_str());
+    }
     
     if (rotation_view)
     {
@@ -160,9 +162,9 @@ int main(int argc, char* argv[]){
     }
 
     if (grow) {
-        // Grow the plant for 30 days
+        // Grow the plant for 20 days
         float accum_day = 0;
-        for (int i = 0; i < 30; ++i) {
+        for (int i = 0; i < 20; ++i) {
             float dt = 1.0;
             vis.clearGeometry();
             if(i > 0){

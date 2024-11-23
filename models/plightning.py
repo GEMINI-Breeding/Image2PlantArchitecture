@@ -68,7 +68,7 @@ class MainModule(pl.LightningModule):
                  param_dim=22, param_embedding_dim=768//2, 
                  image_size=224, alpha=1.0, lr=1e-5, 
                  dropout=0.10, 
-                 latent_dim=128,
+                 latent_dim=768,
                  use_depth=False):
         super(MainModule, self).__init__()
         self.save_hyperparameters()  # 전달된 모든 인수를 저장
@@ -99,7 +99,7 @@ class MainModule(pl.LightningModule):
         ])
 
         self.latent_dim = latent_dim
-        self.use_vae = True
+        self.use_vae = False
         if self.use_vae:
             self.vae = VAE(latent_dim=latent_dim)
             if 1:
@@ -353,7 +353,10 @@ class MainModule(pl.LightningModule):
     def compute_loss(self, batch, mode):
         # Load optimizers
         if mode == "train":
-            opt_decoder, opt_emb, opt_vae = self.optimizers()
+            if self.use_vae:
+                opt_decoder, opt_emb, opt_vae = self.optimizers()
+            else:
+                opt_decoder, opt_emb = self.optimizers()
 
         # Load batch and preprocess
         image, y, lengths = batch
@@ -466,14 +469,15 @@ class MainModule(pl.LightningModule):
         embedding_loss = (embedding_loss_fit + embedding_loss_gen) / 2
         # loss = embedding_loss # Test only label loss
         total_loss_metric = decoder_loss # Metric for checkpoint saving and early stopping
+        if self.use_vae:
+            self.log(f'{mode}/image_loss', image_loss, batch_size=image.size(0), sync_dist=True)
+            self.log(f'{mode}/vae_loss', vae_loss, batch_size=image.size(0), sync_dist=True)
 
-        self.log(f'{mode}/image_loss', image_loss, batch_size=image.size(0), sync_dist=True)
         self.log(f'{mode}/label_loss', label_loss, batch_size=image.size(0), sync_dist=True)
         self.log(f'{mode}/param_loss', param_loss, batch_size=image.size(0), sync_dist=True)
         self.log(f'{mode}/embedding_loss', embedding_loss, batch_size=image.size(0), sync_dist=True)
         self.log(f'{mode}/embedding_loss_gen', embedding_loss_gen, batch_size=image.size(0), sync_dist=True)
         self.log(f'{mode}/decoder_loss', decoder_loss, batch_size=image.size(0), sync_dist=True)
-        self.log(f'{mode}/vae_loss', vae_loss, batch_size=image.size(0), sync_dist=True)
         self.log(f'{mode}/loss', total_loss_metric, batch_size=image.size(0), sync_dist=True)
 
         # Add images to tensorboard
@@ -552,12 +556,15 @@ class MainModule(pl.LightningModule):
         ], lr=self.lr)
         scheduler_emb = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer_emb, mode='min', factor=0.1, patience=40, min_lr=1e-8)
         
-        optimizer_vae = torch.optim.Adam([
-            {'params': self.vae.parameters(), 'lr': self.lr} # Optimizer for VAE
-        ], lr=self.lr)
-        scheduler_vae = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer_vae, mode='min', factor=0.1, patience=40, min_lr=1e-8)
+        if self.use_vae:
+            optimizer_vae = torch.optim.Adam([
+                {'params': self.vae.parameters(), 'lr': self.lr} # Optimizer for VAE
+            ], lr=self.lr)
+            scheduler_vae = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer_vae, mode='min', factor=0.1, patience=40, min_lr=1e-8)
 
-        return [optimizer_decoder, optimizer_emb, optimizer_vae], [scheduler_decoder, scheduler_emb, scheduler_vae]
+            return [optimizer_decoder, optimizer_emb, optimizer_vae], [scheduler_decoder, scheduler_emb, scheduler_vae]
+        else:
+            return [optimizer_decoder, optimizer_emb], [scheduler_decoder, scheduler_emb]
     
 class MainDataModule(pl.LightningDataModule):
     def __init__(self, dataset_dir, train_batch_size=16, val_batch_size=None,
@@ -610,21 +617,22 @@ class MainDataModule(pl.LightningDataModule):
         return dataset
 
     def setup(self, stage=None):
-        growth_stages = ["003","010","016","023"] # ["003","010","016","023"]
+        growth_stages = [f"{day:02d}" for day in range(20)]
+        train_plots = [f"{plot:04d}" for plot in range(50)]
         self.train_dataset = self.load_or_create_dataset(
-            self.dataset_dir, "train_dataset", ["000", "001", "002"], growth_stages,
+            self.dataset_dir, "train_dataset", train_plots, growth_stages,
             self.train_transform, self.load_depth, self.process_leaf,
             self.preload, self.image_size
         )
-
+        val_plots = [f"{plot:04d}" for plot in range(50,75)]
         self.val_dataset = self.load_or_create_dataset(
-            self.dataset_dir, "val_dataset", ["003"], growth_stages,
+            self.dataset_dir, "val_dataset", val_plots, growth_stages,
             self.test_transform, self.load_depth, self.process_leaf,
             self.preload, self.image_size
         )
-
+        test_plots = [f"{plot:04d}" for plot in range(75,100)]
         self.test_dataset = self.load_or_create_dataset(
-            self.dataset_dir, "test_dataset", ["004"], growth_stages,
+            self.dataset_dir, "test_dataset", test_plots, growth_stages,
             self.test_transform, self.load_depth, self.process_leaf,
             self.preload, self.image_size
         )

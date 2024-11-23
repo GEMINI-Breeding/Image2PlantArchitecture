@@ -6,7 +6,7 @@ from pytorch_lightning.callbacks import ModelCheckpoint, TQDMProgressBar, Learni
 from pytorch_lightning.loggers import TensorBoardLogger
 from pytorch_lightning.strategies import DDPStrategy
 from datetime import datetime
-
+import platform
 # 경로 설정
 script_file_path = os.path.abspath(__file__)
 sys.path.append(os.path.dirname(os.path.dirname(script_file_path)))
@@ -17,32 +17,31 @@ if __name__ == "__main__":
     if torch.cuda.is_available():
         torch.set_float32_matmul_precision('medium')
 
-    dataset_dir = "/home/lion397/codes/Image2PlantArchitecture/data/generated_dataset_Sep22_black_subset"
-    #dataset_dir = "/home/lion397/codes/Image2PlantArchitecture/data/generated_dataset_Sep22_black"
+    dataset_dir = "/Users/lion397/codes_2024_work/Image2PlantArchitecture/data/generated_Nov22_20224"
     module = MainModule(
         num_layers=6,
         num_heads=8,
         seq_dim=43,
         seq_embedding_dim=768//2,
-        param_dim=22,
+        param_dim=24,
         param_embedding_dim=768//2,
         image_size=224,
         alpha=1.0,
         lr=1e-4,
-        use_depth=False,
+        use_depth=True,
         dropout=0.10,
     )
 
     datamodule = MainDataModule(dataset_dir,
                                 image_size=module.image_size,
                                 load_depth=False,
-                                train_batch_size=8, num_workers=4, process_leaf=False, preload=True)
+                                train_batch_size=8, num_workers=4, process_leaf=False, preload=False)
     tqdm_cb = TQDMProgressBar(refresh_rate=10)
 
     # Generate today's date string in YYYYMMDD format
     today_date_str = datetime.now().strftime('%Y%m%d')
     tb_logger = TensorBoardLogger(
-        name=f'{today_date_str}_ProfessLeafFalse',
+        name=f'{today_date_str}_NewXML',
         save_dir='./log'
     )
 
@@ -65,8 +64,17 @@ if __name__ == "__main__":
         mode='min'
     )
 
+    # Check the current platform
+    current_platform = platform.system()
+
+    # Set the accelerator based on the platform
+    if current_platform == "Darwin":
+        accelerator = "mps"
+    else:
+        accelerator = "gpu"
+
     trainer = pl.Trainer(
-        accelerator="gpu",
+        accelerator=accelerator,
         devices="auto",
         max_epochs=400,
         callbacks=[tqdm_cb, ckpt_cb, lr_monitor, early_stop_cb, 
@@ -75,7 +83,7 @@ if __name__ == "__main__":
                    ],
         # callbacks=[tqdm_cb, ckpt_cb, lr_monitor],
         logger=tb_logger,
-        precision="bf16-mixed",
+        # precision="bf16-mixed",
         #strategy=DDPStrategy(find_unused_parameters=True)  # Enable detection of unused parameters
     )
     # module = MainModule.load_from_checkpoint('log/20241028_VAEImageLossTriplet/version_0/checkpoints/best_epoch=84.ckpt')
