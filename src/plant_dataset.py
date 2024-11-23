@@ -24,7 +24,7 @@ ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 class PlantDataset(Dataset):
     def __init__(self, root_dir, plot=None, stages=None, transform=None, 
-                 image_size=224, load_depth=True, preload=True, 
+                 image_size=224, load_depth=False, preload=True, 
                  process_leaf=False):
 
         self.root_dir = root_dir
@@ -188,3 +188,20 @@ def collate_fn(batch):
     images = torch.stack(images)
     vectors_padded = torch.tensor(vectors_padded,dtype=torch.float32)
     return images, vectors_padded, lengths
+
+
+
+if __name__ == "__main__":
+    # Load plant dataset
+    dataset = PlantDataset("/home/lion397/codes/Image2PlantArchitecture/data/generated_Nov22_20224", preload=False)
+
+    # iterate over samples
+    max_len = -1
+    max_vec = []
+    for i in range(len(dataset)):
+        image, vec, vec_len = dataset[i]
+        if max_len < vec_len:
+            max_vec = vec
+            max_len = vec_len
+
+    print(max_len)
