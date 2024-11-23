@@ -133,8 +133,8 @@ class PlantDataset(Dataset):
         root = tree.getroot()
 
         root = linked_to_recursive(root)
-
-        plant_array = xml2vec(root[0]) # Assume single plant
+        plant_array = []
+        xml2vec(root[0], plant_array) # Assume single plant
 
         return image, plant_array
 
@@ -193,7 +193,7 @@ def collate_fn(batch):
 
 if __name__ == "__main__":
     # Load plant dataset
-    dataset = PlantDataset("/home/lion397/codes/Image2PlantArchitecture/data/generated_Nov22_20224", preload=False)
+    dataset = PlantDataset("data/generated_Nov22_20224", preload=False)
 
     # iterate over samples
     max_len = -1
