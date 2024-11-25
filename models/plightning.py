@@ -504,7 +504,15 @@ class MainModule(pl.LightningModule):
         # return losses
 
     def on_train_epoch_end(self):
-        sch_decoder, sch_emb, sch_vae = self.lr_schedulers()
+        if self.use_vae:
+            sch_decoder, sch_emb, sch_vae = self.lr_schedulers()
+            if isinstance(sch_vae, torch.optim.lr_scheduler.ReduceLROnPlateau):
+                sch_vae.step(self.trainer.callback_metrics["val/vae_loss"])
+            else:
+                sch_vae.step()
+        else:
+            sch_decoder, sch_emb= self.lr_schedulers()
+
         # If the selected scheduler is a ReduceLROnPlateau scheduler.
         if isinstance(sch_decoder, torch.optim.lr_scheduler.ReduceLROnPlateau):
             sch_decoder.step(self.trainer.callback_metrics["val/decoder_loss"])
@@ -516,10 +524,6 @@ class MainModule(pl.LightningModule):
         else:
             sch_emb.step()
 
-        if isinstance(sch_vae, torch.optim.lr_scheduler.ReduceLROnPlateau):
-            sch_vae.step(self.trainer.callback_metrics["val/vae_loss"])
-        else:
-            sch_vae.step()
 
     def validation_step(self, batch, batch_idx):
         loss = self.compute_loss(batch, 'val')

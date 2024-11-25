@@ -250,7 +250,7 @@ class PositionalEncoding(nn.Module):
 class TransformerDecoderModel(nn.Module):
     def __init__(self, seq_embedding_dim, param_embedding_dim, 
                  num_layers, num_heads, num_tokens, num_params, 
-                 max_seq_length=2048, use_depth=True, decoder_only=False, image_size=448, dropout=0.1):
+                 max_seq_length=1024, use_depth=True, decoder_only=False, image_size=448, dropout=0.1):
         super(TransformerDecoderModel, self).__init__()
 
         self.dim_model = seq_embedding_dim + param_embedding_dim
@@ -510,7 +510,7 @@ def _expand_token(token, batch_size: int):
     return token.view(1, 1, -1).expand(batch_size, -1, -1)
 
 class PlantArchitectureTransformer(TextTransformer):
-    def __init__(self, d_label, d_param, d_model, width=512, max_seq_length=2048, dropout=0.1):
+    def __init__(self, d_label, d_param, d_model, width=512, max_seq_length=1024, dropout=0.1):
         super(PlantArchitectureTransformer, self).__init__(context_length=max_seq_length,
                                                            vocab_size=d_label,
                                                            layers=6,
