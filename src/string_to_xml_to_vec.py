@@ -335,7 +335,7 @@ def vec2element(root, plant_array, depth=0, debug=False):
                 global shoot_id
                 current_shoot.set("ID", f"{shoot_id}")
                 shoot_id += 1
-                shoot_type = list(shoottype2num.keys())[list(shoottype2num.values()).index(line[-1])]
+                shoot_type = list(shoottype2num.keys())[list(shoottype2num.values()).index(line[6])]
                 add_trait_subelement(current_shoot,"shoot_type_label",f" {shoot_type} ")
                 add_trait_subelement(current_shoot,"parent_shoot_ID",f" TBD ")
                 add_trait_subelement(current_shoot,"parent_node_index",f" TBD ")
@@ -455,7 +455,7 @@ def vec2xml(plant_array,  plant_id=0, debug=False):
     base_position.text = f"{0} {0} {0}"
     # Add plant_age element
     plant_age = ET.SubElement(current_plant, "plant_age")
-    plant_age.text = f" {int(line[-2])} "
+    plant_age.text = f" {abs(int(line[5]))} "
 
 
     # # Add first shoot
@@ -572,7 +572,7 @@ if __name__ == "__main__":
     # check if the XML is the same as the original XML
     if 1:
         # Read the XML file
-        xml_file = "data/generated_Nov14_20224/xml/cowpea_0000_day_30.xml"
+        xml_file = "data/generated_Nov22_20224/xml/cowpea_0097_day_16.xml"
         tree = ET.parse(xml_file)
         root = tree.getroot()
 

@@ -17,31 +17,32 @@ if __name__ == "__main__":
     if torch.cuda.is_available():
         torch.set_float32_matmul_precision('medium')
 
-    dataset_dir = "/Users/lion397/codes_2024_work/Image2PlantArchitecture/data/generated_Nov22_20224"
+    # Define dataset to solve
+    dataset_dir = "data/generated_Nov22_20224"
+    datamodule = MainDataModule(dataset_dir,
+                                image_size=224,
+                                load_depth=False,
+                                train_batch_size=16, num_workers=8, process_leaf=False, preload=True)
+    
     module = MainModule(
         num_layers=6,
         num_heads=8,
-        seq_dim=43,
+        seq_dim=23, # 4*5 + 3 => Max nested depth is 5
         seq_embedding_dim=768//2,
         param_dim=24,
         param_embedding_dim=768//2,
-        image_size=224,
+        image_size=datamodule.image_size,
         alpha=1.0,
-        lr=1e-4,
+        lr=1e-5,
         use_depth=True,
         dropout=0.10,
     )
-
-    datamodule = MainDataModule(dataset_dir,
-                                image_size=module.image_size,
-                                load_depth=False,
-                                train_batch_size=8, num_workers=4, process_leaf=False, preload=False)
     tqdm_cb = TQDMProgressBar(refresh_rate=10)
 
     # Generate today's date string in YYYYMMDD format
     today_date_str = datetime.now().strftime('%Y%m%d')
     tb_logger = TensorBoardLogger(
-        name=f'{today_date_str}_NewXML',
+        name=f'{today_date_str}_BackToSimple',
         save_dir='./log'
     )
 
@@ -83,10 +84,10 @@ if __name__ == "__main__":
                    ],
         # callbacks=[tqdm_cb, ckpt_cb, lr_monitor],
         logger=tb_logger,
-        # precision="bf16-mixed",
+        precision="bf16-mixed",
         #strategy=DDPStrategy(find_unused_parameters=True)  # Enable detection of unused parameters
     )
-    # module = MainModule.load_from_checkpoint('log/20241028_VAEImageLossTriplet/version_0/checkpoints/best_epoch=84.ckpt')
+    # module = MainModule.load_from_checkpoint('log/20241125_BackToSimple/version_4/checkpoints/best_epoch=64.ckpt')
     trainer.fit(module, datamodule=datamodule)
 
     # To check the training progress,

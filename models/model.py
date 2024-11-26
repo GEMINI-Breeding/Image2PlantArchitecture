@@ -29,7 +29,8 @@ def get_tgt_mask(size) -> torch.tensor:
         # Causal mask 생성
         mask = nn.Transformer.generate_square_subsequent_mask(size)
 
-    return mask
+    # Convert to boolean
+    return mask.bool()
 
 def create_pad_mask(matrix: torch.tensor, pad_token: int) -> torch.tensor:
     # Create (batch_size, seq_len) tensor
@@ -37,7 +38,7 @@ def create_pad_mask(matrix: torch.tensor, pad_token: int) -> torch.tensor:
     mask = (seq == pad_token)
 
     # Change type
-    mask = mask.type(torch.FloatTensor)
+    # mask = mask.type(torch.FloatTensor)
     return mask
 
 def create_organ_mask():
@@ -250,7 +251,7 @@ class PositionalEncoding(nn.Module):
 class TransformerDecoderModel(nn.Module):
     def __init__(self, seq_embedding_dim, param_embedding_dim, 
                  num_layers, num_heads, num_tokens, num_params, 
-                 max_seq_length=1024, use_depth=True, decoder_only=False, image_size=448, dropout=0.1):
+                 max_seq_length=2024, use_depth=True, decoder_only=False, image_size=448, dropout=0.1):
         super(TransformerDecoderModel, self).__init__()
 
         self.dim_model = seq_embedding_dim + param_embedding_dim
@@ -510,7 +511,7 @@ def _expand_token(token, batch_size: int):
     return token.view(1, 1, -1).expand(batch_size, -1, -1)
 
 class PlantArchitectureTransformer(TextTransformer):
-    def __init__(self, d_label, d_param, d_model, width=512, max_seq_length=1024, dropout=0.1):
+    def __init__(self, d_label, d_param, d_model, width=512, max_seq_length=2048, dropout=0.1):
         super(PlantArchitectureTransformer, self).__init__(context_length=max_seq_length,
                                                            vocab_size=d_label,
                                                            layers=6,

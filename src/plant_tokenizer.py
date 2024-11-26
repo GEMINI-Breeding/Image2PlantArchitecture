@@ -8,28 +8,28 @@ from plant_architecture_utils import coordinates_to_angle, angle_to_coordinates
 import torch
 
 # Create a dict convert plant structure to token
-# Structure | Token
-# 00        | 0
-# 01        | 1
-# 02        | 2
-# 03        | 3
-# 10        | 4
-# 11        | 5
-# 12        | 6
-# 13        | 7
-# 20        | 8
+# Depth, organ type | Token
+# 0,0               | 0
+# 0,1               | 1
+# 0,2               | 2
+# 0,3               | 3
+# 1,0               | 4
+# 1,1               | 5
+# 1,2               | 6
+# 1,3               | 7
+# 2,0               | 8
 # ...
-# 90        | 36
-# 91        | 37
-# 92        | 38
-# 93        | 39
-# SOS token | 40
-# EOS token | 41
-# PAD token | 42 
+# 4,0               | 16
+# 4,1               | 17
+# 4,2               | 18
+# 4,3               | 19
+# SOS token         | 20
+# EOS token         | 21
+# PAD token         | 22 
 
-SOS_token = 40
-PAD_token = 41
-EOS_token = 42
+SOS_token = 20
+PAD_token = 21
+EOS_token = 22
 
 if 0:
     params_SOS_token_padded = np.ones(15)*SOS_token
@@ -40,6 +40,7 @@ else:
     params_SOS_token_padded[0] = SOS_token
     params_EOS_token_padded = np.zeros(24+1)
     params_EOS_token_padded[0] = EOS_token
+
 
 def vec2token(vec, n_params=24+1):
     """
@@ -118,8 +119,8 @@ def token2vec(tokens):
                 params_padded[0] = coordinates_to_angle(token[1], token[2])
                 params_padded[1] = coordinates_to_angle(token[3], token[4])
                 params_padded[2] = coordinates_to_angle(token[5], token[6])
-                params_padded[3] = token[7] * 100 # shoot_gravitropic_curvature
-                params_padded[4] = token[8] # shoot_type
+                params_padded[3] = token[7] * 100 # plant age
+                params_padded[4] = 1.0 if abs(1.0 - token[8]) < abs(3.0 - token[8]) else 3.0 # shoot_type
             elif j == 1:
                 # Internode
                 params_padded[0] = token[9] / 100 # internode_length
@@ -211,8 +212,8 @@ if __name__ == "__main__":
 
 
     from plant_dataset import PlantDataset
-    dataset_dir = "/home/lion397/codes/Image2PlantArchitecture/data/generated_dataset_Sep22_black"
-    train_dataset = PlantDataset(dataset_dir, plot=["000", "001", "002",], load_depth=True, preload=False,
+    dataset_dir = "data/generated_Nov22_20224"
+    train_dataset = PlantDataset(dataset_dir, load_depth=False, preload=False,
                                  process_leaf=False,
                                  image_size=224)
     from tqdm import tqdm
@@ -247,62 +248,4 @@ if __name__ == "__main__":
                 if not np.allclose(a, b):
                     print(f"line {i}: {a} != {b}")
 
-
-
     pass
-
-
-"""
-PhytomerParameters::PhytomerParameters( std::minstd_rand0 *generator ) {
-
-    //--- internode ---//
-    internode.pitch.initialize( 20, generator );
-    internode.phyllotactic_angle.initialize(137.5, generator );
-    internode.color = RGB::forestgreen;
-    internode.length_segments = 1;
-    internode.radial_subdivisions = 7;
-
-    //--- petiole ---//
-    petiole.petioles_per_internode = 1;
-    petiole.pitch.initialize( 90, generator );
-    petiole.radius.initialize( 0.001, generator );
-    petiole.length.initialize( 0.05, generator );
-    petiole.curvature.initialize(0, generator);
-    petiole.taper.initialize( 0, generator );
-    petiole.color = RGB::forestgreen;
-    petiole.length_segments = 1;
-    petiole.radial_subdivisions = 7;
-
-    //--- leaf ---//
-    leaf.leaves_per_petiole.initialize( 1, generator);
-    leaf.pitch.initialize( 0, generator );
-    leaf.yaw.initialize( 0, generator );
-    leaf.roll.initialize( 0, generator );
-    leaf.leaflet_offset.initialize( 0, generator );
-    leaf.leaflet_scale = 1;
-    leaf.prototype_scale.initialize(0.05,generator);
-    leaf.subdivisions = 1;
-    leaf.unique_prototypes = 1;
-
-    //--- peduncle ---//
-    peduncle.length.initialize(0.05,generator);
-    peduncle.radius.initialize(0.001, generator);
-    peduncle.pitch.initialize(0,generator);
-    peduncle.roll.initialize(0,generator);
-    peduncle.curvature.initialize(0,generator);
-    peduncle.length_segments = 3;
-    peduncle.radial_subdivisions = 7;
-
-    //--- inflorescence ---//
-    inflorescence.flowers_per_rachis.initialize(1, generator);
-    inflorescence.flower_offset.initialize(0, generator);
-    inflorescence.flower_arrangement_pattern = "alternate";
-    inflorescence.pitch.initialize(0,generator);
-    inflorescence.roll.initialize(0,generator);
-    inflorescence.flower_prototype_scale.initialize(0.0075,generator);
-    inflorescence.fruit_prototype_scale.initialize(0.0075,generator);
-    inflorescence.fruit_gravity_factor_fraction.initialize(0, generator);
-    inflorescence.unique_prototypes = 1;
-
-}
-"""
