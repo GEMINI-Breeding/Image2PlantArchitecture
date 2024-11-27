@@ -28,9 +28,9 @@ import torch
 # PAD token         | 22 
 
 # 3*4 + 3 => Max nested depth is 5
-SOS_token = 20
-PAD_token = 21
-EOS_token = 22
+SOS_token = 4*4
+PAD_token = 4*4 + 1
+EOS_token = 4*4 + 2
 
 if 0:
     SOS_vec_padded = np.ones(15)*SOS_token
