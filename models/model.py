@@ -251,7 +251,7 @@ class PositionalEncoding(nn.Module):
 class TransformerDecoderModel(nn.Module):
     def __init__(self, seq_embedding_dim, param_embedding_dim, 
                  num_layers, num_heads, num_tokens, num_params, 
-                 max_seq_length=2024, use_depth=True, decoder_only=False, image_size=448, dropout=0.1):
+                 max_seq_length=2048, use_depth=True, decoder_only=False, image_size=448, dropout=0.1):
         super(TransformerDecoderModel, self).__init__()
 
         self.dim_model = seq_embedding_dim + param_embedding_dim

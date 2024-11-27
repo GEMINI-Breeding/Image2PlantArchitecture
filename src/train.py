@@ -11,6 +11,7 @@ import platform
 script_file_path = os.path.abspath(__file__)
 sys.path.append(os.path.dirname(os.path.dirname(script_file_path)))
 from models.plightning import MainModule, MainDataModule, FineTuneBatchSizeFinder, FineTuneLearningRateFinder
+from plant_tokenizer import EOS_token
 
 if __name__ == "__main__":
     # Tensor Cores 활용을 위한 설정
@@ -18,16 +19,16 @@ if __name__ == "__main__":
         torch.set_float32_matmul_precision('medium')
 
     # Define dataset to solve
-    dataset_dir = "data/generated_Nov22_20224"
+    dataset_dir = "data/generated_Nov22_2024"
     datamodule = MainDataModule(dataset_dir,
                                 image_size=224,
                                 load_depth=False,
-                                train_batch_size=16, num_workers=8, process_leaf=False, preload=True)
+                                train_batch_size=16, num_workers=8, process_leaf=False, preload=False)
     
     module = MainModule(
         num_layers=6,
         num_heads=8,
-        seq_dim=23, # 4*5 + 3 => Max nested depth is 5
+        seq_dim=EOS_token+1,
         seq_embedding_dim=768//2,
         param_dim=24,
         param_embedding_dim=768//2,

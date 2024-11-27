@@ -27,19 +27,20 @@ import torch
 # EOS token         | 21
 # PAD token         | 22 
 
+# 3*4 + 3 => Max nested depth is 5
 SOS_token = 20
 PAD_token = 21
 EOS_token = 22
 
 if 0:
-    params_SOS_token_padded = np.ones(15)*SOS_token
-    params_EOS_token_padded = np.ones(15)*EOS_token
+    SOS_vec_padded = np.ones(15)*SOS_token
+    EOS_vec_padded = np.ones(15)*EOS_token
 else:
     # Zero padded params. SOS and EOS token are zero padded
-    params_SOS_token_padded = np.zeros(24+1)
-    params_SOS_token_padded[0] = SOS_token
-    params_EOS_token_padded = np.zeros(24+1)
-    params_EOS_token_padded[0] = EOS_token
+    SOS_vec_padded = np.zeros(24+1)
+    SOS_vec_padded[0] = SOS_token
+    EOS_vec_padded = np.zeros(24+1)
+    EOS_vec_padded[0] = EOS_token
 
 
 def vec2token(vec, n_params=24+1):

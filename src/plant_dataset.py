@@ -13,7 +13,7 @@ import sys
 script_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(script_dir)
 from image_process import process_leaf_image
-from plant_tokenizer import SOS_token, EOS_token, PAD_token, params_EOS_token_padded, params_SOS_token_padded
+from plant_tokenizer import SOS_token, EOS_token, PAD_token, EOS_vec_padded, SOS_vec_padded
 from string_to_xml_to_vec import string2vec, vec2string, vec2xml, pretty_print_xml, xml2vec, linked_to_recursive
 import xml.etree.ElementTree as ET
 from plant_tokenizer import vec2token as vec2token
@@ -90,51 +90,54 @@ class PlantDataset(Dataset):
         # Load image
         try:
             image = Image.open(os.path.join(self.images_path, self.image_paths[idx]))
-        except:
-            print(f"Error loading {self.image_paths[idx]}")
-            return None, None, None
-        if self.process_leaf:
-            # Preprocess image
-            leaf_area, plant_width, plant_height, leaf_img, (x,y,w,h) = process_leaf_image(np.array(image), 
-                                                                                normalize=True, debug=False, sqaure_crop=True)
-            leaf_img = cv2.resize(leaf_img, (self.img_size, self.img_size))
-        else:
-            leaf_img = cv2.resize(np.array(image), (self.img_size, self.img_size))
-
-        if self.load_depth:
-            # Convert depth to grayscale
-            depth = Image.open(os.path.join(self.depth_path, self.depth_images[idx]))
-            depth = np.array(depth)
-            # Convert to grayscale if not already
-            if len(depth.shape) > 2:
-                depth = cv2.cvtColor(depth, cv2.COLOR_BGR2GRAY)
-
+        
             if self.process_leaf:
-                # Crop the depth image
-                depth = depth[y:y+h, x:x+w]
-                
-            # Normalize depth image to 0-255
-            depth = (depth - depth.min()) / (depth.max() - depth.min()) * 255
-            depth = depth.astype(np.uint8)
+                # Preprocess image
+                leaf_area, plant_width, plant_height, leaf_img, (x,y,w,h) = process_leaf_image(np.array(image), 
+                                                                                    normalize=True, debug=False, sqaure_crop=True)
+                leaf_img = cv2.resize(leaf_img, (self.img_size, self.img_size))
+            else:
+                leaf_img = cv2.resize(np.array(image), (self.img_size, self.img_size))
 
-            # Resize the images
-            depth = cv2.resize(depth, (self.img_size, self.img_size))
+            if self.load_depth:
+                # Convert depth to grayscale
+                depth = Image.open(os.path.join(self.depth_path, self.depth_images[idx]))
+                depth = np.array(depth)
+                # Convert to grayscale if not already
+                if len(depth.shape) > 2:
+                    depth = cv2.cvtColor(depth, cv2.COLOR_BGR2GRAY)
 
-            # Add depth channel
-            leaf_img = np.concatenate((leaf_img, depth[:, :, np.newaxis]), axis=2)
+                if self.process_leaf:
+                    # Crop the depth image
+                    depth = depth[y:y+h, x:x+w]
+                    
+                # Normalize depth image to 0-255
+                depth = (depth - depth.min()) / (depth.max() - depth.min()) * 255
+                depth = depth.astype(np.uint8)
 
-        image = leaf_img
+                # Resize the images
+                depth = cv2.resize(depth, (self.img_size, self.img_size))
 
-        # Load XML file
-        # Load and parse the XML file
-        tree = ET.parse(os.path.join(self.plant_xml_path, self.plant_xml_files[idx]))
+                # Add depth channel
+                leaf_img = np.concatenate((leaf_img, depth[:, :, np.newaxis]), axis=2)
 
-        # Get the root element
-        root = tree.getroot()
+            image = leaf_img
 
-        root = linked_to_recursive(root)
-        plant_array = []
-        xml2vec(root[0], plant_array) # Assume single plant
+            # Load XML file
+            # Load and parse the XML file
+            tree = ET.parse(os.path.join(self.plant_xml_path, self.plant_xml_files[idx]))
+
+            # Get the root element
+            root = tree.getroot()
+
+            root = linked_to_recursive(root)
+            plant_array = []
+            xml2vec(root[0], plant_array) # Assume single plant
+
+        except Exception as e:
+            print(e)
+            print(f"Error loading {self.image_paths[idx]}, {self.plant_xml_files[idx]}")
+            raise e
 
         return image, plant_array
 
@@ -157,7 +160,7 @@ class PlantDataset(Dataset):
             out = vec2token(vec)
                 
             # Add SOS and EOS tokens
-            out = np.concatenate(([params_SOS_token_padded], out, [params_EOS_token_padded]))
+            out = np.concatenate(([SOS_vec_padded], out, [EOS_vec_padded]))
             out_len = len(out)
         else:
             out = None

@@ -20,7 +20,7 @@ sys.path.append(script_file_dir)
 from models.model import TransformerDecoderModel, RegressionModel, ViT_FeatureExtractor, CNN_FeatureExtractor
 from models.model import RegressionModel_Transformer, PositionalEncoding, VAE, MLP, SeqEmbeddingModel
 from models.model import create_organ_mask, get_tgt_mask, create_pad_mask, text_global_pool
-from src.plant_tokenizer import SOS_token, EOS_token, PAD_token, params_EOS_token_padded, params_SOS_token_padded
+from src.plant_tokenizer import SOS_token, EOS_token, PAD_token, EOS_vec_padded, SOS_vec_padded
 from src.plant_tokenizer import generate_noise_plant_tokens
 from src.plant_dataset import PlantDataset
 from src.plantstring2model import plantstring2model
@@ -68,6 +68,7 @@ class MainModule(pl.LightningModule):
                  param_dim=22, param_embedding_dim=768//2, 
                  image_size=224, alpha=1.0, lr=1e-5, 
                  dropout=0.10, 
+                 max_len=512,
                  use_depth=False):
         super(MainModule, self).__init__()
         self.save_hyperparameters()  # 전달된 모든 인수를 저장
@@ -86,6 +87,7 @@ class MainModule(pl.LightningModule):
         self.lr = lr
         self.dropout = dropout
         self.use_depth = use_depth
+        self.max_len = max_len
 
         self.transform = transforms.Compose([
             transforms.ToTensor(),
@@ -113,10 +115,11 @@ class MainModule(pl.LightningModule):
             num_heads=self.num_heads,
             num_tokens=self.seq_dim,
             num_params=self.param_dim,
-            decoder_only=False,
+            decoder_only=True,
             use_depth=self.use_depth,
             image_size=self.image_size,
             dropout=self.dropout,
+            max_seq_length=max_len,
         )
         
         self.multihead_attn_weights = None
@@ -143,9 +146,9 @@ class MainModule(pl.LightningModule):
         outputs = outputs.permute(1, 0, 2)
         return outputs
     
-    def generate(self, image, max_len=2048, stage='val'):
+    def generate(self, image, stage='val'):
         device = image.device
-        y_input = torch.tensor(params_SOS_token_padded, dtype=torch.float32)
+        y_input = torch.tensor(SOS_vec_padded, dtype=torch.float32)
 
         y_input = y_input.unsqueeze(0).unsqueeze(0)
         y_input = y_input.to(device)
@@ -154,16 +157,14 @@ class MainModule(pl.LightningModule):
             image = self.add_depth_to_image(image)
 
         feature = self.image_encoder(image)
-        for i in range(max_len):
-            # Get source mask
-            tgt_mask = get_tgt_mask(y_input.size(1)).to(device)
+        for i in range(self.max_len):
             # Use torch.cuda.amp for mixed precision
             try:
                 if stage == 'val':
                     with torch.no_grad():
-                        pred = self.sequence_decoder(feature, y_input, tgt_mask)
+                        pred = self.sequence_decoder(feature, y_input)
                 else:
-                    pred = self.sequence_decoder(feature, y_input, tgt_mask)
+                    pred = self.sequence_decoder(feature, y_input)
             except Exception as e:
                 print(e)
                 print(f"Error in {i} iteration")
