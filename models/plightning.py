@@ -108,7 +108,7 @@ class MainModule(pl.LightningModule):
             num_heads=self.num_heads,
             num_tokens=self.seq_dim,
             num_params=self.param_dim,
-            decoder_only=False,
+            decoder_only=True,
             use_depth=self.use_depth,
             image_size=self.image_size,
             dropout=self.dropout,
@@ -180,8 +180,11 @@ class MainModule(pl.LightningModule):
 
         return y_input.squeeze(0).tolist()
     
-    def label_loss_fn(self, pred, label, ignore_index=PAD_token):
-        return F.cross_entropy(pred, label, ignore_index=ignore_index)
+    def label_loss_fn(self, pred, label, ignore_index=None):
+        if ignore_index:
+            return F.cross_entropy(pred, label, ignore_index=ignore_index)
+        else:
+            return F.cross_entropy(pred, label)
 
     def param_loss_fn(self, pred, params, ignore_index=PAD_token):
         # Create neg mask
@@ -317,7 +320,8 @@ class MainModule(pl.LightningModule):
 
         # Decoder loss
         pred = self(image, y_input)
-        label_loss = self.label_loss_fn(pred[:, :, :self.seq_dim].permute(0, 2, 1), label) # (N, C, L)
+        label_loss = self.label_loss_fn(pred[:, :, :self.seq_dim].permute(0, 2, 1), label, ignore_index=PAD_token) # (N, C, L)
+        #label_loss = self.label_loss_fn(pred[:, :, :self.seq_dim].permute(0, 2, 1), label) 
         if 0:
             param_loss = self.param_loss_fn(pred[:, :, self.seq_dim:], values)
         else:

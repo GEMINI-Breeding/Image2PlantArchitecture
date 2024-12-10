@@ -23,10 +23,10 @@ if __name__ == "__main__":
     datamodule = MainDataModule(dataset_dir,
                                 image_size=224,
                                 load_depth=False,
-                                train_batch_size=16, num_workers=8, process_leaf=False, preload=False)
+                                train_batch_size=1, num_workers=8, process_leaf=False, preload=False)
     
     module = MainModule(
-        num_layers=6,
+        num_layers=24,
         num_heads=8,
         seq_dim=EOS_token+1,
         seq_embedding_dim=768//2,
