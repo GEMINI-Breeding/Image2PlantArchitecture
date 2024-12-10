@@ -120,7 +120,7 @@ int main(int argc, char* argv[]){
     //     std::string xml_file = output_name + ".xml";
     //     plantarchitecture.writePlantStructureXML(plantID, xml_file);
     // }
-    if(~plant_model_file.empty()){
+    if(~plant_model_file.empty() && grow==false){
         std::string output_file = save_dir + "/" + output_name + ".jpeg";
         vis.printWindow(output_file.c_str());
     }
