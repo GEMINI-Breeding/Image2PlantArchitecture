@@ -19,7 +19,7 @@ int main(int argc, char* argv[]){
     bool rotation_view = false;
     float height = 0;
     std::string tile_file = "plugins/visualizer/textures/dirt.jpg";
-    std::string plant_model_file = "../plant_0.xml";
+    std::string plant_model_file = "";
     std::string output_name = "cowpea";
     uint seed = 60; // Default seed value
     // Parse command-line arguments

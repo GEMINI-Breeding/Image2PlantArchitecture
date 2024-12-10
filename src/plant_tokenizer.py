@@ -148,12 +148,17 @@ def token2vec(tokens):
                 params_padded[1] = coordinates_to_angle(token[19], token[20])
                 params_padded[2] = coordinates_to_angle(token[21], token[22])
                 params_padded[3] = coordinates_to_angle(token[23], token[24])
+
+                # Convert 0-360 to -180-180
+                for k in range(1, 4):
+                    if params_padded[k] > 180:
+                        params_padded[k] -= 360
             else:
                 raise ValueError(f"Invalid organ type {j}")
 
             # Make 1x6 array with i, j and params
             vec.append(np.concatenate(([i, j], params_padded),axis=0))
-    return np.array(vec)
+    return vec
 
 def generate_noise_plant_tokens(tokens, noise_level=0.1, mode='train'):
     noise_token = torch.zeros_like(tokens)

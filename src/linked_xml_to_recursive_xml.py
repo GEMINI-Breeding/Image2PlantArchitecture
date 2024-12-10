@@ -317,6 +317,7 @@ if __name__ == "__main__":
     if 1:
         # Read the XML file
         xml_file = "data/generated_Nov22_2024/xml/cowpea_0097_day_16.xml"
+        #xml_file = "data/generated_Nov22_2024/xml/cowpea_0097_day_05.xml"
         tree = ET.parse(xml_file)
         root = tree.getroot()
 

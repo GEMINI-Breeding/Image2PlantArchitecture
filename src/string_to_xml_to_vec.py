@@ -342,7 +342,7 @@ def vec2element(root, plant_array, depth=0, debug=False):
                 add_trait_subelement(current_shoot,"parent_shoot_ID",f" TBD ")
                 add_trait_subelement(current_shoot,"parent_node_index",f" TBD ")
                 add_trait_subelement(current_shoot,"parent_petiole_index",f" TBD ")
-                add_trait_subelement(current_shoot,"base_rotation",f" {line[2]} {line[3]} {line[4]} ")
+                add_trait_subelement(current_shoot,"base_rotation",f" {line[2]:.6g} {line[3]:.6g} {line[4]:.6g} ")
                 plant_array = plant_array[1:]
 
         if len(plant_array) > 0:
@@ -355,10 +355,10 @@ def vec2element(root, plant_array, depth=0, debug=False):
             if organ_name == 'Internode':
                 current_phytomer = ET.SubElement(current_shoot, "phytomer")
                 current_internode = ET.SubElement(current_phytomer, "internode")
-                add_trait_subelement(current_internode,"internode_length",f"{(params[0])}")
-                add_trait_subelement(current_internode,"internode_radius",f"{(params[1])}")
-                add_trait_subelement(current_internode,"internode_pitch",f"{(params[2])}")
-                add_trait_subelement(current_internode,"internode_phyllotactic_angle",f"{(params[3])}")
+                add_trait_subelement(current_internode,"internode_length",f"{(params[0]):.6g}")
+                add_trait_subelement(current_internode,"internode_radius",f"{(params[1]):.6g}")
+                add_trait_subelement(current_internode,"internode_pitch",f"{(params[2]):.6g}")
+                add_trait_subelement(current_internode,"internode_phyllotactic_angle",f"{(params[3]):.6g}")
                 plant_array = plant_array[1:]
 
         if len(plant_array) > 0:
@@ -370,11 +370,11 @@ def vec2element(root, plant_array, depth=0, debug=False):
             params = line[2:]
             if organ_name == 'Petiole':
                 current_petiole = ET.SubElement(current_internode, "petiole")
-                add_trait_subelement(current_petiole,"petiole_length",f"{(params[0])}")
-                add_trait_subelement(current_petiole,"petiole_radius",f"{(params[1])}")
-                add_trait_subelement(current_petiole,"petiole_pitch",f"{(params[2])}")
-                add_trait_subelement(current_petiole,"petiole_curvature",f"{(params[3])}")
-                add_trait_subelement(current_petiole,"leaflet_scale",f"{(params[4])}")
+                add_trait_subelement(current_petiole,"petiole_length",f"{(params[0]):.6g}")
+                add_trait_subelement(current_petiole,"petiole_radius",f"{(params[1]):.6g}")
+                add_trait_subelement(current_petiole,"petiole_pitch",f"{(params[2]):.6g}")
+                add_trait_subelement(current_petiole,"petiole_curvature",f"{(params[3]):.6g}")
+                add_trait_subelement(current_petiole,"leaflet_scale",f"{(params[4]):.6g}")
                 plant_array = plant_array[1:]
                 last_elem = 'Petiole'
 
@@ -387,10 +387,10 @@ def vec2element(root, plant_array, depth=0, debug=False):
             params = line[2:]
             if "Leaf" in organ_name:
                 current_leaf = ET.SubElement(current_petiole, "leaf")
-                add_trait_subelement(current_leaf,"leaf_scale",f"{str(params[0])}")
-                add_trait_subelement(current_leaf,"leaf_pitch",f"{(params[1])}")
-                add_trait_subelement(current_leaf,"leaf_yaw",f"{(params[2])}")
-                add_trait_subelement(current_leaf,"leaf_roll",f"{(params[3])}")
+                add_trait_subelement(current_leaf,"leaf_scale",f"{(params[0]):.6g}")
+                add_trait_subelement(current_leaf,"leaf_pitch",f"{(params[1]):.6g}")
+                add_trait_subelement(current_leaf,"leaf_yaw",f"{(params[2]):.6g}")
+                add_trait_subelement(current_leaf,"leaf_roll",f"{(params[3]):.6g}")
                 plant_array = plant_array[1:]
 
             if debug:
@@ -420,7 +420,11 @@ def vec2element(root, plant_array, depth=0, debug=False):
                             end_idx = idx
                             break
                     plant_array_sub = plant_array[start_idx:end_idx]
-                    plant_array = plant_array[:start_idx] + plant_array[end_idx:]
+                    if start_idx > 0:
+                        plant_array = plant_array[:start_idx] + plant_array[end_idx:] # ValueError('operands could not be broadcast together with shapes (0,8) (2,8) ')
+                    else:
+                        plant_array = plant_array[end_idx:]
+                    #plant_array = np.concatenate((plant_array, plant_array_sub), axis=0)
                 # Process the plant_array_sub
                 # if depth_line == 0:
 
@@ -564,7 +568,3 @@ def save_plant_string(plant_vec, output_path, idx, suffix=""):
 
 if __name__ == "__main__":
     pass
-                
-
-
-

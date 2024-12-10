@@ -376,7 +376,7 @@ class MainModule(pl.LightningModule):
     
 class MainDataModule(pl.LightningDataModule):
     def __init__(self, dataset_dir, train_batch_size=16, val_batch_size=None,
-                        num_workers=4, image_size=448, 
+                        num_workers=4, image_size=448, num_plots=100,
                         load_depth=True,
                         process_leaf=False,
                         preload=False):
@@ -390,7 +390,7 @@ class MainDataModule(pl.LightningDataModule):
         self.process_leaf = process_leaf
         self.load_depth = load_depth
         self.pin_memory = True
-
+        self.num_plots = num_plots
         self.img_aug = transforms.Compose([
                 transforms.RandomResizedCrop(self.image_size, scale=(0.8, 1.0)),
                 transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.2),
@@ -429,19 +429,30 @@ class MainDataModule(pl.LightningDataModule):
 
     def setup(self, stage=None):
         growth_stages = [f"{day:02d}" for day in range(20)]
-        train_plots = [f"{plot:04d}" for plot in range(50)]
+
+        train_ratio = 0.5
+        val_ratio = 0.25
+        test_ratio = 0.25
+
+        train_end = int(self.num_plots * train_ratio)
+        val_end = train_end + int(self.num_plots * val_ratio)
+        test_end = self.num_plots  # Ensure total sums up to num_plots
+
+        train_plots = [f"{plot:04d}" for plot in range(train_end)]
+        val_plots = [f"{plot:04d}" for plot in range(train_end, val_end)]
+        test_plots = [f"{plot:04d}" for plot in range(val_end, test_end)]
+
+
         self.train_dataset = self.load_or_create_dataset(
             self.dataset_dir, "train_dataset", train_plots, growth_stages,
             self.train_transform, self.load_depth, self.process_leaf,
             self.preload, self.image_size
         )
-        val_plots = [f"{plot:04d}" for plot in range(50,75)]
         self.val_dataset = self.load_or_create_dataset(
             self.dataset_dir, "val_dataset", val_plots, growth_stages,
             self.test_transform, self.load_depth, self.process_leaf,
             self.preload, self.image_size
         )
-        test_plots = [f"{plot:04d}" for plot in range(75,100)]
         self.test_dataset = self.load_or_create_dataset(
             self.dataset_dir, "test_dataset", test_plots, growth_stages,
             self.test_transform, self.load_depth, self.process_leaf,
