@@ -89,19 +89,12 @@ class MainModule(pl.LightningModule):
         self.use_depth = use_depth
         self.max_len = max_len
 
-        self.transform = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.5, 0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5, 0.5])
-        ])
-
-        self.transform_rgb = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
-        ])
-
         if self.use_depth:
             self.depth_est_img_proc = AutoImageProcessor.from_pretrained("depth-anything/Depth-Anything-V2-Small-hf")
             self.depth_est_model = AutoModelForDepthEstimation.from_pretrained("depth-anything/Depth-Anything-V2-Small-hf")
+            self.depth_background = cv2.resize(cv2.imread(os.path.join(self.current_script_dir, "../src/assets/dirt.jpg")), (self.image_size, self.image_size))
+            # Conver to RGB
+            self.depth_background = cv2.cvtColor(self.depth_background, cv2.COLOR_BGR2RGB)
 
         self.image_encoder = ViT_FeatureExtractor(output_size=seq_embedding_dim+param_embedding_dim, use_depth=self.use_depth, image_size=image_size)
 
@@ -220,12 +213,23 @@ class MainModule(pl.LightningModule):
         return masked_loss.sum() / (mask).sum()
         #return masked_loss.sum() / masked_loss.size(0)
 
-    def add_depth_to_image(self, image, add_background=False):
-        # if add_background:
-        #     # Add black background the images
-        #     for i in range(image.size(0)):
-        # prepare image for the model
-        inputs = self.depth_est_img_proc(images=image, return_tensors="pt").to(image.device)
+    def add_depth_to_image(self, image, add_background=True):
+    
+        if add_background:
+            depth_input = torch.zeros_like(image)
+            # Add black background the images
+            for i in range(image.size(0)):
+                # Convert to numpy
+                img = image[i].permute(1, 2, 0).cpu().numpy()
+                # Mask 0 values
+                mask = img == 0
+                img[mask] = self.depth_background[mask]
+                # Convert to tensor
+                depth_input[i] = torch.tensor(img).permute(2, 0, 1)
+        else:
+            depth_input = image
+
+        inputs = self.depth_est_img_proc(images=depth_input, return_tensors="pt").to(image.device)
         with torch.no_grad():
             outputs = self.depth_est_model(**inputs)
             predicted_depth = outputs.predicted_depth
@@ -237,13 +241,15 @@ class MainModule(pl.LightningModule):
             mode="bicubic",
             align_corners=False,
         )
-        self.predicted_depth = depth
         
         if 1:
             # Normalize to 0-1
             depth = (depth - depth.min()) / (depth.max() - depth.min())
+            image = (image - image.min()) / (image.max() - image.min())
         # cat depth to image
         image = torch.cat((image, depth), dim=1)
+
+        self.predicted_depth = depth
     
         return image
     
@@ -392,12 +398,12 @@ class MainDataModule(pl.LightningDataModule):
         
         self.train_transform = transforms.Compose([
                 self.img_aug,
-                transforms.ToTensor(),
-                #transforms.Lambda(lambda img: torch.from_numpy(np.array(img)).permute(2, 0, 1).float())
+                # transforms.ToTensor(),
+               
         ])
         self.test_transform = transforms.Compose([
-                transforms.ToTensor(),
-                #transforms.Lambda(lambda img: torch.from_numpy(np.array(img)).permute(2, 0, 1).float())
+                # transforms.ToTensor(),
+                # transforms.Lambda(lambda img: torch.from_numpy(np.array(img)).permute(2, 0, 1).float())
         ])
 
     def load_or_create_dataset(self, dataset_dir, dataset_name, plot, stages, transform, load_depth, process_leaf, preload, image_size):

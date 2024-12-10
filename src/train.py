@@ -23,7 +23,7 @@ if __name__ == "__main__":
     datamodule = MainDataModule(dataset_dir,
                                 image_size=224,
                                 load_depth=False,
-                                train_batch_size=4, num_workers=0, process_leaf=False, preload=False)
+                                train_batch_size=4, num_workers=4, process_leaf=False, preload=False)
     
     module = MainModule(
         num_layers=12,
@@ -35,7 +35,7 @@ if __name__ == "__main__":
         image_size=datamodule.image_size,
         alpha=1.0,
         lr=1e-5,
-        use_depth=False,
+        use_depth=True,
         dropout=0.10,
     )
     tqdm_cb = TQDMProgressBar(refresh_rate=10)

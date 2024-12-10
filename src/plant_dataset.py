@@ -150,10 +150,14 @@ class PlantDataset(Dataset):
         else:
             image, vec = self.getitem(idx)
 
-        # Convert image to PIL and apply transforms
-        image = Image.fromarray(image)
         if self.transform:
+            # Check if the image is a PIL Image
+            if not isinstance(image, Image.Image):
+                image = Image.fromarray(image)
             image = self.transform(image)
+
+            if isinstance(image, Image.Image):
+                image = np.array(image)
 
         if vec:
             # Tokenize the plant structure
@@ -165,6 +169,11 @@ class PlantDataset(Dataset):
         else:
             out = None
             out_len = 0
+
+        # Conver to tensor
+        image = torch.tensor(image)
+        # Permute the image tensor
+        image = image.permute(2, 0, 1)
 
         return image, out, out_len
         
