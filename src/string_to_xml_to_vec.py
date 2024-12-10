@@ -164,8 +164,10 @@ def attrib2vec(attrib,max_len = 5):
     return vec
 
 
-organ2num = {'shoot': 0, 'internode': 1, 'petiole': 2, 'leaf': 3}
-def xml2vec(root, plant_array=[], depth=0, plant_age=0):
+#organ2num = {'shoot': 0, 'internode': 1, 'petiole': 2, 'leaf': 3}
+organ2num = {'shoot': 0, 'internode': 1, 'petiole': 2, 
+             'leaf0': 3, 'leaf1': 4, 'leaf2':5}
+def xml2vec(root, plant_array, depth=0, plant_age=0, leaf_count=0):
     tag = root.tag
     if tag == 'plant_instance':
         # Get attributes
@@ -180,7 +182,6 @@ def xml2vec(root, plant_array=[], depth=0, plant_age=0):
                 # Make the first shoot
                 xml2vec(subelem, plant_array, depth=depth, plant_age=plant_age)
             
-
     elif tag == 'shoot':
         # Define the shoot vector
         # shoot = [depth, organ_type, base_pitch, base_yaw, base_roll, plant_age, type], just include plant age to the shoot?
@@ -226,13 +227,12 @@ def xml2vec(root, plant_array=[], depth=0, plant_age=0):
                 plant_array.append(line)
             elif "petiole" in subelem.tag:
                 xml2vec(subelem, plant_array, depth=depth,plant_age=plant_age)
-            elif "shoot" in subelem.tag:
-                xml2vec(subelem, plant_array, depth=depth+1,plant_age=plant_age)
 
     elif tag == 'petiole':
         # Define the petiole vector
         # petiole = [depth, organ_type, length, radius, pitch, petiole_curvature, leaflet_scale]
         line = [depth, organ2num['petiole'], 0, 0, 0, 0, 0]
+        leaf_count = 0
         for subelem in root:
             if 'length' in subelem.tag:
                 line[2] = float(subelem.text)
@@ -247,12 +247,15 @@ def xml2vec(root, plant_array=[], depth=0, plant_age=0):
                 # Append the line to the plant_array
                 plant_array.append(line)
             elif "leaf" in subelem.tag:
-                xml2vec(subelem, plant_array, depth=depth,plant_age=plant_age)
+                xml2vec(subelem, plant_array, depth=depth,plant_age=plant_age, leaf_count=leaf_count)
+                leaf_count += 1
+            elif "shoot" in subelem.tag:
+                xml2vec(subelem, plant_array, depth=depth+1,plant_age=plant_age)
 
     elif tag == 'leaf':
         # Define the leaf vector
         # leaf = [depth, organ_type, scale, pitch, yaw, roll]
-        line = [depth, organ2num['leaf'], 0, 0, 0, 0]
+        line = [depth, organ2num[f'leaf{leaf_count}'], 0, 0, 0, 0]
         for subelem in root:
             if 'scale' in subelem.tag:
                 line[2] = float(subelem.text)
@@ -321,7 +324,6 @@ def vec2element(root, plant_array, depth=0, debug=False):
        
         # If depth_line is the same as depth, then add the element to the root
         if len(plant_array) > 0:
-
             line = plant_array[0]
             depth_line = line[0]
             organ_type = int(line[1])
@@ -341,17 +343,11 @@ def vec2element(root, plant_array, depth=0, debug=False):
                 add_trait_subelement(current_shoot,"parent_node_index",f" TBD ")
                 add_trait_subelement(current_shoot,"parent_petiole_index",f" TBD ")
                 add_trait_subelement(current_shoot,"base_rotation",f" {line[2]} {line[3]} {line[4]} ")
-
                 plant_array = plant_array[1:]
 
-                if debug:
-                    # Pretty print the XML
-                    pretty_xml = pretty_print_xml(root)
-                    # Save the linked xml file
-                    with open('src/debug.xml', 'w') as f:
-                        f.write(pretty_xml)
-
+        if len(plant_array) > 0:
             line = plant_array[0]
+            depth_line = line[0]
             organ_type = int(line[1])
             organ_name = list(organ2num.keys())[list(organ2num.values()).index(organ_type)]
             organ_name = organ_name.capitalize()
@@ -359,43 +355,42 @@ def vec2element(root, plant_array, depth=0, debug=False):
             if organ_name == 'Internode':
                 current_phytomer = ET.SubElement(current_shoot, "phytomer")
                 current_internode = ET.SubElement(current_phytomer, "internode")
-                add_trait_subelement(current_internode,"internode_length",f"{(params[0]):.6f}")
-                add_trait_subelement(current_internode,"internode_radius",f"{(params[1]):.6f}")
-                add_trait_subelement(current_internode,"internode_pitch",f"{(params[2]):.2f}")
-                add_trait_subelement(current_internode,"internode_phyllotactic_angle",f"{(params[3]):.3f}")
+                add_trait_subelement(current_internode,"internode_length",f"{(params[0])}")
+                add_trait_subelement(current_internode,"internode_radius",f"{(params[1])}")
+                add_trait_subelement(current_internode,"internode_pitch",f"{(params[2])}")
+                add_trait_subelement(current_internode,"internode_phyllotactic_angle",f"{(params[3])}")
                 plant_array = plant_array[1:]
-                        
+
+        if len(plant_array) > 0:
             line = plant_array[0]
             depth_line = line[0]
             organ_type = int(line[1])
             organ_name = list(organ2num.keys())[list(organ2num.values()).index(organ_type)]
             organ_name = organ_name.capitalize()
             params = line[2:]
-            
             if organ_name == 'Petiole':
                 current_petiole = ET.SubElement(current_internode, "petiole")
-                add_trait_subelement(current_petiole,"petiole_length",f"{(params[0]):.4f}")
-                add_trait_subelement(current_petiole,"petiole_radius",f"{(params[1]):.4f}")
-                add_trait_subelement(current_petiole,"petiole_pitch",f"{(params[2]):.4f}")
-                add_trait_subelement(current_petiole,"petiole_curvature",f"{(params[3]):.1f}")
-                add_trait_subelement(current_petiole,"leaflet_scale",f"{(params[4]):.1f}")
-                
+                add_trait_subelement(current_petiole,"petiole_length",f"{(params[0])}")
+                add_trait_subelement(current_petiole,"petiole_radius",f"{(params[1])}")
+                add_trait_subelement(current_petiole,"petiole_pitch",f"{(params[2])}")
+                add_trait_subelement(current_petiole,"petiole_curvature",f"{(params[3])}")
+                add_trait_subelement(current_petiole,"leaflet_scale",f"{(params[4])}")
                 plant_array = plant_array[1:]
                 last_elem = 'Petiole'
 
-
+        if len(plant_array) > 0:
             line = plant_array[0]
             depth_line = line[0]
             organ_type = int(line[1])
             organ_name = list(organ2num.keys())[list(organ2num.values()).index(organ_type)]
             organ_name = organ_name.capitalize()
             params = line[2:]
-            if organ_name == 'Leaf':
+            if "Leaf" in organ_name:
                 current_leaf = ET.SubElement(current_petiole, "leaf")
-                add_trait_subelement(current_leaf,"leaf_scale",f"{(params[0]):.6f}")
-                add_trait_subelement(current_leaf,"leaf_pitch",f"{(params[1]):.6f}")
-                add_trait_subelement(current_leaf,"leaf_yaw",f"{(params[2]):.4f}")
-                add_trait_subelement(current_leaf,"leaf_roll",f"{(params[3]):.4f}")
+                add_trait_subelement(current_leaf,"leaf_scale",f"{str(params[0])}")
+                add_trait_subelement(current_leaf,"leaf_pitch",f"{(params[1])}")
+                add_trait_subelement(current_leaf,"leaf_yaw",f"{(params[2])}")
+                add_trait_subelement(current_leaf,"leaf_roll",f"{(params[3])}")
                 plant_array = plant_array[1:]
 
             if debug:
@@ -419,8 +414,7 @@ def vec2element(root, plant_array, depth=0, debug=False):
                     plant_array = []
                 else:
                     start_idx = 0
-                    # Find the count
-                    # for idx, line in enumerate(plant_array):
+                    # Find upper depth
                     for idx in range(start_idx, len(plant_array)):
                         if plant_array[idx][0] < next_depth:
                             end_idx = idx
@@ -428,11 +422,13 @@ def vec2element(root, plant_array, depth=0, debug=False):
                     plant_array_sub = plant_array[start_idx:end_idx]
                     plant_array = plant_array[:start_idx] + plant_array[end_idx:]
                 # Process the plant_array_sub
-                vec2element(current_internode, plant_array_sub, next_depth,debug=debug)
+                # if depth_line == 0:
+
+                # else:
+                vec2element(current_petiole, plant_array_sub, next_depth,debug=debug)
 
                 if debug:
-                    # Pretty print the XML
-                    pretty_xml = pretty_print_xml(current_internode)
+                    pretty_xml = pretty_print_xml(root)
                     # Save the linked xml file
                     with open('src/debug.xml', 'w') as f:
                         f.write(pretty_xml)
@@ -452,7 +448,7 @@ def vec2xml(plant_array,  plant_id=0, debug=False):
     line = plant_array[0]
     # Add base_position element
     base_position = ET.SubElement(current_plant, "base_position")
-    base_position.text = f"{0} {0} {0}"
+    base_position.text = f" {0} {0} {0} "
     # Add plant_age element
     plant_age = ET.SubElement(current_plant, "plant_age")
     plant_age.text = f" {abs(int(line[5]))} "
@@ -474,6 +470,7 @@ def vec2xml(plant_array,  plant_id=0, debug=False):
     if debug:
         # Pretty print the XML
         pretty_xml = pretty_print_xml(root)
+
         # Save the linked xml file
         with open('src/debug.xml', 'w') as f:
             f.write(pretty_xml)
@@ -484,8 +481,6 @@ def vec2xml(plant_array,  plant_id=0, debug=False):
     global shoot_id
     shoot_id = 0
     vec2element(current_plant, plant_array, depth=0,debug=debug)
-
-    # print(pretty_print_xml(root))
 
     return root
 
@@ -568,137 +563,7 @@ def save_plant_string(plant_vec, output_path, idx, suffix=""):
     return plant_string_file_name
 
 if __name__ == "__main__":
-    # Test 1: Read XML and convert to vec, then back to XML and 
-    # check if the XML is the same as the original XML
-    if 1:
-        # Read the XML file
-        xml_file = "data/generated_Nov22_20224/xml/cowpea_0097_day_16.xml"
-        tree = ET.parse(xml_file)
-        root = tree.getroot()
-
-        root = linked_to_recursive(root,debug=True)
-        
-        # Pretty print the XML
-        pretty_xml = pretty_print_xml(root)
-        # Save the linked xml file
-        with open('src/test_recursive.xml', 'w') as f:
-            f.write(pretty_xml)
-
-        plant_array = []
-        for plant_instance in root:
-            plant_instance_array = []
-            xml2vec(plant_instance, plant_instance_array)
-            plant_array.append(plant_instance_array)
-
-        # Convert vec to xml
-        new_root = ET.Element("helios")
-        for i, plant_array in enumerate(plant_array):
-            xml_output = vec2xml(plant_array, plant_id=i, debug=True)
-            new_root.append(xml_output[0])
-
-        pretty_xml = pretty_print_xml(new_root)
-        # Save the linked xml file
-        with open('src/debug.xml', 'w') as f:
-            f.write(pretty_xml)
-
-        # Update parent
-        new_root = recursive_to_linked(root=new_root)
-        # Pretty print the XML
-        pretty_xml = pretty_print_xml(new_root)
-        # Save the linked xml file
-        with open('src/debug.xml', 'w') as f:
-            f.write(pretty_xml)
-
-        
-
-        # Check if the XML is the same as the original XML
-        if ET.tostring(new_root) == ET.tostring(root):
-            print("The XML is the same as the original XML.")
-        else:
-            print("The XML is not the same as the original XML.")
-            print("Original XML:")
-            print(pretty_print_xml(root))
-            print("Generated XML:")
-            print(pretty_print_xml(new_root))
-
-    # Test 2: Convert string to vec and back to string
-    if 0:
-        # String to xml
-        # Read plant strings from a file
-        # Create xml saving directory
-        output_dir = 'xml'
-        if not os.path.exists(output_dir):
-            os.makedirs(output_dir)
-
-        file_name = '_data/Syn2Real_cowpea/camA_cowpea_023_004_9562487_plantstring.txt'
-        txt_dir = '_data/Syn2Real_cowpea/Syn2Real_cowpea/'
-        plantstring_files = [f"{txt_dir}{f}" for f in os.listdir(txt_dir) if f.endswith('_plantstring.txt')]
-        plantstring_files.sort()
-        for file_name in plantstring_files:
-            # Read the string from the file
-            with open(file_name, 'r', encoding='utf-8') as f:
-                data_string = f.read()
-
-            if 0:
-                # Convert string to xml
-                output_name = os.path.join(output_dir, file_name.split("/")[-1].split(".")[0] + ".xml")
-                # Parse the data and generate XML
-                xml_output = string2xml(data_string)
-                # print(xml_output)
-
-                # Convert xml to vec
-                total_plant_array = []
-                for plant in xml_output:
-                    plant_array = []
-                    xml2vec(plant, plant_array)
-                    total_plant_array.append(plant_array)
-                
-                # Debug
-                # for line in total_plant_array[0]:
-                #     print(line)
-                
-                # Now we have the vector representation of the string
-                # Check if the vector representation can be converted back to the original string
-
-                # Convert vec to xml
-                new_root = ET.Element("plants")
-                for i, plant_array in enumerate(total_plant_array):
-                    xml_output = vec2xml(np.array(plant_array), plant_id=i)
-                    new_root.append(xml_output[0])            
-                
-                # xml to string
-                total_outstring = ""
-                for plant in new_root:
-                    # Reset the outstring
-                    outstring = ""
-                    if plant.tag == "plant":
-                        outstring += plant.get("id") + " "
-                    outstring += xml2string(plant[0])
-
-                    # Append to total_outstring
-                    total_outstring += outstring
-                    total_outstring += "\n" 
-            else:
-                # Convert string to vec
-                total_plant_array = string2vec(data_string)
-
-                # Convert vec to string
-                total_outstring = vec2string(total_plant_array)
-
-            # Check if the string is the same as the original string
-            if data_string == total_outstring:
-                print(f"{file_name} The string is the same as the original string.")
-            else:
-                print(f"{file_name} The string is not the same as the original string.")
-                print("Original string:")
-                print(data_string)
-                print("Generated string:")
-                print(outstring)
-
-            if 0:
-                # Optionally, write the pretty-printed XML to a file
-                with open(output_name, 'w', encoding='utf-8') as f:
-                    f.write(pretty_print_xml(xml_output))
+    pass
                 
 
 

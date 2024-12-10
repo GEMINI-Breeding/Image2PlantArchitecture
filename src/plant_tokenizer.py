@@ -9,28 +9,35 @@ import torch
 
 # Create a dict convert plant structure to token
 # Depth, organ type | Token
-# 0,0               | 0
-# 0,1               | 1
-# 0,2               | 2
-# 0,3               | 3
-# 1,0               | 4
-# 1,1               | 5
-# 1,2               | 6
-# 1,3               | 7
-# 2,0               | 8
+# 0,0               | 0 # Shoot     
+# 0,1               | 1 # Internode
+# 0,2               | 2 # Petiole
+# 0,3               | 3 # Leaf 0
+# 0,4               | 4 # Leaf 1
+# 0,5               | 5 # Leaf 2
+# 1,0               | 6 # Shoot
+# 1,1               | 7
+# 1,2               | 8
+# 1,3               | 9  # Leaf 0
+# 1,4               | 10 # Leaf 1
+# 1,5               | 11 # Leaf 2
+# 2,0               | 12
 # ...
-# 4,0               | 16
-# 4,1               | 17
-# 4,2               | 18
-# 4,3               | 19
-# SOS token         | 20
-# EOS token         | 21
-# PAD token         | 22 
+# 3,0               | 18
+# 3,1               | 19
+# 3,2               | 20
+# 3,3               | 21
+# 3,4               | 22
+# 3,5               | 23
+# SOS               | 24 # Start of sentence
+# PAD               | 25 # Padding
+# EOS               | 26 # End of sentence
 
-# 3*4 + 3 => Max nested depth is 5
-SOS_token = 4*4
-PAD_token = 4*4 + 1
-EOS_token = 4*4 + 2
+
+# 4*6 + 3 => Max nested depth is 3
+SOS_token = 4*6
+PAD_token = 4*6 + 1
+EOS_token = 4*6 + 2
 
 if 0:
     SOS_vec_padded = np.ones(15)*SOS_token
@@ -50,7 +57,7 @@ def vec2token(vec, n_params=24+1):
     """
     tokens = []
     for x in vec:
-        depth_organ = x[0]*4 + x[1]
+        depth_organ = x[0]*6 + x[1]
         if 1:
             token = np.zeros(n_params) # padding zeros to match the desired length
         else:
@@ -84,7 +91,7 @@ def vec2token(vec, n_params=24+1):
             token[15] = x[4] / 180 * math.pi # petiole_pitch
             token[16] = x[5] / 180 * math.pi # petiole_curvature
             token[17] = x[6] # leaflet_scale
-        elif x[1] == 3:
+        elif x[1] == 3 or x[1] == 4 or x[1] == 5:
             # Leaf params
             token[18] = x[2] * 100 # leaf_scale
             token[19],token[20] = angle_to_coordinates(x[3]) # leaf pitch
@@ -110,8 +117,8 @@ def token2vec(tokens):
             # Do not append EOS token
             break
         else:
-            i = label // 4
-            j = label % 4
+            i = label // 6
+            j = label % 6
             params_padded = np.zeros(6)
             # Scale the params to match the original scale
    
@@ -135,7 +142,7 @@ def token2vec(tokens):
                 params_padded[2] = token[15] * 180 / math.pi # petiole_pitch
                 params_padded[3] = token[16] * 180 / math.pi # petiole_curvature
                 params_padded[4] = token[17] # leaflet_scale
-            elif j == 3:
+            elif j == 3 or j == 4 or j == 5:
                 # Leaf
                 params_padded[0] = token[18] / 100 # leaf_scale
                 params_padded[1] = coordinates_to_angle(token[19], token[20])

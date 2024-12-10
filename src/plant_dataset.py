@@ -196,7 +196,7 @@ def collate_fn(batch):
 
 if __name__ == "__main__":
     # Load plant dataset
-    dataset = PlantDataset("data/generated_Nov22_20224", preload=False)
+    dataset = PlantDataset("data/generated_Nov22_2024", preload=False)
 
     # iterate over samples
     max_len = -1

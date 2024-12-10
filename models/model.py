@@ -8,6 +8,7 @@ import math
 
 from typing import Optional, Any, Union, Callable
 from torch import Tensor
+from torch.nn import functional as F
 
 from torch.nn import LayerNorm
 import torchvision.transforms as transforms
@@ -290,6 +291,18 @@ class TransformerDecoderModel(nn.Module):
         self.seq_decode_linear = nn.Linear(self.seq_embedding_dim, num_tokens)
         self.param_decode_linear = nn.Linear(self.param_embedding_dim, num_params)
 
+    def ensure_positive(self, x):
+        # Make some parameters positive such as width, height, etc.
+        x[:, :, 6] = F.relu(x[:, :, 6])  # plant_age
+        x[:, :, 7] = F.relu(x[:, :, 7])  # shoot_type
+     
+        x[:, :, 8] = F.relu(x[:, :, 8])  # internode_length
+        x[:, :, 9] = F.relu(x[:, :, 9])  # internode_radius
+
+        x[:, :, 12] = F.relu(x[:, :, 12])  # petiole_length
+        x[:, :, 13] = F.relu(x[:, :, 13])  # petiole_radius
+       
+        return x
     
     def forward(self, features, tgt_seq, tgt_mask=None, tgt_key_padding_mask=None):
         # features = self.cnn(images)
@@ -339,6 +352,7 @@ class TransformerDecoderModel(nn.Module):
         decoded_params = decoded[:, :, self.seq_embedding_dim:]
         output_params = self.param_decode_linear(decoded_params)
             
+        output_params = self.ensure_positive(output_params)
         # Cat the output_seq and output_params
         output_seq = torch.cat((output_seq, output_params), dim=2)
         return output_seq

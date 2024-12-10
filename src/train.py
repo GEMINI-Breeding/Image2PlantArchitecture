@@ -23,10 +23,10 @@ if __name__ == "__main__":
     datamodule = MainDataModule(dataset_dir,
                                 image_size=224,
                                 load_depth=False,
-                                train_batch_size=16, num_workers=8, process_leaf=False, preload=False)
+                                train_batch_size=4, num_workers=0, process_leaf=False, preload=False)
     
     module = MainModule(
-        num_layers=6,
+        num_layers=12,
         num_heads=8,
         seq_dim=EOS_token+1,
         seq_embedding_dim=768//2,
@@ -35,7 +35,7 @@ if __name__ == "__main__":
         image_size=datamodule.image_size,
         alpha=1.0,
         lr=1e-5,
-        use_depth=True,
+        use_depth=False,
         dropout=0.10,
     )
     tqdm_cb = TQDMProgressBar(refresh_rate=10)
@@ -43,7 +43,7 @@ if __name__ == "__main__":
     # Generate today's date string in YYYYMMDD format
     today_date_str = datetime.now().strftime('%Y%m%d')
     tb_logger = TensorBoardLogger(
-        name=f'{today_date_str}_BackToSimple',
+        name=f'{today_date_str}_BackToSimple_OutputReLU',
         save_dir='./log'
     )
 

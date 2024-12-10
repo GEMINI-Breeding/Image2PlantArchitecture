@@ -143,19 +143,20 @@ def update_parent_info(root):
                             subelem.text = f" {est_petiole_index} "
 
                 # Reset indexes
-                est_node_index = -1
-                est_petiole_index = -1
+                est_node_index = 0
+                est_petiole_index = 0
 
                 # Recursively call the function for all subelements
                 where_am_i_recursive(elem, est_node_index, est_petiole_index, elem)
 
             elif elem.tag == 'phytomer':
-                est_node_index += 1
-                est_petiole_index = -1
+                # One level differ for internode
                 where_am_i_recursive(elem[0], est_node_index, est_petiole_index, parent_shoot)
+                est_petiole_index = 0
+                est_node_index += 1
             elif elem.tag == 'petiole':
-                #est_petiole_index += 1
-                est_petiole_index = 0 # Even if the actual index is calculated, Helios regards the petiol index to 0
+                where_am_i_recursive(elem, est_node_index, est_petiole_index, parent_shoot)
+                est_petiole_index += 1
                 pass
 
     
@@ -209,8 +210,21 @@ def linked_to_recursive(root,debug=False):
                     # Move the shoot to the corresponding parent
                     # 5 means index offset from shoot_type_label ~ phytomer
                     # [0] means the internode
-                    # It will append the shoot after petiole
-                    parent_shoot[parent_node_index+5][0].append(deepcopy(subelem)) 
+                    if 0:
+                        # It will append the shoot after petiole
+                        parent_shoot[parent_node_index+5][0].append(deepcopy(subelem)) 
+                    else:
+                        if 1:
+                            # Append the shoot on parent_petiole_index
+                            parent_shoot[parent_node_index+5][0][parent_petiole_index+4].append(deepcopy(subelem))
+                        else:
+                            # It will preserve create start - end consistency
+                            insert_idx = -1
+                            for idx, subsubelem in enumerate(parent_shoot[parent_node_index+5][0][parent_petiole_index+4]):
+                                if subsubelem.tag == 'leaf':
+                                    insert_idx += 1
+                                    break
+                            parent_shoot[parent_node_index+5][0][parent_petiole_index+4].insert(insert_idx, deepcopy(subelem)) 
 
                     # Remove the shoot from the root
                     elem.remove(subelem)
@@ -235,12 +249,20 @@ def count_shoot_elements(root):
     # Return the count of 'shoot' elements
     return len(shoot_elements)
 
-def recursive_to_linked(root):
+def recursive_to_linked(root, debug=False):
     # Convert the linked xml file to recursive xml file
     root_linked = deepcopy(root)
 
     # Update parent info
     update_parent_info(root=root_linked)
+
+    # Save file for debugging
+    if debug:
+        # Pretty print the XML
+        pretty_xml = pretty_print_xml(root_linked)
+        # Save the linked xml file
+        with open('src/debug.xml', 'w') as f:
+            f.write(pretty_xml)
 
     # Function to recursively flatten shoots
     def flatten_shoots_recursive(root, plant_instance_root):
@@ -261,14 +283,23 @@ def recursive_to_linked(root):
     for plant_instance in root_linked:
         # Check if the last shoot of plant instance is nested
         while True:
-            last_shoot = plant_instance[-1]
-            if count_shoot_elements(last_shoot) > 0:
-                flatten_shoots_recursive(last_shoot, plant_instance)
-            else:
+            all_flat = True
+            for elem in plant_instance:
+                if elem.tag == 'shoot':
+                    shoot_cnt = count_shoot_elements(elem)
+                    if shoot_cnt == 0:
+                        # This shoot is flattened
+                        pass
+                    else:
+                        all_flat = False
+                        flatten_shoots_recursive(elem, plant_instance)
+                        break
+
+            if all_flat:
                 break
 
             # Save file for debugging
-            if 0:
+            if debug:
                 # Pretty print the XML
                 pretty_xml = pretty_print_xml(root_linked)
                 # Save the linked xml file
@@ -278,41 +309,137 @@ def recursive_to_linked(root):
     return root_linked
 
 if __name__ == "__main__":
-    # Read the linked xml file
-    tree = ET.parse('data/generated_Nov14_20224/xml/cowpea_0000_day_30.xml')
-    root = tree.getroot()
-    # print(root.tag)
-    root_recursive = linked_to_recursive(root,debug=True)
+    import os
+    import numpy as np
+    from string_to_xml_to_vec import string2xml, xml2vec, vec2xml, xml2string, string2vec, vec2string
+    # Test 1: Read XML and convert to vec, then back to XML and 
+    # check if the XML is the same as the original XML
+    if 1:
+        # Read the XML file
+        xml_file = "data/generated_Nov22_2024/xml/cowpea_0097_day_16.xml"
+        tree = ET.parse(xml_file)
+        root = tree.getroot()
 
-    # Pretty print the XML
-    pretty_xml = pretty_print_xml(root_recursive)
+        root = linked_to_recursive(root,debug=True)
+        
+        # Pretty print the XML
+        pretty_xml = pretty_print_xml(root)
+        # Save the linked xml file
+        with open('src/test_recursive.xml', 'w') as f:
+            f.write(pretty_xml)
 
-    if where_am_i(root_recursive):
-        print("Passed the test")
+        plant_array = []
+        for plant_instance in root:
+            plant_instance_array = []
+            xml2vec(plant_instance, plant_instance_array)
+            plant_array.append(plant_instance_array)
 
-    # Save the recursive xml file
-    with open('src/test_recursive.xml', 'w') as f:
-        f.write(pretty_xml)
+        # Convert vec to xml
+        new_root = ET.Element("helios")
+        for i, plant_array in enumerate(plant_array):
+            xml_output = vec2xml(plant_array, plant_id=i, debug=True)
+            new_root.append(xml_output[0])
 
-    # Read the root_linked xml
-    randomize_parent(root_recursive)
-    pretty_xml = pretty_print_xml(root_recursive)
-    # Save the recursive xml file
-    with open('src/test_recursive_wrong.xml', 'w') as f:
-        f.write(pretty_xml)
+        pretty_xml = pretty_print_xml(new_root)
+        # Save the linked xml file
+        with open('src/debug.xml', 'w') as f:
+            f.write(pretty_xml)
 
-    # Save 
-    # Pretty print the XML
-    pretty_xml = pretty_print_xml(root_recursive)
-    # Save the recursive xml file
-    with open('src/test_recursive_fixed.xml', 'w') as f:
-        f.write(pretty_xml)
+        # Update parent
+        new_root = recursive_to_linked(root=new_root, debug=True)
+        # Pretty print the XML
+        pretty_xml = pretty_print_xml(new_root)
+        # Save the linked xml file
+        with open('src/debug.xml', 'w') as f:
+            f.write(pretty_xml)
 
-    root_linked = recursive_to_linked(root_recursive)
+        
 
-    # Pretty print the XML
-    pretty_xml = pretty_print_xml(root_linked)
-    # Save the linked xml file
-    with open('src/test_linked.xml', 'w') as f:
-        f.write(pretty_xml)
+        # Check if the XML is the same as the original XML
+        if ET.tostring(new_root) == ET.tostring(root):
+            print("The XML is the same as the original XML.")
+        else:
+            print("The XML is not the same as the original XML.")
+            print("Original XML:")
+            print(pretty_print_xml(root))
+            print("Generated XML:")
+            print(pretty_print_xml(new_root))
 
+    # Test 2: Convert string to vec and back to string
+    if 0:
+        # String to xml
+        # Read plant strings from a file
+        # Create xml saving directory
+        output_dir = 'xml'
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+
+        file_name = '_data/Syn2Real_cowpea/camA_cowpea_023_004_9562487_plantstring.txt'
+        txt_dir = '_data/Syn2Real_cowpea/Syn2Real_cowpea/'
+        plantstring_files = [f"{txt_dir}{f}" for f in os.listdir(txt_dir) if f.endswith('_plantstring.txt')]
+        plantstring_files.sort()
+        for file_name in plantstring_files:
+            # Read the string from the file
+            with open(file_name, 'r', encoding='utf-8') as f:
+                data_string = f.read()
+
+            if 0:
+                # Convert string to xml
+                output_name = os.path.join(output_dir, file_name.split("/")[-1].split(".")[0] + ".xml")
+                # Parse the data and generate XML
+                xml_output = string2xml(data_string)
+                # print(xml_output)
+
+                # Convert xml to vec
+                total_plant_array = []
+                for plant in xml_output:
+                    plant_array = []
+                    xml2vec(plant, plant_array)
+                    total_plant_array.append(plant_array)
+                
+                # Debug
+                # for line in total_plant_array[0]:
+                #     print(line)
+                
+                # Now we have the vector representation of the string
+                # Check if the vector representation can be converted back to the original string
+
+                # Convert vec to xml
+                new_root = ET.Element("plants")
+                for i, plant_array in enumerate(total_plant_array):
+                    xml_output = vec2xml(np.array(plant_array), plant_id=i)
+                    new_root.append(xml_output[0])            
+                
+                # xml to string
+                total_outstring = ""
+                for plant in new_root:
+                    # Reset the outstring
+                    outstring = ""
+                    if plant.tag == "plant":
+                        outstring += plant.get("id") + " "
+                    outstring += xml2string(plant[0])
+
+                    # Append to total_outstring
+                    total_outstring += outstring
+                    total_outstring += "\n" 
+            else:
+                # Convert string to vec
+                total_plant_array = string2vec(data_string)
+
+                # Convert vec to string
+                total_outstring = vec2string(total_plant_array)
+
+            # Check if the string is the same as the original string
+            if data_string == total_outstring:
+                print(f"{file_name} The string is the same as the original string.")
+            else:
+                print(f"{file_name} The string is not the same as the original string.")
+                print("Original string:")
+                print(data_string)
+                print("Generated string:")
+                print(outstring)
+
+            if 0:
+                # Optionally, write the pretty-printed XML to a file
+                with open(output_name, 'w', encoding='utf-8') as f:
+                    f.write(pretty_print_xml(xml_output))

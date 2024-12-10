@@ -68,7 +68,7 @@ class MainModule(pl.LightningModule):
                  param_dim=22, param_embedding_dim=768//2, 
                  image_size=224, alpha=1.0, lr=1e-5, 
                  dropout=0.10, 
-                 max_len=512,
+                 max_len=2024,
                  use_depth=False):
         super(MainModule, self).__init__()
         self.save_hyperparameters()  # 전달된 모든 인수를 저장
@@ -326,6 +326,8 @@ class MainModule(pl.LightningModule):
         if (self.current_train_step == 0 and mode == "train") or (self.current_val_step == 0 and mode == "val"):
             tensorboard_logger = self.logger.experiment
             tensorboard_logger.add_images(f'{mode}/input_images', image, self.current_epoch)
+            if self.use_depth:
+                tensorboard_logger.add_images(f'{mode}/depth_images', self.predicted_depth, self.current_epoch)
         return loss
 
     def training_step(self, batch, batch_idx):
@@ -356,7 +358,8 @@ class MainModule(pl.LightningModule):
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=40, verbose=True)
+        #scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=40, verbose=True)
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=100, gamma=0.1)
         return {
             'optimizer': optimizer,
             'lr_scheduler': {
@@ -390,9 +393,11 @@ class MainDataModule(pl.LightningDataModule):
         self.train_transform = transforms.Compose([
                 self.img_aug,
                 transforms.ToTensor(),
+                #transforms.Lambda(lambda img: torch.from_numpy(np.array(img)).permute(2, 0, 1).float())
         ])
         self.test_transform = transforms.Compose([
                 transforms.ToTensor(),
+                #transforms.Lambda(lambda img: torch.from_numpy(np.array(img)).permute(2, 0, 1).float())
         ])
 
     def load_or_create_dataset(self, dataset_dir, dataset_name, plot, stages, transform, load_depth, process_leaf, preload, image_size):
