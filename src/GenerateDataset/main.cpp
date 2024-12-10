@@ -112,6 +112,7 @@ int main(int argc, char* argv[]){
     vis.setCameraPosition(make_vec3(x,y,z), make_vec3(0, 0, 0));
     vis.plotUpdate(true);
     vis.plotUpdate(true);
+    vis.plotUpdate(true);
     
     // // Save xml
     // if (save_xml)

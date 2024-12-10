@@ -19,14 +19,14 @@ if __name__ == "__main__":
         torch.set_float32_matmul_precision('medium')
 
     # Define dataset to solve
-    dataset_dir = "data/generated_Nov22_2024"
+    dataset_dir = "data/generated_Dec10_2024"
     datamodule = MainDataModule(dataset_dir,
                                 image_size=224,
                                 load_depth=False,
-                                train_batch_size=4, num_workers=4, process_leaf=False, preload=False)
+                                train_batch_size=16, num_workers=8, process_leaf=False, preload=False)
     
     module = MainModule(
-        num_layers=12,
+        num_layers=6,
         num_heads=8,
         seq_dim=EOS_token+1,
         seq_embedding_dim=768//2,
@@ -43,7 +43,7 @@ if __name__ == "__main__":
     # Generate today's date string in YYYYMMDD format
     today_date_str = datetime.now().strftime('%Y%m%d')
     tb_logger = TensorBoardLogger(
-        name=f'{today_date_str}_BackToSimple_OutputReLU',
+        name=f'{today_date_str}_BackToSimple',
         save_dir='./log'
     )
 

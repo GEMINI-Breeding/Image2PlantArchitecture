@@ -18,7 +18,7 @@ from collections import OrderedDict
 
 
 def get_tgt_mask(size) -> torch.tensor:
-    if 0:
+    if 1:
         mask = torch.tril(torch.ones(size, size) == 1) # Lower triangular matrix
         mask = mask.float()
         mask = mask.masked_fill(mask == 0, float('-inf')) # Convert zeros to -inf
@@ -29,9 +29,9 @@ def get_tgt_mask(size) -> torch.tensor:
     else:
         # Causal mask 생성
         mask = nn.Transformer.generate_square_subsequent_mask(size)
-
+        mask.bool()
     # Convert to boolean
-    return mask.bool()
+    return mask
 
 def create_pad_mask(matrix: torch.tensor, pad_token: int) -> torch.tensor:
     # Create (batch_size, seq_len) tensor
@@ -45,11 +45,13 @@ def create_pad_mask(matrix: torch.tensor, pad_token: int) -> torch.tensor:
 def create_organ_mask():
     # Define mask patterns
     mask_patterns = [
-        [np.zeros(8), np.ones(4), np.ones(3), np.ones(7)],  # shoot_mask
-        [np.ones(8), np.zeros(4), np.ones(3), np.ones(7)],  # internode_mask
-        [np.ones(8), np.ones(4), np.zeros(3), np.ones(7)],  # petiole_mask
-        [np.ones(8), np.ones(4), np.ones(3), np.zeros(7)],  # leaf_mask
-        [np.ones(8), np.ones(4), np.ones(3), np.ones(7)]    # all_mask
+        [np.zeros(8), np.ones(4), np.ones(5), np.ones(7)],  # shoot_mask
+        [np.ones(8), np.zeros(4), np.ones(5), np.ones(7)],  # internode_mask
+        [np.ones(8), np.ones(4), np.zeros(5), np.ones(7)],  # petiole_mask
+        [np.ones(8), np.ones(4), np.ones(5), np.zeros(7)],  # leaf0_mask
+        [np.ones(8), np.ones(4), np.ones(5), np.zeros(7)],  # leaf1_mask
+        [np.ones(8), np.ones(4), np.ones(5), np.zeros(7)],  # leaf2_mask
+        [np.ones(8), np.ones(4), np.ones(5), np.ones(7)]    # all_mask
     ]
     # Create masks
     masks = torch.stack([torch.tensor(np.concatenate(pattern, axis=0), dtype=torch.bool) for pattern in mask_patterns])

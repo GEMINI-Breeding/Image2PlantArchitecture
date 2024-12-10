@@ -68,7 +68,7 @@ class MainModule(pl.LightningModule):
                  param_dim=22, param_embedding_dim=768//2, 
                  image_size=224, alpha=1.0, lr=1e-5, 
                  dropout=0.10, 
-                 max_len=2024,
+                 max_len=512,
                  use_depth=False):
         super(MainModule, self).__init__()
         self.save_hyperparameters()  # 전달된 모든 인수를 저장
@@ -108,7 +108,7 @@ class MainModule(pl.LightningModule):
             num_heads=self.num_heads,
             num_tokens=self.seq_dim,
             num_params=self.param_dim,
-            decoder_only=True,
+            decoder_only=False,
             use_depth=self.use_depth,
             image_size=self.image_size,
             dropout=self.dropout,
@@ -152,12 +152,13 @@ class MainModule(pl.LightningModule):
         feature = self.image_encoder(image)
         for i in range(self.max_len):
             # Use torch.cuda.amp for mixed precision
+            tgt_mask = get_tgt_mask(y_input.size(1))
             try:
                 if stage == 'val':
                     with torch.no_grad():
-                        pred = self.sequence_decoder(feature, y_input)
+                        pred = self.sequence_decoder(feature, y_input, tgt_mask=tgt_mask)
                 else:
-                    pred = self.sequence_decoder(feature, y_input)
+                    pred = self.sequence_decoder(feature, y_input, tgt_mask=tgt_mask)
             except Exception as e:
                 print(e)
                 print(f"Error in {i} iteration")
@@ -200,11 +201,12 @@ class MainModule(pl.LightningModule):
         neg_organ_masks = create_organ_mask().to(pred.device) # Negative masks
 
         # Ensure label_mod and masks have compatible dimensions
-        label_mod = label % 4
+        label_mod = label % 6
         neg_mask = (values == ignore_index)  # First mask is for padding
-        for i in range(4):
+        neg_mask = neg_mask.permute(0, 2, 1)  # (N, C, L)
+        for i in range(6):
             neg_mask = neg_mask | ((label_mod == i).unsqueeze(1).expand_as(neg_mask) & neg_organ_masks[i].unsqueeze(0).unsqueeze(2).expand_as(neg_mask))
-
+        neg_mask = neg_mask.permute(0, 2, 1)  # (N, C, L)
         # Compute loss
         loss_mse = F.smooth_l1_loss(pred, values, reduction='none') # mse_loss or smooth_l1_loss
         # Create masks by negating the neg_mask
@@ -316,7 +318,7 @@ class MainModule(pl.LightningModule):
         # Decoder loss
         pred = self(image, y_input)
         label_loss = self.label_loss_fn(pred[:, :, :self.seq_dim].permute(0, 2, 1), label) # (N, C, L)
-        if 1:
+        if 0:
             param_loss = self.param_loss_fn(pred[:, :, self.seq_dim:], values)
         else:
             param_loss = self.param_loss_fn_bylabel(label=label, values=values, pred=pred[:, :, self.seq_dim:])
@@ -469,7 +471,7 @@ class MainDataModule(pl.LightningDataModule):
             vectors_padded = np.ones((len(vectors), max_length), dtype=int) * PAD_token
         else:
             vectors_padded = np.ones((len(vectors), max_length, vec_dim)) * PAD_token
-            if 0:
+            if 1:
                 vectors_padded[:, :, 1:] = 0
 
         for i, vector in enumerate(vectors):
