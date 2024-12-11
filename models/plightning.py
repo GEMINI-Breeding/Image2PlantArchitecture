@@ -311,7 +311,7 @@ class MainModule(pl.LightningModule):
         pred = self(image, y_input)
         label_loss = self.label_loss_fn(pred[:, :, :self.seq_dim].permute(0, 2, 1), label, ignore_index=PAD_token) # (N, C, L)
         #label_loss = self.label_loss_fn(pred[:, :, :self.seq_dim].permute(0, 2, 1), label) 
-        if 0:
+        if 1:
             param_loss = self.param_loss_fn(pred[:, :, self.seq_dim:], values)
         else:
             param_loss = self.param_loss_fn_bylabel(label=label, values=values, pred=pred[:, :, self.seq_dim:])
@@ -369,7 +369,6 @@ class MainModule(pl.LightningModule):
 class MainDataModule(pl.LightningDataModule):
     def __init__(self, dataset_dir, train_batch_size=16, val_batch_size=None,
                         num_workers=4, image_size=448, 
-                        num_plots=2000,
                         load_depth=True,
                         process_leaf=False,
                         preload=False):
@@ -383,7 +382,6 @@ class MainDataModule(pl.LightningDataModule):
         self.process_leaf = process_leaf
         self.load_depth = load_depth
         self.pin_memory = True
-        self.num_plots = num_plots
         self.img_aug = transforms.Compose([
                 transforms.RandomResizedCrop(self.image_size, scale=(0.8, 1.0)),
                 transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.2),
@@ -427,6 +425,11 @@ class MainDataModule(pl.LightningDataModule):
         val_ratio = 0.25
         test_ratio = 0.25
 
+        # Get the num plots from the last xml file
+        xml_files = os.listdir(os.path.join(self.dataset_dir, "xml"))
+        xml_files.sort()
+        self.num_plots = int(xml_files[-1].split("_")[1]) + 1
+
         train_end = int(self.num_plots * train_ratio)
         val_end = train_end + int(self.num_plots * val_ratio)
         test_end = self.num_plots  # Ensure total sums up to num_plots
@@ -462,7 +465,7 @@ class MainDataModule(pl.LightningDataModule):
             vectors_padded = np.ones((len(vectors), max_length), dtype=int) * PAD_token
         else:
             vectors_padded = np.ones((len(vectors), max_length, vec_dim)) * PAD_token
-            if 1:
+            if 0:
                 vectors_padded[:, :, 1:] = 0
 
         for i, vector in enumerate(vectors):

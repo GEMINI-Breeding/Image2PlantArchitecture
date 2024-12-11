@@ -29,8 +29,9 @@ def get_tgt_mask(size) -> torch.tensor:
     else:
         # Causal mask 생성
         mask = nn.Transformer.generate_square_subsequent_mask(size)
-        # mask.bool()
-    # Convert to boolean
+        if 0:
+            # Convert to boolean
+            mask.bool()
     return mask
 
 def create_pad_mask(matrix: torch.tensor, pad_token: int) -> torch.tensor:
@@ -39,7 +40,7 @@ def create_pad_mask(matrix: torch.tensor, pad_token: int) -> torch.tensor:
     mask = (seq == pad_token)
 
     # Change type
-    # mask = mask.type(torch.FloatTensor)
+    mask = mask.type(torch.FloatTensor)
     return mask
 
 def create_organ_mask():
@@ -294,15 +295,25 @@ class TransformerDecoderModel(nn.Module):
         self.param_decode_linear = nn.Linear(self.param_embedding_dim, num_params)
 
     def ensure_positive(self, x):
-        # Make some parameters positive such as width, height, etc.
-        x[:, :, 6] = F.relu(x[:, :, 6])  # plant_age
-        x[:, :, 7] = F.relu(x[:, :, 7])  # shoot_type
-     
-        x[:, :, 8] = F.relu(x[:, :, 8])  # internode_length
-        x[:, :, 9] = F.relu(x[:, :, 9])  # internode_radius
+        if 0:
+            # Make some parameters positive such as width, height, etc.
+            x[:, :, 6] = F.relu(x[:, :, 6])  # plant_age
+            x[:, :, 7] = F.relu(x[:, :, 7])  # shoot_type
+        
+            x[:, :, 8] = F.relu(x[:, :, 8])  # internode_length
+            x[:, :, 9] = F.relu(x[:, :, 9])  # internode_radius
 
-        x[:, :, 12] = F.relu(x[:, :, 12])  # petiole_length
-        x[:, :, 13] = F.relu(x[:, :, 13])  # petiole_radius
+            x[:, :, 12] = F.relu(x[:, :, 12])  # petiole_length
+            x[:, :, 13] = F.relu(x[:, :, 13])  # petiole_radius
+        else:
+            # Use exp function
+            # x[:, :, 6] = torch.exp(x[:, :, 6])
+            # x[:, :, 7] = torch.exp(x[:, :, 7])
+            x[:, :, 8] = torch.exp(x[:, :, 8])
+            x[:, :, 9] = torch.exp(x[:, :, 9])
+            x[:, :, 12] = torch.exp(x[:, :, 12])
+            x[:, :, 13] = torch.exp(x[:, :, 13])
+
        
         return x
     
