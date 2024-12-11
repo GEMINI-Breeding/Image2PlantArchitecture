@@ -10,7 +10,7 @@ import platform
 # 경로 설정
 script_file_path = os.path.abspath(__file__)
 sys.path.append(os.path.dirname(os.path.dirname(script_file_path)))
-from models.plightning import MainModule, MainDataModule, FineTuneBatchSizeFinder, FineTuneLearningRateFinder
+from models.plightning import MainModule, MainDataModule
 from plant_tokenizer import EOS_token
 
 if __name__ == "__main__":
@@ -19,14 +19,14 @@ if __name__ == "__main__":
         torch.set_float32_matmul_precision('medium')
 
     # Define dataset to solve
-    dataset_dir = "data/generated_Dec10_2024"
+    dataset_dir = "data/2000_Plots_20241210"
     datamodule = MainDataModule(dataset_dir,
                                 image_size=224,
                                 load_depth=False,
-                                train_batch_size=1, num_workers=8, process_leaf=False, preload=False)
-    
+                                # train_batch_size=100, num_workers=8, process_leaf=False, preload=False) # for a100 gpu
+                                train_batch_size=32, num_workers=8, process_leaf=False, preload=False) # for gpum
     module = MainModule(
-        num_layers=24,
+        num_layers=12,
         num_heads=8,
         seq_dim=EOS_token+1,
         seq_embedding_dim=768//2,
@@ -53,7 +53,7 @@ if __name__ == "__main__":
         dirpath=os.path.join(tb_logger.log_dir, 'checkpoints'),
         filename="best_{epoch:02d}",
         save_top_k=1,  # Save only the best model
-        save_last=True,
+        save_last=False,
         save_weights_only=True  # 가중치만 저장
     )
 
@@ -86,7 +86,7 @@ if __name__ == "__main__":
         # callbacks=[tqdm_cb, ckpt_cb, lr_monitor],
         logger=tb_logger,
         precision="bf16-mixed",
-        #strategy=DDPStrategy(find_unused_parameters=True)  # Enable detection of unused parameters
+        strategy=DDPStrategy(find_unused_parameters=True)  # Enable detection of unused parameters
     )
     # module = MainModule.load_from_checkpoint('log/20241125_BackToSimple/version_4/checkpoints/best_epoch=64.ckpt')
     trainer.fit(module, datamodule=datamodule)

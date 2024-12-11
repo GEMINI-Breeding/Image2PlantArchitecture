@@ -18,7 +18,7 @@ from collections import OrderedDict
 
 
 def get_tgt_mask(size) -> torch.tensor:
-    if 1:
+    if 0:
         mask = torch.tril(torch.ones(size, size) == 1) # Lower triangular matrix
         mask = mask.float()
         mask = mask.masked_fill(mask == 0, float('-inf')) # Convert zeros to -inf
@@ -29,7 +29,7 @@ def get_tgt_mask(size) -> torch.tensor:
     else:
         # Causal mask 생성
         mask = nn.Transformer.generate_square_subsequent_mask(size)
-        mask.bool()
+        # mask.bool()
     # Convert to boolean
     return mask
 

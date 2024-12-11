@@ -38,29 +38,16 @@ from models.model import PlantArchitectureTransformer
 # Disable fastpath for TransformerEncoder and MultiHeadAttention
 # torch.backends.mha.set_fastpath_enabled(False)
 
-class FineTuneBatchSizeFinder(BatchSizeFinder):
-    def __init__(self, milestones, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.milestones = milestones
-
-    def on_fit_start(self, *args, **kwargs):
-        return
-
-    def on_train_epoch_start(self, trainer, pl_module):
-        if trainer.current_epoch in self.milestones or trainer.current_epoch == 0:
-            self.scale_batch_size(trainer, pl_module)
-
-class FineTuneLearningRateFinder(LearningRateFinder):
-    def __init__(self, milestones, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.milestones = milestones
-
-    def on_fit_start(self, *args, **kwargs):
-        return
-
-    def on_train_epoch_start(self, trainer, pl_module):
-        if trainer.current_epoch in self.milestones or trainer.current_epoch == 0:
-            self.lr_find(trainer, pl_module)
+from torch.optim.lr_scheduler import LambdaLR, CosineAnnealingLR
+import math
+def get_cosine_schedule_with_warmup(optimizer, num_warmup_steps, num_training_steps, num_cycles=0.5, last_epoch=-1):
+    def lr_lambda(current_step):
+        if current_step < num_warmup_steps:
+            return float(current_step) / float(max(1, num_warmup_steps))
+        progress = float(current_step - num_warmup_steps) / float(max(1, num_training_steps - num_warmup_steps))
+        return max(0.0, 0.5 * (1.0 + math.cos(math.pi * num_cycles * 2.0 * progress)))
+    
+    return LambdaLR(optimizer, lr_lambda, last_epoch)
 
 class MainModule(pl.LightningModule):
     def __init__(self, num_layers=6, num_heads=8, 
@@ -88,6 +75,8 @@ class MainModule(pl.LightningModule):
         self.dropout = dropout
         self.use_depth = use_depth
         self.max_len = max_len
+        self.num_warmup_steps = 30
+        self.num_training_steps = 10000
 
         if self.use_depth:
             self.depth_est_img_proc = AutoImageProcessor.from_pretrained("depth-anything/Depth-Anything-V2-Small-hf")
@@ -234,8 +223,8 @@ class MainModule(pl.LightningModule):
         else:
             depth_input = image
 
-        inputs = self.depth_est_img_proc(images=depth_input, return_tensors="pt").to(image.device)
         with torch.no_grad():
+            inputs = self.depth_est_img_proc(images=depth_input, return_tensors="pt").to(image.device)
             outputs = self.depth_est_model(**inputs)
             predicted_depth = outputs.predicted_depth
 
@@ -369,20 +358,18 @@ class MainModule(pl.LightningModule):
             self.current_val_step = 0
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
-        #scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=40, verbose=True)
-        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=100, gamma=0.1)
-        return {
-            'optimizer': optimizer,
-            'lr_scheduler': {
-                'scheduler': scheduler,
-                'monitor': 'val/loss'  # 모니터링할 지표를 지정
-            }
-        }
+        optimizer = torch.optim.Adam(self.parameters(), lr=1e-5)
+        scheduler = get_cosine_schedule_with_warmup(
+            optimizer, 
+            num_warmup_steps=self.num_warmup_steps, 
+            num_training_steps=self.num_training_steps
+        )
+        return [optimizer], [{'scheduler': scheduler, 'interval': 'step', 'frequency': 1}]
     
 class MainDataModule(pl.LightningDataModule):
     def __init__(self, dataset_dir, train_batch_size=16, val_batch_size=None,
-                        num_workers=4, image_size=448, num_plots=100,
+                        num_workers=4, image_size=448, 
+                        num_plots=2000,
                         load_depth=True,
                         process_leaf=False,
                         preload=False):
