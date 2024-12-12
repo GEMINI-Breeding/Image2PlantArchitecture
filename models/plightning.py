@@ -24,7 +24,7 @@ from src.plant_tokenizer import SOS_token, EOS_token, PAD_token, EOS_vec_padded,
 from src.plant_tokenizer import generate_noise_plant_tokens
 from src.plant_dataset import PlantDataset
 from src.plantstring2model import plantstring2model
-from src.plant_tokenizer import token2vec as token2vec
+from src.plant_tokenizer import token2vec, vec2token
 from src.string_to_xml_to_vec import vec2string
 from src.image_process import process_leaf_image
 from plant_architecture_utils import coordinates_to_angle
@@ -75,7 +75,7 @@ class MainModule(pl.LightningModule):
         self.dropout = dropout
         self.use_depth = use_depth
         self.max_len = max_len
-        self.num_warmup_steps = 30
+        self.num_warmup_steps = 10000
         self.num_training_steps = 10000
 
         if self.use_depth:
@@ -130,24 +130,28 @@ class MainModule(pl.LightningModule):
     
     def generate(self, image, stage='val'):
         device = image.device
-        y_input = torch.tensor(SOS_vec_padded, dtype=torch.float32)
-
-        y_input = y_input.unsqueeze(0).unsqueeze(0)
+        SOS_tensor = torch.tensor(SOS_vec_padded, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
+        y_input = SOS_tensor
         y_input = y_input.to(device)
-
         if self.use_depth:
             image = self.add_depth_to_image(image)
 
         feature = self.image_encoder(image)
         for i in range(self.max_len):
-            # Use torch.cuda.amp for mixed precision
-            tgt_mask = get_tgt_mask(y_input.size(1))
+            # Add Masks
+            if 1: 
+                tgt_mask = get_tgt_mask(y_input.size(1))
+            else:
+                tgt_mask = torch.zeros((y_input.size(1),y_input.size(1)))
+                
+            tgt_padding_mask = create_pad_mask(y_input, PAD_token)
+
             try:
                 if stage == 'val':
                     with torch.no_grad():
-                        pred = self.sequence_decoder(feature, y_input, tgt_mask=tgt_mask)
+                        pred = self.sequence_decoder(feature, y_input, tgt_mask=tgt_mask, tgt_key_padding_mask=tgt_padding_mask)
                 else:
-                    pred = self.sequence_decoder(feature, y_input, tgt_mask=tgt_mask)
+                    pred = self.sequence_decoder(feature, y_input, tgt_mask=tgt_mask, tgt_key_padding_mask=tgt_padding_mask)
             except Exception as e:
                 print(e)
                 print(f"Error in {i} iteration")
@@ -166,6 +170,18 @@ class MainModule(pl.LightningModule):
 
             # Concatenate previous input with predicted best word
             y_input = torch.cat((y_input, next_item), dim=1)
+
+            # Convert y_input to vec to clean erratic params. It will remove SOS Token
+            vec = token2vec(y_input.squeeze(0).tolist())
+
+            # Convert back to token
+            y_input = torch.tensor(vec2token(vec),dtype=torch.float).unsqueeze(0)
+
+            # Cat SOS_tensor
+            y_input = torch.cat((SOS_tensor, y_input), dim=1)
+
+            y_input = y_input.to(device)
+
 
         return y_input.squeeze(0).tolist()
     
@@ -490,6 +506,6 @@ class MainDataModule(pl.LightningDataModule):
 
     def test_dataloader(self):
         return DataLoader(
-            self.test_dataset, batch_size=self.val_batch_size, shuffle=False,
+            self.test_dataset, batch_size=self.val_batch_size, shuffle=True,
             collate_fn=self.collate_fn, num_workers=self.num_workers, pin_memory=self.pin_memory
         )

@@ -20,30 +20,35 @@ if __name__ == "__main__":
 
     # Define dataset to solve
     dataset_dir = "data/2000_Plots_20241210"
+    #dataset_dir = "data/generated_Dec10_2024"
     datamodule = MainDataModule(dataset_dir,
                                 image_size=224,
                                 load_depth=False,
                                 # train_batch_size=100, num_workers=8, process_leaf=False, preload=False) # for a100 gpu
-                                train_batch_size=16, num_workers=8, process_leaf=False, preload=False) # for gpum
-    module = MainModule(
-        num_layers=24,
-        num_heads=8,
-        seq_dim=EOS_token+1,
-        seq_embedding_dim=768//2,
-        param_dim=24,
-        param_embedding_dim=768//2,
-        image_size=datamodule.image_size,
-        alpha=1.0,
-        lr=1e-5,
-        use_depth=True,
-        dropout=0.10,
-    )
+                                train_batch_size=1, num_workers=0, process_leaf=False, preload=False) # for gpum
+    if 0:
+        module = MainModule(
+            num_layers=12,
+            num_heads=8,
+            seq_dim=EOS_token+1,
+            seq_embedding_dim=768//2,
+            param_dim=24,
+            param_embedding_dim=768//2,
+            image_size=datamodule.image_size,
+            alpha=1.0,
+            lr=1e-5,
+            use_depth=True,
+            dropout=0.10,
+        )
+    else:
+        module = MainModule.load_from_checkpoint('log/20241211_num_layers12/version_2/checkpoints/best_epoch=43.ckpt')
+
     tqdm_cb = TQDMProgressBar(refresh_rate=10)
 
     # Generate today's date string in YYYYMMDD format
     today_date_str = datetime.now().strftime('%Y%m%d')
     tb_logger = TensorBoardLogger(
-        name=f'{today_date_str}_num_layers24',
+        name=f'{today_date_str}_num_layers12',
         save_dir='./log'
     )
 
@@ -88,7 +93,6 @@ if __name__ == "__main__":
         precision="bf16-mixed",
         strategy=DDPStrategy(find_unused_parameters=True)  # Enable detection of unused parameters
     )
-    # module = MainModule.load_from_checkpoint('log/20241125_BackToSimple/version_4/checkpoints/best_epoch=64.ckpt')
     trainer.fit(module, datamodule=datamodule)
 
     # To check the training progress,

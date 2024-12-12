@@ -43,11 +43,18 @@ if 0:
     SOS_vec_padded = np.ones(15)*SOS_token
     EOS_vec_padded = np.ones(15)*EOS_token
 else:
-    # Zero padded params. SOS and EOS token are zero padded
-    SOS_vec_padded = np.zeros(24+1)
+    if 0:
+        # Zero padded params. SOS and EOS token are zero padded
+        SOS_vec_padded = np.zeros(24+1)
+        EOS_vec_padded = np.zeros(24+1)
+    else:
+        # Padding with PAD_token
+        SOS_vec_padded = np.ones(24+1)*PAD_token
+        EOS_vec_padded = np.ones(24+1)*PAD_token
+    
     SOS_vec_padded[0] = SOS_token
-    EOS_vec_padded = np.zeros(24+1)
     EOS_vec_padded[0] = EOS_token
+
 
 
 def vec2token(vec, n_params=24+1):
@@ -110,7 +117,6 @@ def token2vec(tokens):
         if label == SOS_token:
             #structure.append(SOS_word)
             # Do not append SOS token
-            # break
             pass
         elif label == EOS_token or label == PAD_token:
             #structure.append(EOS_word)
@@ -119,9 +125,8 @@ def token2vec(tokens):
         else:
             i = label // 6
             j = label % 6
-            params_padded = np.zeros(6)
             # Scale the params to match the original scale
-   
+            params_padded = np.zeros(6)
             if j == 0:
                 # Shoot
                 params_padded[0] = coordinates_to_angle(token[1], token[2])
