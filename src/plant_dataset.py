@@ -24,7 +24,7 @@ ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 class PlantDataset(Dataset):
     def __init__(self, root_dir, plot=None, stages=None, transform=None, 
-                 image_size=224, load_depth=False, preload=True, 
+                 image_size=224, load_depth=False, preload=True, side_view=False,
                  process_leaf=False):
 
         self.root_dir = root_dir
@@ -35,14 +35,13 @@ class PlantDataset(Dataset):
         # plant_string_path
         self.plant_xml_path = os.path.join(root_dir, 'xml')
         self.preload = preload
+        # Get list of plant strings
+        self.plant_xml_files = os.listdir(self.plant_xml_path)
         # Get list of images
-        self.image_paths = os.listdir(self.images_path)
+        self.image_paths = [x.replace('.xml', '.jpeg') for x in self.plant_xml_files]
         if load_depth:
             self.depth_images = os.listdir(self.depth_path)
             self.depth_images.sort()
-
-        # Get list of plant strings
-        self.plant_xml_files = [x.replace('.jpeg', '.xml') for x in self.image_paths]
 
         # Sort the lists
         self.image_paths.sort()
@@ -67,7 +66,7 @@ class PlantDataset(Dataset):
         self.transform = transform
 
         self.process_leaf = process_leaf
-
+        self.side_view = side_view
         self.plant_string_raw = ""
         
         print(f"Total {len(self.image_paths)} images and plant strings loaded")
@@ -88,16 +87,72 @@ class PlantDataset(Dataset):
     
     def getitem(self, idx):
         # Load image
-        try:
-            image = Image.open(os.path.join(self.images_path, self.image_paths[idx]))
+        if self.side_view:
+            # Load side view images and combine them into 2x2
+            # angles = [0, 90, 180, 270]
+            angles = [-1, 0, 120, 240]
+            image_name = self.image_paths[idx].split(".")[0]
+            # Make a empty image
+            total_img = np.zeros((self.img_size, self.img_size, 3), dtype=np.uint8)
+            total_plant_info = []
+            for i, angle in enumerate(angles):
+                try:
+                    if angle == -1:
+                        image = Image.open(os.path.join(self.images_path, f"{image_name}.jpeg"))
+                    else:
+                        image = Image.open(os.path.join(self.images_path, f"{image_name}_{angle}.jpeg"))
+                except:
+                    print(f"Error loading {self.image_paths[idx]}")
+                    return None, None, None
+                if self.process_leaf:
+                    # Preprocess image
+                    leaf_area, plant_width, plant_height, leaf_img, (x,y,w,h) = process_leaf_image(np.array(image), 
+                                                                                        normalize=True, debug=False, sqaure_crop=True)
+                    leaf_img = cv2.resize(leaf_img, (self.img_size//2, self.img_size//2))
+                    plant_info = [w, h]
+                else:
+                    leaf_img = cv2.resize(np.array(image), (self.img_size//2, self.img_size//2))
+                    plant_info = [0, 0]
+
+                # Add to the empty image
+                if i == 0:
+                    total_img[:self.img_size//2, :self.img_size//2] = leaf_img
+                elif i == 1:
+                    total_img[:self.img_size//2, self.img_size//2:] = leaf_img
+                elif i == 2:
+                    total_img[self.img_size//2:, :self.img_size//2] = leaf_img
+                elif i == 3:
+                    total_img[self.img_size//2:, self.img_size//2:] = leaf_img
+                
+                total_plant_info.append(plant_info)
+                # Debug
+                # cv2.imshow("Total", total_img)
+                # cv2.waitKey(0)
+                
+            leaf_img = total_img
+            # Average the plant info
+            plant_info = np.mean(total_plant_info, axis=0)
         
+                    
+        else:
+            try:
+                image = Image.open(os.path.join(self.images_path, self.image_paths[idx]))
+                # Convert to numpy array
+                image = np.array(image)
+            except:
+                    print(f"Error loading {self.image_paths[idx]}")
+                    return None, None, None
+            
             if self.process_leaf:
                 # Preprocess image
                 leaf_area, plant_width, plant_height, leaf_img, (x,y,w,h) = process_leaf_image(np.array(image), 
                                                                                     normalize=True, debug=False, sqaure_crop=True)
                 leaf_img = cv2.resize(leaf_img, (self.img_size, self.img_size))
+                plant_info = [w, h]
             else:
                 leaf_img = cv2.resize(np.array(image), (self.img_size, self.img_size))
+                plant_info = [0, 0]
+                
 
             if self.load_depth:
                 # Convert depth to grayscale
@@ -121,26 +176,21 @@ class PlantDataset(Dataset):
                 # Add depth channel
                 leaf_img = np.concatenate((leaf_img, depth[:, :, np.newaxis]), axis=2)
 
-            image = leaf_img
+    
 
-            # Load XML file
-            # Load and parse the XML file
-            tree = ET.parse(os.path.join(self.plant_xml_path, self.plant_xml_files[idx]))
+        # Load XML file
+        # Load and parse the XML file
+        tree = ET.parse(os.path.join(self.plant_xml_path, self.plant_xml_files[idx]))
 
-            # Get the root element
-            root = tree.getroot()
+        # Get the root element
+        root = tree.getroot()
 
-            root = linked_to_recursive(root)
-            plant_array = []
-            xml2vec(root[0], plant_array) # Assume single plant
+        root = linked_to_recursive(root)
+        plant_array = []
+        xml2vec(root[0], plant_array) # Assume single plant
 
-        except Exception as e:
-            print(e)
-            print(f"Error loading {self.image_paths[idx]}, {self.plant_xml_files[idx]}")
-            raise e
 
-        return image, plant_array
-
+        return leaf_img, plant_array
     
     def __getitem__(self, idx):
 

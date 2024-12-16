@@ -19,14 +19,15 @@ if __name__ == "__main__":
         torch.set_float32_matmul_precision('medium')
 
     # Define dataset to solve
+    #dataset_dir = "data/Sideview_Dec04_2024"
     dataset_dir = "data/2000_Plots_20241210"
-    #dataset_dir = "data/generated_Dec10_2024"
     datamodule = MainDataModule(dataset_dir,
                                 image_size=224,
                                 load_depth=False,
+                                #train_batch_size=1, num_workers=0, process_leaf=False, preload=False) # for debugging
                                 # train_batch_size=100, num_workers=8, process_leaf=False, preload=False) # for a100 gpu
-                                train_batch_size=1, num_workers=0, process_leaf=False, preload=False) # for gpum
-    if 0:
+                                train_batch_size=16, num_workers=8, process_leaf=False, preload=False, side_view=False) # for gpum
+    if 1:
         module = MainModule(
             num_layers=12,
             num_heads=8,
@@ -48,7 +49,7 @@ if __name__ == "__main__":
     # Generate today's date string in YYYYMMDD format
     today_date_str = datetime.now().strftime('%Y%m%d')
     tb_logger = TensorBoardLogger(
-        name=f'{today_date_str}_num_layers12',
+        name=f'{today_date_str}_weighted_loss',
         save_dir='./log'
     )
 
@@ -83,7 +84,7 @@ if __name__ == "__main__":
     trainer = pl.Trainer(
         accelerator=accelerator,
         devices="auto",
-        max_epochs=400,
+        max_epochs=1000,
         callbacks=[tqdm_cb, ckpt_cb, lr_monitor, early_stop_cb, 
                 #    FineTuneBatchSizeFinder(milestones=(5, 10)),
                 #    FineTuneLearningRateFinder(milestones=(5, 10))

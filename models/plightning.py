@@ -75,7 +75,7 @@ class MainModule(pl.LightningModule):
         self.dropout = dropout
         self.use_depth = use_depth
         self.max_len = max_len
-        self.num_warmup_steps = 10000
+        self.num_warmup_steps = 1000
         self.num_training_steps = 10000
 
         if self.use_depth:
@@ -139,11 +139,7 @@ class MainModule(pl.LightningModule):
         feature = self.image_encoder(image)
         for i in range(self.max_len):
             # Add Masks
-            if 1: 
-                tgt_mask = get_tgt_mask(y_input.size(1))
-            else:
-                tgt_mask = torch.zeros((y_input.size(1),y_input.size(1)))
-                
+            tgt_mask = get_tgt_mask(y_input.size(1))
             tgt_padding_mask = create_pad_mask(y_input, PAD_token)
 
             try:
@@ -186,10 +182,22 @@ class MainModule(pl.LightningModule):
         return y_input.squeeze(0).tolist()
     
     def label_loss_fn(self, pred, label, ignore_index=None):
-        if ignore_index:
-            return F.cross_entropy(pred, label, ignore_index=ignore_index)
+
+        # Define the number of classes (0 to 26)
+        num_classes = EOS_token+1  # Adjust if there are more tokens
+
+        # Initialize weights to 1 for all classes
+        weights = torch.ones(num_classes, device=pred.device)
+
+        # Assign a higher weight (e.g., 2.0) to tokens 12 through 23
+        weights[12:24] = 2.0
+
+        # Compute cross-entropy loss with the defined weights
+        if ignore_index is not None:
+            return F.cross_entropy(pred, label, ignore_index=ignore_index, weight=weights)
         else:
-            return F.cross_entropy(pred, label)
+            return F.cross_entropy(pred, label, weight=weights)
+
 
     def param_loss_fn(self, pred, params, ignore_index=PAD_token):
         # Create neg mask
@@ -386,6 +394,7 @@ class MainDataModule(pl.LightningDataModule):
     def __init__(self, dataset_dir, train_batch_size=16, val_batch_size=None,
                         num_workers=4, image_size=448, 
                         load_depth=True,
+                        side_view=False,
                         process_leaf=False,
                         preload=False):
         super().__init__()
@@ -397,7 +406,8 @@ class MainDataModule(pl.LightningDataModule):
         self.preload = preload
         self.process_leaf = process_leaf
         self.load_depth = load_depth
-        self.pin_memory = True
+        self.pin_memory = False
+        self.side_view = side_view
         self.img_aug = transforms.Compose([
                 transforms.RandomResizedCrop(self.image_size, scale=(0.8, 1.0)),
                 transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.2),
@@ -413,7 +423,7 @@ class MainDataModule(pl.LightningDataModule):
                 # transforms.Lambda(lambda img: torch.from_numpy(np.array(img)).permute(2, 0, 1).float())
         ])
 
-    def load_or_create_dataset(self, dataset_dir, dataset_name, plot, stages, transform, load_depth, process_leaf, preload, image_size):
+    def load_or_create_dataset(self, dataset_dir, dataset_name, plot, stages, transform, load_depth, process_leaf, side_view, preload, image_size):
         saved_dataset_name = os.path.join(dataset_dir, f"{dataset_name}.pkl")
         if os.path.exists(saved_dataset_name) and preload:
             print(f"Loading {dataset_name} dataset from .pkl file")
@@ -423,7 +433,7 @@ class MainDataModule(pl.LightningDataModule):
             dataset = PlantDataset(
                 dataset_dir, plot=plot, stages=stages,
                 transform=transform, load_depth=load_depth,
-                process_leaf=process_leaf,
+                process_leaf=process_leaf, side_view=side_view,
                 preload=preload, image_size=image_size,
             )
             if preload:
@@ -457,17 +467,17 @@ class MainDataModule(pl.LightningDataModule):
 
         self.train_dataset = self.load_or_create_dataset(
             self.dataset_dir, "train_dataset", train_plots, growth_stages,
-            self.train_transform, self.load_depth, self.process_leaf,
+            self.train_transform, self.load_depth, self.process_leaf, self.side_view,
             self.preload, self.image_size
         )
         self.val_dataset = self.load_or_create_dataset(
             self.dataset_dir, "val_dataset", val_plots, growth_stages,
-            self.test_transform, self.load_depth, self.process_leaf,
+            self.test_transform, self.load_depth, self.process_leaf, self.side_view,
             self.preload, self.image_size
         )
         self.test_dataset = self.load_or_create_dataset(
             self.dataset_dir, "test_dataset", test_plots, growth_stages,
-            self.test_transform, self.load_depth, self.process_leaf,
+            self.test_transform, self.load_depth, self.process_leaf, self.side_view,
             self.preload, self.image_size
         )
 
