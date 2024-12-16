@@ -20,7 +20,8 @@ if __name__ == "__main__":
 
     # Define dataset to solve
     #dataset_dir = "data/Sideview_Dec04_2024"
-    dataset_dir = "data/2000_Plots_20241210"
+    #dataset_dir = "data/2000_Plots_20241210"
+    dataset_dir = "data/generated_Dec10_2024"
     datamodule = MainDataModule(dataset_dir,
                                 image_size=224,
                                 load_depth=False,
@@ -49,7 +50,7 @@ if __name__ == "__main__":
     # Generate today's date string in YYYYMMDD format
     today_date_str = datetime.now().strftime('%Y%m%d')
     tb_logger = TensorBoardLogger(
-        name=f'{today_date_str}_weighted_loss',
+        name=f'{today_date_str}_combined_embedding',
         save_dir='./log'
     )
 
