@@ -15,7 +15,7 @@ import torchvision.transforms as transforms
 import numpy as np
 
 from collections import OrderedDict
-
+from plant_tokenizer import SOS_token, PAD_token, EOS_token
 
 def get_tgt_mask(size) -> torch.tensor:
     if 0:
@@ -79,10 +79,10 @@ class seqBatchNorm(nn.Module):
         self.bn = nn.BatchNorm1d(out_dim)
 
     def forward(self, x):
-        # Change N L C to N C L
+        # Change B C L to use BatchNorm1d for seqence
         x = x.permute(0,2,1)
         x = self.bn(x)
-        # Change N C L to N L C
+        # Convert to B L C 
         x = x.permute(0,2,1)
 
         return x
@@ -102,10 +102,10 @@ class MLP(nn.Module):
         self.mlp = nn.Sequential(OrderedDict(q))
 
     def forward(self, x):
-        # Change decoded to N C L
+        # Change decoded to Batch first (B L C)
         x = x.permute(1,0,2)
         x  = self.mlp(x)
-        # Convert back to L N C
+        # Convert back to Seq Len first (L B C)
         x = x.permute(1,0,2)
         return x
     
@@ -222,12 +222,17 @@ class ViT_FeatureExtractor(nn.Module):
 
         #print("After")
         #print(self.model)
+        # Embedding for plant info [leaf_area, plant_width, plant_height]
+        self.plant_info_embedding = nn.Sequential(nn.Linear(3, 512),
+                                                  nn.BatchNorm1d(512),
+                                                  nn.ReLU(),
+                                                  nn.Linear(512, 768))
         self.output_size = output_size
         if self.output_size != 768:
             self.fc = nn.Linear(768, output_size)  # Reduce feature dimension
 
 
-    def forward(self, x):
+    def forward(self, x, y):
         if 0:
             # Use Dinov2 image processor
             x = self.img_proc(images=x, return_tensors="pt").to(x.device)
@@ -238,6 +243,8 @@ class ViT_FeatureExtractor(nn.Module):
         if self.output_size != 768:
             x = self.fc(x)
             x = nn.ReLU()(x)
+        y = self.plant_info_embedding(y).unsqueeze(1)
+        x = torch.cat((x, y), dim=1)
         return x
     
     def get_last_selfattention(self, x):
@@ -272,11 +279,11 @@ class PositionalEncoding(nn.Module):
         # Residual connection + pos encoding
         return self.dropout(token_embedding + self.pos_encoding[:token_embedding.size(0), :])
 
-class TransformerDecoderModel(nn.Module):
+class AutoCompleteModel(nn.Module):
     def __init__(self, seq_embedding_dim, param_embedding_dim, 
                  num_layers, num_heads, num_tokens, num_params, 
-                 max_seq_length=2048, use_depth=True, decoder_only=False, image_size=448, dropout=0.1):
-        super(TransformerDecoderModel, self).__init__()
+                 max_seq_length=1024, use_depth=True, decoder_only=False, image_size=448, dropout=0.1):
+        super(AutoCompleteModel, self).__init__()
 
         self.dim_model = seq_embedding_dim + param_embedding_dim
         self.dropout = dropout
@@ -295,6 +302,96 @@ class TransformerDecoderModel(nn.Module):
         self.Seq_positional_encoding = PositionalEncoding(dim_model=self.dim_model, max_len=max_seq_length, dropout_p=self.dropout)
         # Positional Encoding for Image features
         self.ImgFeature_positional_encoding = PositionalEncoding(dim_model=self.dim_model, max_len=257, dropout_p=self.dropout) 
+        self.transformer = nn.Transformer(
+                                        d_model=self.dim_model,
+                                        nhead=num_heads,
+                                        num_encoder_layers=num_layers,
+                                        num_decoder_layers=num_layers,
+                                        dropout=0.1,
+                                    )
+
+        self.seq_decode_linear = MLP([self.dim_model, 2048, num_tokens], last_activation=False)
+        self.param_decode_linear = MLP([self.dim_model, 2048, num_params], last_activation=False)
+
+
+    def forward(self, features, tgt_seq, tgt_mask=None, tgt_key_padding_mask=None):
+        # features = self.cnn(images)
+        # Check dimensions
+        if len(features.shape) == 2:
+            features = features.unsqueeze(1) 
+        else:
+            pass
+
+        device = tgt_seq.device
+        if tgt_mask is not None:
+            tgt_mask = tgt_mask.to(device)
+        if tgt_key_padding_mask is not None:
+            tgt_key_padding_mask = tgt_key_padding_mask.to(device)
+
+        # Categorical sequence to embedding
+        if len(tgt_seq.shape) == 2:
+            tgt_seq = tgt_seq.unsqueeze(1)
+        depth_organ_seq = tgt_seq[:, :, 0]
+        # Conver to torch.long
+        depth_organ_seq = depth_organ_seq.long()
+        params = tgt_seq[:, :, 1:]
+        
+        depth_organ_seq = self.seq_embedding(depth_organ_seq) * math.sqrt(self.dim_model)
+        params = self.param_embedding(params) * math.sqrt(self.dim_model)
+
+        tgt = depth_organ_seq + params
+
+        SOS_embedding = tgt[0]
+        # tgt = 
+
+        # Make sequence length the first dimension
+        # PositionalEncoding은 시퀀스 차원에 대해 적용되므로, Positional Encoding을 적용하기 전에 반드시 시퀀스 차원이 첫 번째가 되어야 합니다.
+        tgt = tgt.permute(1,0,2)
+        features = features.permute(1,0,2)
+
+        tgt = self.Seq_positional_encoding(tgt)
+        features = self.ImgFeature_positional_encoding(features)
+
+        tgt = torch.cat((tgt, features), dim=0)
+
+        output = self.transformer(tgt, tgt, tgt_is_causal=True)
+
+        features = output[:features.size(0)]
+        output_seq = self.seq_decode_linear(output[features.size(0):])
+        output_params = self.param_decode_linear(output[features.size(0):])
+        output_params = self.ensure_positive(output_seq, output_params)
+
+        # Cat the output_seq and output_params
+        output_seq = torch.cat((output_seq, output_params), dim=2)
+        return features, output_seq
+
+
+class TransformerDecoderModel(nn.Module):
+    def __init__(self, seq_embedding_dim, param_embedding_dim, 
+                 num_layers, num_heads, num_tokens, num_params, 
+                 max_seq_length=2048, use_depth=True, decoder_only=False, image_size=448, dropout=0.1):
+        super(TransformerDecoderModel, self).__init__()
+
+        self.dim_model = seq_embedding_dim + param_embedding_dim
+        self.dropout = dropout
+
+        self.seq_embedding_dim = seq_embedding_dim
+        self.param_embedding_dim = param_embedding_dim
+
+        self.seq_embedding = nn.Embedding(num_tokens, self.dim_model)
+        if 0:
+            self.param_embedding = nn.Linear(num_params, self.dim_model)
+        else:
+            self.param_embedding = MLP([num_params, self.dim_model, self.dim_model], last_activation=False)
+  
+        self.activation = nn.ReLU()
+        self.self_attn_weights = None
+        self.multihead_attn_weights = None
+        
+        # Positional Encoding for Sequence
+        self.Seq_positional_encoding = PositionalEncoding(dim_model=self.dim_model, max_len=max_seq_length, dropout_p=self.dropout)
+        # Positional Encoding for Image features
+        self.ImgFeature_positional_encoding = PositionalEncoding(dim_model=self.dim_model, max_len=258, dropout_p=self.dropout) 
         self.decoder_only = decoder_only
         if self.decoder_only:
             # self.transformer_decoder_layer = nn.TransformerDecoderLayer(d_model=self.dim_model, nhead=num_heads)
@@ -314,27 +411,81 @@ class TransformerDecoderModel(nn.Module):
         self.seq_decode_linear = MLP([self.dim_model, 2048, num_tokens], last_activation=False)
         self.param_decode_linear = MLP([self.dim_model, 2048, num_params], last_activation=False)
 
-    def ensure_positive(self, x):
-        if 0:
-            # Make some parameters positive such as width, height, etc.
-            x[:, :, 6] = F.relu(x[:, :, 6])  # plant_age
-            x[:, :, 7] = F.relu(x[:, :, 7])  # shoot_type
+    def ensure_positive(self, output_seq, x):
+        """
+        Ensures that specific elements in tensor `x` are positive based on the predicted labels.
+
+        Args:
+            output_seq (Tensor): Logits with shape (seq_len, batch_size, num_classes).
+            x (Tensor): Tensor to be modified, with shape (seq_len, batch_size, dim).
+
+        Returns:
+            Tensor: Modified tensor `x` with certain elements exponentiated to ensure positivity.
+        """
+        # Get the predicted labels by taking the index with the highest logit value
+        predicted_label = output_seq.argmax(dim=-1)  # Shape: (seq_len, batch_size)
+
+        # Define special tokens
+        special_tokens = torch.tensor([SOS_token, PAD_token, EOS_token], device=predicted_label.device)
+
+        # Create a mask for non-special tokens
+        is_special = (predicted_label.unsqueeze(-1) == special_tokens).any(dim=-1)  # Shape: (seq_len, batch_size)
+        non_special_mask = ~is_special
+
+        # Compute organ_type from predicted labels
+        organ_type = predicted_label % 6  # Shape: (seq_len, batch_size)
+
+        # Create masks for different organ types
+        shoot_mask = (organ_type == 1) & non_special_mask
+        internode_mask = (organ_type == 1)  & non_special_mask
+        petiole_mask = (organ_type == 2) & non_special_mask
+        leaf_mask = ((organ_type >= 3) & (organ_type <= 5)) & non_special_mask
+
+        # Flatten the tensors to 2D for efficient indexing
+        seq_len, batch_size, dim = x.shape
+
+        x_flat = x.reshape(-1, dim)  # Use reshape instead of view
+
+        # Flatten masks, Shape: (seq_len * batch_size)
+        shoot_mask = shoot_mask.flatten()
+        internode_mask = internode_mask.flatten()
+        petiole_mask = petiole_mask.flatten()
+        leaf_mask_flat = leaf_mask.flatten()
+        non_special_mask = non_special_mask.flatten()
+        is_special = is_special.flatten()
         
-            x[:, :, 8] = F.relu(x[:, :, 8])  # internode_length
-            x[:, :, 9] = F.relu(x[:, :, 9])  # internode_radius
+        orig_type = x_flat[internode_mask, 0].dtype
+        if is_special.any():
+            # Reset special token's params to be zeros
+            x_flat[is_special, :] = 0
+            
+        # Apply exponential function to specific features based on organ type
+        if shoot_mask.any():
+            pass
+        
+        if internode_mask.any():
+            x_flat[internode_mask, 0] = torch.exp(x_flat[internode_mask, 0]).to(dtype=orig_type)
+            x_flat[internode_mask, 1] = torch.exp(x_flat[internode_mask, 1]).to(dtype=orig_type)
 
-            x[:, :, 12] = F.relu(x[:, :, 12])  # petiole_length
-            x[:, :, 13] = F.relu(x[:, :, 13])  # petiole_radius
-        else:
-            # Use exp function
-            # x[:, :, 6] = torch.exp(x[:, :, 6])
-            # x[:, :, 7] = torch.exp(x[:, :, 7])
-            x[:, :, 8] = torch.exp(x[:, :, 8])
-            x[:, :, 9] = torch.exp(x[:, :, 9])
-            x[:, :, 12] = torch.exp(x[:, :, 12])
-            x[:, :, 13] = torch.exp(x[:, :, 13])
+            # Reset zeros
+            x_flat[internode_mask, 4] = 0
+            x_flat[internode_mask, 5] = 0
+            x_flat[internode_mask, 6] = 0
+        
+        if petiole_mask.any():
+            x_flat[petiole_mask, 0] = torch.exp(x_flat[petiole_mask, 0]).to(dtype=orig_type)
+            x_flat[petiole_mask, 1] = torch.exp(x_flat[petiole_mask, 1]).to(dtype=orig_type)
 
-       
+            # Reset zeros
+            x_flat[internode_mask, 5] = 0
+            x_flat[internode_mask, 6] = 0
+
+        if leaf_mask_flat.any():
+            x_flat[leaf_mask_flat, 0] = torch.exp(x_flat[leaf_mask_flat, 0]).to(dtype=orig_type)
+
+        # Reshape x back to its original shape
+        x = x_flat.reshape(seq_len, batch_size, dim)
+
         return x
     
     def forward(self, features, tgt_seq, tgt_mask=None, tgt_key_padding_mask=None):
@@ -379,7 +530,7 @@ class TransformerDecoderModel(nn.Module):
 
         output_seq = self.seq_decode_linear(decoded)
         output_params = self.param_decode_linear(decoded)
-        output_params = self.ensure_positive(output_params)
+        output_params = self.ensure_positive(output_seq, output_params)
         # Cat the output_seq and output_params
         output_seq = torch.cat((output_seq, output_params), dim=2)
         return output_seq

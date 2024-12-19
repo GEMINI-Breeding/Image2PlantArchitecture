@@ -39,25 +39,27 @@ SOS_token = 4*6
 PAD_token = 4*6 + 1
 EOS_token = 4*6 + 2
 
+N_PARAMS = 7
+
 if 0:
     SOS_vec_padded = np.ones(15)*SOS_token
     EOS_vec_padded = np.ones(15)*EOS_token
 else:
-    if 0:
+    if 1:
         # Zero padded params. SOS and EOS token are zero padded
-        SOS_vec_padded = np.zeros(24+1)
-        EOS_vec_padded = np.zeros(24+1)
+        SOS_vec_padded = np.zeros(N_PARAMS+1)
+        EOS_vec_padded = np.zeros(N_PARAMS+1)
     else:
         # Padding with PAD_token
-        SOS_vec_padded = np.ones(24+1)*PAD_token
-        EOS_vec_padded = np.ones(24+1)*PAD_token
+        SOS_vec_padded = np.ones(N_PARAMS+1)*PAD_token
+        EOS_vec_padded = np.ones(N_PARAMS+1)*PAD_token
     
     SOS_vec_padded[0] = SOS_token
     EOS_vec_padded[0] = EOS_token
 
 
 
-def vec2token(vec, n_params=24+1):
+def vec2token(vec, n_params=N_PARAMS):
     """
     Convert vec to tokens
     vec: converted plant vector from plant string. (depth, organ, [params])
@@ -65,10 +67,10 @@ def vec2token(vec, n_params=24+1):
     tokens = []
     for x in vec:
         depth_organ = x[0]*6 + x[1]
-        if 0:
-            token = np.zeros(n_params) # padding zeros to match the desired length
+        if 1:
+            token = np.zeros(n_params+1) # padding zeros to match the desired length
         else:
-            token = np.ones(n_params) * PAD_token # If use PAD_token, unmatched params's loss will be ignored
+            token = np.ones(n_params+1) * PAD_token # If use PAD_token, unmatched params's loss will be ignored
 
         token[0] = depth_organ
         # Scale the params to radians, centimeters, etc.
@@ -83,27 +85,27 @@ def vec2token(vec, n_params=24+1):
             token[1],token[2] = angle_to_coordinates(x[2])
             token[3],token[4] = angle_to_coordinates(x[3])
             token[5],token[6] = angle_to_coordinates(x[4])
-            token[7] = x[5] / 100           # plant_age
-            token[8] = x[6]                 # shoot_type
+            # token[7] = x[5] / 100           # plant_age
+            token[7] = x[6]                 # shoot_type
         elif x[1] == 1:
             # Internode params
-            token[9] = x[2] * 100 # internode_length
-            token[10] = x[3] * 100 # internode_radius
-            token[11] = x[4] / 180 * math.pi # internode_pitch
-            token[12] = x[5] / 180 * math.pi # phyllotactic angle
+            token[1] = x[2] * 100 # internode_length
+            token[2] = x[3] * 100 # internode_radius
+            token[3] = x[4] / 180 * math.pi # internode_pitch
+            token[4] = x[5] / 180 * math.pi # phyllotactic angle
         elif x[1] == 2:
             # Petiole params
-            token[13] = x[2] * 100 # petiole_length
-            token[14] = x[3] * 100 # petiole_radius
-            token[15] = x[4] / 180 * math.pi # petiole_pitch
-            token[16] = x[5] / 180 * math.pi # petiole_curvature
-            token[17] = x[6] # leaflet_scale
+            token[1] = x[2] * 100 # petiole_length
+            token[2] = x[3] * 100 # petiole_radius
+            token[3] = x[4] / 180 * math.pi # petiole_pitch
+            token[4] = x[5] / 180 * math.pi # petiole_curvature
+            token[5] = x[6] # leaflet_scale
         elif x[1] == 3 or x[1] == 4 or x[1] == 5:
             # Leaf params
-            token[18] = x[2] * 100 # leaf_scale
-            token[19],token[20] = angle_to_coordinates(x[3]) # leaf pitch
-            token[21],token[22] = angle_to_coordinates(x[4]) # leaf yaw
-            token[23],token[24] = angle_to_coordinates(x[5]) # leaf roll
+            token[1] = x[2] * 100 # leaf_scale
+            token[2],token[3] = angle_to_coordinates(x[3]) # leaf pitch
+            token[4],token[5] = angle_to_coordinates(x[4]) # leaf yaw
+            token[6],token[7] = angle_to_coordinates(x[5]) # leaf roll
         else:
             raise ValueError(f"Invalid organ type {x[1]}")
         
@@ -132,27 +134,28 @@ def token2vec(tokens):
                 params_padded[0] = coordinates_to_angle(token[1], token[2])
                 params_padded[1] = coordinates_to_angle(token[3], token[4])
                 params_padded[2] = coordinates_to_angle(token[5], token[6])
-                params_padded[3] = token[7] * 100 # plant age
-                params_padded[4] = 1.0 if abs(1.0 - token[8]) < abs(3.0 - token[8]) else 3.0 # shoot_type
+                #params_padded[3] = token[7] * 100 # plant age
+                params_padded[3] = 0
+                params_padded[4] = 1.0 if abs(1.0 - token[7]) < abs(3.0 - token[7]) else 3.0 # shoot_type
             elif j == 1:
                 # Internode
-                params_padded[0] = token[9] / 100 # internode_length
-                params_padded[1] = token[10] / 100 # internode_radius
-                params_padded[2] = token[11] * 180 / math.pi # internode_pitch
-                params_padded[3] = token[12] * 180 / math.pi # phyllotactic angle, random.uniform(130, 145)
+                params_padded[0] = token[1] / 100 # internode_length
+                params_padded[1] = token[2] / 100 # internode_radius
+                params_padded[2] = token[3] * 180 / math.pi # internode_pitch
+                params_padded[3] = token[4] * 180 / math.pi # phyllotactic angle, random.uniform(130, 145)
             elif j == 2:
                 # Petiole
-                params_padded[0] = token[13] / 100 # petiole_length
-                params_padded[1] = token[14] / 100 # petiole radius, random.uniform(0.00075, 0.00125)
-                params_padded[2] = token[15] * 180 / math.pi # petiole_pitch
-                params_padded[3] = token[16] * 180 / math.pi # petiole_curvature
-                params_padded[4] = token[17] # leaflet_scale
+                params_padded[0] = token[1] / 100 # petiole_length
+                params_padded[1] = token[2] / 100 # petiole radius, random.uniform(0.00075, 0.00125)
+                params_padded[2] = token[3] * 180 / math.pi # petiole_pitch
+                params_padded[3] = token[4] * 180 / math.pi # petiole_curvature
+                params_padded[4] = token[5] # leaflet_scale
             elif j == 3 or j == 4 or j == 5:
                 # Leaf
-                params_padded[0] = token[18] / 100 # leaf_scale
-                params_padded[1] = coordinates_to_angle(token[19], token[20])
-                params_padded[2] = coordinates_to_angle(token[21], token[22])
-                params_padded[3] = coordinates_to_angle(token[23], token[24])
+                params_padded[0] = token[1] / 100 # leaf_scale
+                params_padded[1] = coordinates_to_angle(token[2], token[3])
+                params_padded[2] = coordinates_to_angle(token[4], token[5])
+                params_padded[3] = coordinates_to_angle(token[6], token[7])
 
                 # Convert 0-360 to -180-180
                 for k in range(1, 4):

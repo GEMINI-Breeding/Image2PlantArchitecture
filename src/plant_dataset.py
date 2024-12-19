@@ -75,12 +75,14 @@ class PlantDataset(Dataset):
             # Pre-load data
             self.images = []
             self.vec = []
+            self.plant_infos = []
             print("Pre-loading data")
             for i in tqdm(range(len(self.image_paths))):
-                image, vec = self.getitem(i)
+                image, plant_info, vec = self.getitem(i)
                 if image is not None:
                     self.images.append(image)
                     self.vec.append(vec)
+                    self.plant_infos.append(plant_info)
 
     def __len__(self):
         return len(self.image_paths)
@@ -104,15 +106,14 @@ class PlantDataset(Dataset):
                 except:
                     print(f"Error loading {self.image_paths[idx]}")
                     return None, None, None
+                leaf_area, plant_width, plant_height, processed_img, (x,y,w,h) = process_leaf_image(np.array(image), 
+                                                                                    normalize=True, debug=False, sqaure_crop=True)
+                plant_info = [leaf_area, plant_width, plant_height]
                 if self.process_leaf:
                     # Preprocess image
-                    leaf_area, plant_width, plant_height, leaf_img, (x,y,w,h) = process_leaf_image(np.array(image), 
-                                                                                        normalize=True, debug=False, sqaure_crop=True)
-                    leaf_img = cv2.resize(leaf_img, (self.img_size//2, self.img_size//2))
-                    plant_info = [w, h]
+                    leaf_img = cv2.resize(processed_img, (self.img_size//2, self.img_size//2))
                 else:
                     leaf_img = cv2.resize(np.array(image), (self.img_size//2, self.img_size//2))
-                    plant_info = [0, 0]
 
                 # Add to the empty image
                 if i == 0:
@@ -143,16 +144,14 @@ class PlantDataset(Dataset):
                     print(f"Error loading {self.image_paths[idx]}")
                     return None, None, None
             
+            leaf_area, plant_width, plant_height, processed_img, (x,y,w,h) = process_leaf_image(np.array(image), 
+                                                                                normalize=True, debug=False, sqaure_crop=True)
+            plant_info = [leaf_area, plant_width, plant_height]
             if self.process_leaf:
                 # Preprocess image
-                leaf_area, plant_width, plant_height, leaf_img, (x,y,w,h) = process_leaf_image(np.array(image), 
-                                                                                    normalize=True, debug=False, sqaure_crop=True)
-                leaf_img = cv2.resize(leaf_img, (self.img_size, self.img_size))
-                plant_info = [w, h]
+                leaf_img = cv2.resize(processed_img, (self.img_size, self.img_size))
             else:
                 leaf_img = cv2.resize(np.array(image), (self.img_size, self.img_size))
-                plant_info = [0, 0]
-                
 
             if self.load_depth:
                 # Convert depth to grayscale
@@ -190,15 +189,17 @@ class PlantDataset(Dataset):
         xml2vec(root[0], plant_array) # Assume single plant
 
 
-        return leaf_img, plant_array
+        return leaf_img, plant_info, plant_array
     
     def __getitem__(self, idx):
 
         if self.preload:
             image = self.images[idx]
             vec = self.vec[idx]
+            plant_info = self.plant_infos[idx]
         else:
-            image, vec = self.getitem(idx)
+            image, plant_info, vec = self.getitem(idx)
+            
 
         if self.transform:
             # Check if the image is a PIL Image
@@ -225,31 +226,7 @@ class PlantDataset(Dataset):
         # Permute the image tensor
         image = image.permute(2, 0, 1)
 
-        return image, out, out_len
-        
-                
-
-def collate_fn(batch):
-    images, vectors, lengths = zip(*batch)
-    max_length = max(lengths)
-    # Check if the vectors are 1 dimensional
-    if len(vectors[0].shape) == 1:
-        vectors_padded = np.ones((len(vectors), max_length), dtype=int) * PAD_token
-    else:
-        # vectors_padded = np.ones((len(vectors), max_length, 1+5+3+2+4)) * PAD_token
-        vectors_padded = np.ones((len(vectors), max_length, vectors[0].shape[-1])) * PAD_token # Bacth samples are padded with PAD_token
-    
-        # Should not reset the param space PAD_token because of the masked loss
-        if 0:
-            # Reset param space
-            vectors_padded[:,:,1:] = 0
-        
-    for i, vector in enumerate(vectors):
-        end = lengths[i]
-        vectors_padded[i, :end] = vector
-    images = torch.stack(images)
-    vectors_padded = torch.tensor(vectors_padded,dtype=torch.float32)
-    return images, vectors_padded, lengths
+        return image, plant_info, out, out_len
 
 
 

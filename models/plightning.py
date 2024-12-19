@@ -17,7 +17,7 @@ script_file_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(script_file_dir)
 
 # 모듈 임포트
-from models.model import TransformerDecoderModel, RegressionModel, ViT_FeatureExtractor, CNN_FeatureExtractor
+from models.model import TransformerDecoderModel, RegressionModel, ViT_FeatureExtractor, CNN_FeatureExtractor, AutoCompleteModel
 from models.model import RegressionModel_Transformer, PositionalEncoding, VAE, MLP, SeqEmbeddingModel
 from models.model import create_organ_mask, get_tgt_mask, create_pad_mask, text_global_pool
 from src.plant_tokenizer import SOS_token, EOS_token, PAD_token, EOS_vec_padded, SOS_vec_padded
@@ -118,17 +118,17 @@ class MainModule(pl.LightningModule):
         self.current_train_step = 0
         self.current_val_step = 0
 
-    def forward(self, image, y_input):
-        tgt_mask = get_tgt_mask(y_input.size(1))
-        tgt_pad_mask = create_pad_mask(y_input, PAD_token)
+    def forward(self, image, plant_info, tgt):
+        tgt_mask = get_tgt_mask(tgt.size(1))
+        tgt_pad_mask = create_pad_mask(tgt, PAD_token)
         if self.use_depth:
             image = self.add_depth_to_image(image)
-        features = self.image_encoder(image)
-        outputs = self.sequence_decoder(features, y_input, tgt_mask=tgt_mask, tgt_key_padding_mask=tgt_pad_mask)
+        features = self.image_encoder(image, plant_info)
+        outputs = self.sequence_decoder(features, tgt, tgt_mask=tgt_mask, tgt_key_padding_mask=tgt_pad_mask)
         outputs = outputs.permute(1, 0, 2)
         return outputs
     
-    def generate(self, image, stage='val'):
+    def generate(self, image, plant_info, stage='val'):
         device = image.device
         SOS_tensor = torch.tensor(SOS_vec_padded, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
         y_input = SOS_tensor
@@ -136,7 +136,7 @@ class MainModule(pl.LightningModule):
         if self.use_depth:
             image = self.add_depth_to_image(image)
 
-        feature = self.image_encoder(image)
+        feature = self.image_encoder(image, plant_info)
         for i in range(self.max_len):
             # Add Masks
             tgt_mask = get_tgt_mask(y_input.size(1))
@@ -167,16 +167,18 @@ class MainModule(pl.LightningModule):
             # Concatenate previous input with predicted best word
             y_input = torch.cat((y_input, next_item), dim=1)
 
-            # Convert y_input to vec to clean erratic params. It will remove SOS Token
-            vec = token2vec(y_input.squeeze(0).tolist())
+            # Vector cleaning
+            if 0:
+                # Convert y_input to vec to clean erratic params. It will remove SOS Token
+                vec = token2vec(y_input.squeeze(0).tolist())
 
-            # Convert back to token
-            y_input = torch.tensor(vec2token(vec),dtype=torch.float).unsqueeze(0)
+                # Convert back to token
+                y_input = torch.tensor(vec2token(vec),dtype=torch.float).unsqueeze(0)
 
-            # Cat SOS_tensor
-            y_input = torch.cat((SOS_tensor, y_input), dim=1)
+                # Cat SOS_tensor
+                y_input = torch.cat((SOS_tensor, y_input), dim=1)
 
-            y_input = y_input.to(device)
+                y_input = y_input.to(device)
 
 
         return y_input.squeeze(0).tolist()
@@ -260,14 +262,14 @@ class MainModule(pl.LightningModule):
             align_corners=False,
         )
         
-        if 1:
-            # Normalize to 0-1
-            depth = (depth - depth.min()) / (depth.max() - depth.min())
-            image = (image - image.min()) / (image.max() - image.min())
+        # Normalize to 0-1
+        depth = (depth - depth.min()) / (depth.max() - depth.min())
+        self.predicted_depth = depth
+        # Rescale to 0-255
+        depth = depth*255
         # cat depth to image
         image = torch.cat((image, depth), dim=1)
 
-        self.predicted_depth = depth
     
         return image
     
@@ -325,14 +327,14 @@ class MainModule(pl.LightningModule):
     def compute_loss(self, batch, mode):
 
         # Load batch and preprocess
-        image, y, lengths = batch
+        image, plant_info, y, lengths = batch
         y_input = y[:, :-1]
         y_expected = y[:, 1:]
         label = y_expected[:, :, 0].long()
         values = y_expected[:, :, 1:]
 
         # Decoder loss
-        pred = self(image, y_input)
+        pred = self(image, plant_info, y_input)
         label_loss = self.label_loss_fn(pred[:, :, :self.seq_dim].permute(0, 2, 1), label, ignore_index=PAD_token) # (N, C, L)
         #label_loss = self.label_loss_fn(pred[:, :, :self.seq_dim].permute(0, 2, 1), label) 
         if 1:
@@ -444,8 +446,9 @@ class MainDataModule(pl.LightningDataModule):
                         pickle.dump(dataset, f)
         return dataset
 
-    def setup(self, stage=None):
-        growth_stages = [f"{day:02d}" for day in range(20)]
+    def setup(self, stage=None, growth_stages=None):
+        if growth_stages is None:
+            growth_stages = [f"{day:02d}" for day in range(20)]
 
         train_ratio = 0.5
         val_ratio = 0.25
@@ -484,15 +487,14 @@ class MainDataModule(pl.LightningDataModule):
         
 
     def collate_fn(self, batch):
-        images, vectors, lengths = zip(*batch)
+        images, plant_info, vectors, lengths = zip(*batch)
         max_length = max(lengths)
         vec_dim = vectors[0].shape[-1]
         if len(vectors[0].shape) == 1:
             vectors_padded = np.ones((len(vectors), max_length), dtype=int) * PAD_token
         else:
-            vectors_padded = np.ones((len(vectors), max_length, vec_dim)) * PAD_token
-            if 0:
-                vectors_padded[:, :, 1:] = 0
+            vectors_padded = np.zeros((len(vectors), max_length, vec_dim))
+            vectors_padded[:, :, 0] = PAD_token
 
         for i, vector in enumerate(vectors):
             end = lengths[i]
@@ -500,7 +502,9 @@ class MainDataModule(pl.LightningDataModule):
 
         images = torch.stack(images)
         vectors_padded = torch.tensor(vectors_padded, dtype=torch.float32)
-        return images, vectors_padded, lengths
+        plant_info = np.array(plant_info)
+        plant_info = torch.tensor(plant_info, dtype=torch.float32)
+        return images, plant_info, vectors_padded, lengths
 
     def train_dataloader(self):
         return DataLoader(
