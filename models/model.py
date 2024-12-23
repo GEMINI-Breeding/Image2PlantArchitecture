@@ -17,6 +17,83 @@ import numpy as np
 from collections import OrderedDict
 from plant_tokenizer import SOS_token, PAD_token, EOS_token
 
+def ensure_positive(output_seq, x):
+    """
+    Ensures that specific elements in tensor `x` are positive based on the predicted labels.
+
+    Args:
+        output_seq (Tensor): Logits with shape (seq_len, batch_size, num_classes).
+        x (Tensor): Tensor to be modified, with shape (seq_len, batch_size, dim).
+
+    Returns:
+        Tensor: Modified tensor `x` with certain elements exponentiated to ensure positivity.
+    """
+    # Get the predicted labels by taking the index with the highest logit value
+    predicted_label = output_seq.argmax(dim=-1)  # Shape: (seq_len, batch_size)
+
+    # Define special tokens
+    special_tokens = torch.tensor([SOS_token, PAD_token, EOS_token], device=predicted_label.device)
+
+    # Create a mask for non-special tokens
+    is_special = (predicted_label.unsqueeze(-1) == special_tokens).any(dim=-1)  # Shape: (seq_len, batch_size)
+    non_special_mask = ~is_special
+
+    # Compute organ_type from predicted labels
+    organ_type = predicted_label % 6  # Shape: (seq_len, batch_size)
+
+    # Create masks for different organ types
+    shoot_mask = (organ_type == 1) & non_special_mask
+    internode_mask = (organ_type == 1)  & non_special_mask
+    petiole_mask = (organ_type == 2) & non_special_mask
+    leaf_mask = ((organ_type >= 3) & (organ_type <= 5)) & non_special_mask
+
+    # Flatten the tensors to 2D for efficient indexing
+    seq_len, batch_size, dim = x.shape
+
+    x_flat = x.reshape(-1, dim)  # Use reshape instead of view
+
+    # Flatten masks, Shape: (seq_len * batch_size)
+    shoot_mask = shoot_mask.flatten()
+    internode_mask = internode_mask.flatten()
+    petiole_mask = petiole_mask.flatten()
+    leaf_mask_flat = leaf_mask.flatten()
+    non_special_mask = non_special_mask.flatten()
+    is_special = is_special.flatten()
+    
+    orig_type = x_flat[internode_mask, 0].dtype
+    if is_special.any():
+        # Reset special token's params to be zeros
+        x_flat[is_special, :] = 0
+        
+    # Apply exponential function to specific features based on organ type
+    if shoot_mask.any():
+        pass
+    
+    if internode_mask.any():
+        x_flat[internode_mask, 0] = torch.exp(x_flat[internode_mask, 0]).to(dtype=orig_type)
+        x_flat[internode_mask, 1] = torch.exp(x_flat[internode_mask, 1]).to(dtype=orig_type)
+
+        # Reset zeros
+        x_flat[internode_mask, 4] = 0
+        x_flat[internode_mask, 5] = 0
+        x_flat[internode_mask, 6] = 0
+    
+    if petiole_mask.any():
+        x_flat[petiole_mask, 0] = torch.exp(x_flat[petiole_mask, 0]).to(dtype=orig_type)
+        x_flat[petiole_mask, 1] = torch.exp(x_flat[petiole_mask, 1]).to(dtype=orig_type)
+
+        # Reset zeros
+        x_flat[internode_mask, 5] = 0
+        x_flat[internode_mask, 6] = 0
+
+    if leaf_mask_flat.any():
+        x_flat[leaf_mask_flat, 0] = torch.exp(x_flat[leaf_mask_flat, 0]).to(dtype=orig_type)
+
+    # Reshape x back to its original shape
+    x = x_flat.reshape(seq_len, batch_size, dim)
+
+    return x
+
 def get_tgt_mask(size) -> torch.tensor:
     if 0:
         mask = torch.tril(torch.ones(size, size) == 1) # Lower triangular matrix
@@ -256,13 +333,32 @@ class ViT_FeatureExtractor(nn.Module):
         attention = attention.detach().numpy()
 
         return attention
+
+class LearnablePositionalEncoding(nn.Module):
+    def __init__(self, dim_model, dropout_p, max_len):
+        super().__init__()
+        
+        self.dropout = nn.Dropout(dropout_p)
+        self.layer_norm = nn.LayerNorm(dim_model)
+        self.pos_encoding = nn.Embedding(num_embeddings=max_len, embedding_dim=dim_model)
+ 
+    def forward(self, token_embeddings: torch.tensor) -> torch.tensor:
+        position_ids = torch.arange(token_embeddings.size(0), dtype=torch.long, device=token_embeddings.device).unsqueeze(1)
+        position_embeddings = self.pos_encoding(position_ids)
+
+        # Add token embedding and position embeddings
+        embeddings = token_embeddings + position_embeddings
+        embeddings = self.layer_norm(embeddings)
+        embeddings = self.dropout(embeddings)
+        return embeddings
     
 class PositionalEncoding(nn.Module):
     def __init__(self, dim_model, dropout_p, max_len):
         super().__init__()
         
         self.dropout = nn.Dropout(dropout_p)
- 
+        self.layer_norm = nn.LayerNorm(dim_model)
+
         # Encoding - From formula
         pos_encoding = torch.zeros(max_len, dim_model)
         positions_list = torch.arange(0, max_len, dtype=torch.float).view(-1, 1) # 0, 1, 2, 3, 4, 5
@@ -277,13 +373,16 @@ class PositionalEncoding(nn.Module):
  
     def forward(self, token_embedding: torch.tensor) -> torch.tensor:
         # Residual connection + pos encoding
-        return self.dropout(token_embedding + self.pos_encoding[:token_embedding.size(0), :])
+        token_embedding = token_embedding + self.pos_encoding[:token_embedding.size(0), :]
+        token_embedding = self.layer_norm(token_embedding)
+        token_embedding = self.dropout(token_embedding)
+        return token_embedding
 
-class AutoCompleteModel(nn.Module):
+class MultiModalModel(nn.Module):
     def __init__(self, seq_embedding_dim, param_embedding_dim, 
                  num_layers, num_heads, num_tokens, num_params, 
                  max_seq_length=1024, use_depth=True, decoder_only=False, image_size=448, dropout=0.1):
-        super(AutoCompleteModel, self).__init__()
+        super(MultiModalModel, self).__init__()
 
         self.dim_model = seq_embedding_dim + param_embedding_dim
         self.dropout = dropout
@@ -297,37 +396,41 @@ class AutoCompleteModel(nn.Module):
         self.activation = nn.ReLU()
         self.self_attn_weights = None
         self.multihead_attn_weights = None
-        
         # Positional Encoding for Sequence
         self.Seq_positional_encoding = PositionalEncoding(dim_model=self.dim_model, max_len=max_seq_length, dropout_p=self.dropout)
         # Positional Encoding for Image features
-        self.ImgFeature_positional_encoding = PositionalEncoding(dim_model=self.dim_model, max_len=257, dropout_p=self.dropout) 
-        self.transformer = nn.Transformer(
-                                        d_model=self.dim_model,
-                                        nhead=num_heads,
-                                        num_encoder_layers=num_layers,
-                                        num_decoder_layers=num_layers,
-                                        dropout=0.1,
-                                    )
+        self.ImgFeature_positional_encoding = PositionalEncoding(dim_model=self.dim_model, max_len=258, dropout_p=self.dropout) 
+        self.learnable_positional_encoding = LearnablePositionalEncoding(dim_model=self.dim_model, max_len=max_seq_length, dropout_p=self.dropout)
+        self.decoder_only = decoder_only
+        if self.decoder_only:
+            # self.transformer_decoder_layer = nn.TransformerDecoderLayer(d_model=self.dim_model, nhead=num_heads)
+            # self.transformer_decoder = nn.TransformerDecoder(self.transformer_decoder_layer, num_layers=num_layers)
+            self.transformer_decoder_layer = TransformerDecoderLayerWithAttention(d_model=self.dim_model, 
+                                                                                  nhead=num_heads, dropout=self.dropout)
+            self.transformer_decoder = TransformerDecoderWithAttention(self.transformer_decoder_layer, num_layers=num_layers)
+        else:
+            self.transformer = nn.Transformer(
+                                            d_model=self.dim_model,
+                                            nhead=num_heads,
+                                            num_encoder_layers=num_layers,
+                                            num_decoder_layers=num_layers,
+                                            dropout=0.1,
+                                        )
 
         self.seq_decode_linear = MLP([self.dim_model, 2048, num_tokens], last_activation=False)
         self.param_decode_linear = MLP([self.dim_model, 2048, num_params], last_activation=False)
 
+        self.layer_norm = nn.LayerNorm(self.dim_model)
 
-    def forward(self, features, tgt_seq, tgt_mask=None, tgt_key_padding_mask=None):
+    def forward(self, image_features, tgt_seq):
         # features = self.cnn(images)
         # Check dimensions
-        if len(features.shape) == 2:
-            features = features.unsqueeze(1) 
+        if len(image_features.shape) == 2:
+            image_features = image_features.unsqueeze(1) 
         else:
             pass
-
+        
         device = tgt_seq.device
-        if tgt_mask is not None:
-            tgt_mask = tgt_mask.to(device)
-        if tgt_key_padding_mask is not None:
-            tgt_key_padding_mask = tgt_key_padding_mask.to(device)
-
         # Categorical sequence to embedding
         if len(tgt_seq.shape) == 2:
             tgt_seq = tgt_seq.unsqueeze(1)
@@ -339,31 +442,63 @@ class AutoCompleteModel(nn.Module):
         depth_organ_seq = self.seq_embedding(depth_organ_seq) * math.sqrt(self.dim_model)
         params = self.param_embedding(params) * math.sqrt(self.dim_model)
 
-        tgt = depth_organ_seq + params
-
-        SOS_embedding = tgt[0]
-        # tgt = 
+        seq_features = depth_organ_seq + params
+        seq_features = self.layer_norm(seq_features)
 
         # Make sequence length the first dimension
         # PositionalEncoding은 시퀀스 차원에 대해 적용되므로, Positional Encoding을 적용하기 전에 반드시 시퀀스 차원이 첫 번째가 되어야 합니다.
-        tgt = tgt.permute(1,0,2)
-        features = features.permute(1,0,2)
+        seq_features = seq_features.permute(1,0,2)
+        image_features = image_features.permute(1,0,2)
 
-        tgt = self.Seq_positional_encoding(tgt)
-        features = self.ImgFeature_positional_encoding(features)
+        tgt = torch.cat((seq_features[:1], image_features, seq_features[1:]), dim=0) # Move SOS Token to Front
+        if 0:
+            tgt = self.Seq_positional_encoding(tgt)
+        else:
+            tgt = self.learnable_positional_encoding(tgt)
 
-        tgt = torch.cat((tgt, features), dim=0)
+        tgt_mask = get_tgt_mask(tgt.size(0))
+        if 1:
+            # Make Transformer can see entire <SOS> + ViT features 
+            tgt_mask[:image_features.size(0)+1,:image_features.size(0)+1] = 0
 
-        output = self.transformer(tgt, tgt, tgt_is_causal=True)
+        dummy_seq = torch.zeros([tgt_seq.size(0), image_features.size(0), tgt_seq.size(2)]).to(device)
+        tgt_seq_with_dummy = torch.cat((dummy_seq, tgt_seq), dim=1)
+        tgt_key_padding_mask = create_pad_mask(tgt_seq_with_dummy, PAD_token)
 
-        features = output[:features.size(0)]
-        output_seq = self.seq_decode_linear(output[features.size(0):])
-        output_params = self.param_decode_linear(output[features.size(0):])
-        output_params = self.ensure_positive(output_seq, output_params)
+        if tgt_mask is not None:
+            tgt_mask = tgt_mask.to(device)
+        if tgt_key_padding_mask is not None:
+            tgt_key_padding_mask = tgt_key_padding_mask.to(device)
+
+        if self.decoder_only:
+            output, self.self_attn_weights, self.multihead_attn_weights = self.transformer_decoder(tgt, tgt, 
+                                                                                                   memory_mask=tgt_mask,
+                                                                                                   tgt_mask=tgt_mask,
+                                                                                                   tgt_key_padding_mask=tgt_key_padding_mask,
+                                                                                                   memory_key_padding_mask=tgt_key_padding_mask)
+        else:
+            '''
+            def forward(self, src: Tensor, tgt: Tensor, src_mask: Optional[Tensor] = None, tgt_mask: Optional[Tensor] = None,
+                        memory_mask: Optional[Tensor] = None, src_key_padding_mask: Optional[Tensor] = None,
+                        tgt_key_padding_mask: Optional[Tensor] = None, memory_key_padding_mask: Optional[Tensor] = None,
+                        src_is_causal: Optional[bool] = None, tgt_is_causal: Optional[bool] = None,
+                        memory_is_causal: bool = False) -> Tensor:
+            '''
+            output = self.transformer(tgt, tgt, 
+                                      src_mask=tgt_mask,
+                                      tgt_mask=tgt_mask,
+                                      src_key_padding_mask=tgt_key_padding_mask,
+                                      tgt_key_padding_mask=tgt_key_padding_mask)
+        if 0:
+            # Update image features?
+            image_features = output[:image_features.size(0)]
+        output_seq = self.seq_decode_linear(output[image_features.size(0):])
+        output_params = self.param_decode_linear(output[image_features.size(0):])
+        output_params = ensure_positive(output_seq, output_params)
 
         # Cat the output_seq and output_params
         output_seq = torch.cat((output_seq, output_params), dim=2)
-        return features, output_seq
+        return output_seq
 
 
 class TransformerDecoderModel(nn.Module):
@@ -410,91 +545,17 @@ class TransformerDecoderModel(nn.Module):
 
         self.seq_decode_linear = MLP([self.dim_model, 2048, num_tokens], last_activation=False)
         self.param_decode_linear = MLP([self.dim_model, 2048, num_params], last_activation=False)
-
-    def ensure_positive(self, output_seq, x):
-        """
-        Ensures that specific elements in tensor `x` are positive based on the predicted labels.
-
-        Args:
-            output_seq (Tensor): Logits with shape (seq_len, batch_size, num_classes).
-            x (Tensor): Tensor to be modified, with shape (seq_len, batch_size, dim).
-
-        Returns:
-            Tensor: Modified tensor `x` with certain elements exponentiated to ensure positivity.
-        """
-        # Get the predicted labels by taking the index with the highest logit value
-        predicted_label = output_seq.argmax(dim=-1)  # Shape: (seq_len, batch_size)
-
-        # Define special tokens
-        special_tokens = torch.tensor([SOS_token, PAD_token, EOS_token], device=predicted_label.device)
-
-        # Create a mask for non-special tokens
-        is_special = (predicted_label.unsqueeze(-1) == special_tokens).any(dim=-1)  # Shape: (seq_len, batch_size)
-        non_special_mask = ~is_special
-
-        # Compute organ_type from predicted labels
-        organ_type = predicted_label % 6  # Shape: (seq_len, batch_size)
-
-        # Create masks for different organ types
-        shoot_mask = (organ_type == 1) & non_special_mask
-        internode_mask = (organ_type == 1)  & non_special_mask
-        petiole_mask = (organ_type == 2) & non_special_mask
-        leaf_mask = ((organ_type >= 3) & (organ_type <= 5)) & non_special_mask
-
-        # Flatten the tensors to 2D for efficient indexing
-        seq_len, batch_size, dim = x.shape
-
-        x_flat = x.reshape(-1, dim)  # Use reshape instead of view
-
-        # Flatten masks, Shape: (seq_len * batch_size)
-        shoot_mask = shoot_mask.flatten()
-        internode_mask = internode_mask.flatten()
-        petiole_mask = petiole_mask.flatten()
-        leaf_mask_flat = leaf_mask.flatten()
-        non_special_mask = non_special_mask.flatten()
-        is_special = is_special.flatten()
-        
-        orig_type = x_flat[internode_mask, 0].dtype
-        if is_special.any():
-            # Reset special token's params to be zeros
-            x_flat[is_special, :] = 0
-            
-        # Apply exponential function to specific features based on organ type
-        if shoot_mask.any():
-            pass
-        
-        if internode_mask.any():
-            x_flat[internode_mask, 0] = torch.exp(x_flat[internode_mask, 0]).to(dtype=orig_type)
-            x_flat[internode_mask, 1] = torch.exp(x_flat[internode_mask, 1]).to(dtype=orig_type)
-
-            # Reset zeros
-            x_flat[internode_mask, 4] = 0
-            x_flat[internode_mask, 5] = 0
-            x_flat[internode_mask, 6] = 0
-        
-        if petiole_mask.any():
-            x_flat[petiole_mask, 0] = torch.exp(x_flat[petiole_mask, 0]).to(dtype=orig_type)
-            x_flat[petiole_mask, 1] = torch.exp(x_flat[petiole_mask, 1]).to(dtype=orig_type)
-
-            # Reset zeros
-            x_flat[internode_mask, 5] = 0
-            x_flat[internode_mask, 6] = 0
-
-        if leaf_mask_flat.any():
-            x_flat[leaf_mask_flat, 0] = torch.exp(x_flat[leaf_mask_flat, 0]).to(dtype=orig_type)
-
-        # Reshape x back to its original shape
-        x = x_flat.reshape(seq_len, batch_size, dim)
-
-        return x
     
-    def forward(self, features, tgt_seq, tgt_mask=None, tgt_key_padding_mask=None):
+    def forward(self, features, tgt_seq):
         # features = self.cnn(images)
         # Check dimensions
         if len(features.shape) == 2:
             features = features.unsqueeze(1) 
         else:
             pass
+
+        tgt_mask = get_tgt_mask(tgt_seq.size(1))
+        tgt_key_padding_mask = create_pad_mask(tgt_seq, PAD_token)
 
         device = tgt_seq.device
         if tgt_mask is not None:
@@ -530,7 +591,7 @@ class TransformerDecoderModel(nn.Module):
 
         output_seq = self.seq_decode_linear(decoded)
         output_params = self.param_decode_linear(decoded)
-        output_params = self.ensure_positive(output_seq, output_params)
+        output_params = ensure_positive(output_seq, output_params)
         # Cat the output_seq and output_params
         output_seq = torch.cat((output_seq, output_params), dim=2)
         return output_seq

@@ -17,7 +17,7 @@ script_file_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(script_file_dir)
 
 # 모듈 임포트
-from models.model import TransformerDecoderModel, RegressionModel, ViT_FeatureExtractor, CNN_FeatureExtractor, AutoCompleteModel
+from models.model import TransformerDecoderModel, RegressionModel, ViT_FeatureExtractor, CNN_FeatureExtractor, MultiModalModel
 from models.model import RegressionModel_Transformer, PositionalEncoding, VAE, MLP, SeqEmbeddingModel
 from models.model import create_organ_mask, get_tgt_mask, create_pad_mask, text_global_pool
 from src.plant_tokenizer import SOS_token, EOS_token, PAD_token, EOS_vec_padded, SOS_vec_padded
@@ -49,13 +49,65 @@ def get_cosine_schedule_with_warmup(optimizer, num_warmup_steps, num_training_st
     
     return LambdaLR(optimizer, lr_lambda, last_epoch)
 
+
+def make_negative_imgs(image):
+    # Suffle the image along the batch dimension. make sure i != j
+    # Ensure i != j by checking for identity permutation and reshuffling if necessary
+    batch_size = image.size(0)
+    # 무작위로 인덱스를 섞음
+    idx = np.random.permutation(batch_size)
+    if 0:
+        # 인덱스가 동일한 경우 요소를 교환하여 섞인 인덱스를 생성
+        while np.array_equal(idx, np.arange(batch_size)):
+            for i in range(batch_size):
+                if i == idx[i]:
+                    j = np.random.randint(0, batch_size)
+                    idx[i], idx[j] = idx[j], idx[i]
+    
+    image = image[idx]
+
+    # Add noise to the plant images
+    transform = transforms.Compose([
+                transforms.RandomRotation(20),
+                transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.2)])
+
+    image = transform(image)
+
+    return image
+
+def make_negative_seqs(seqs, shuffle=True, noise_level=0.2):
+    # Suffle the seqs along the batch dimension. make sure i != j
+    # Ensure i != j by checking for identity permutation and reshuffling if necessary
+    batch_size = seqs.size(0)
+    # 무작위로 인덱스를 섞음
+    if shuffle:
+        idx = np.random.permutation(batch_size)
+        if 0:
+            # 인덱스가 동일한 경우 요소를 교환하여 섞인 인덱스를 생성
+            while np.array_equal(idx, np.arange(batch_size)):
+                for i in range(batch_size):
+                    if i == idx[i]:
+                        j = np.random.randint(0, batch_size)
+                        idx[i], idx[j] = idx[j], idx[i]
+        seqs = seqs[idx]
+
+    # Add noise to seq
+    if 0:
+        noises = generate_noise_plant_tokens(seqs)
+    else:
+        noises = torch.randn_like(seqs, requires_grad=True) * noise_level
+    seqs = seqs + noises
+
+    return seqs
+
+
 class MainModule(pl.LightningModule):
     def __init__(self, num_layers=6, num_heads=8, 
                  seq_dim=23, seq_embedding_dim=768//2, 
                  param_dim=22, param_embedding_dim=768//2, 
                  image_size=224, alpha=1.0, lr=1e-5, 
                  dropout=0.10, 
-                 max_len=512,
+                 max_len=1024,
                  use_depth=False):
         super(MainModule, self).__init__()
         self.save_hyperparameters()  # 전달된 모든 인수를 저장
@@ -90,7 +142,8 @@ class MainModule(pl.LightningModule):
         # Froze self.feature_extractor
         # self.image_encoder.eval()
         
-        self.sequence_decoder = TransformerDecoderModel(
+        #self.sequence_decoder = TransformerDecoderModel(
+        self.sequence_decoder = MultiModalModel(
             seq_embedding_dim=self.seq_embedding_dim,
             param_embedding_dim=self.param_embedding_dim,
             num_layers=self.num_layers,
@@ -119,12 +172,10 @@ class MainModule(pl.LightningModule):
         self.current_val_step = 0
 
     def forward(self, image, plant_info, tgt):
-        tgt_mask = get_tgt_mask(tgt.size(1))
-        tgt_pad_mask = create_pad_mask(tgt, PAD_token)
         if self.use_depth:
             image = self.add_depth_to_image(image)
         features = self.image_encoder(image, plant_info)
-        outputs = self.sequence_decoder(features, tgt, tgt_mask=tgt_mask, tgt_key_padding_mask=tgt_pad_mask)
+        outputs = self.sequence_decoder(features, tgt)
         outputs = outputs.permute(1, 0, 2)
         return outputs
     
@@ -145,9 +196,9 @@ class MainModule(pl.LightningModule):
             try:
                 if stage == 'val':
                     with torch.no_grad():
-                        pred = self.sequence_decoder(feature, y_input, tgt_mask=tgt_mask, tgt_key_padding_mask=tgt_padding_mask)
+                        pred = self.sequence_decoder(feature, y_input)
                 else:
-                    pred = self.sequence_decoder(feature, y_input, tgt_mask=tgt_mask, tgt_key_padding_mask=tgt_padding_mask)
+                    pred = self.sequence_decoder(feature, y_input)
             except Exception as e:
                 print(e)
                 print(f"Error in {i} iteration")
@@ -273,56 +324,7 @@ class MainModule(pl.LightningModule):
     
         return image
     
-    def make_negative_imgs(self, image):
-        # Suffle the image along the batch dimension. make sure i != j
-        # Ensure i != j by checking for identity permutation and reshuffling if necessary
-        batch_size = image.size(0)
-        # 무작위로 인덱스를 섞음
-        idx = np.random.permutation(batch_size)
-        if 0:
-            # 인덱스가 동일한 경우 요소를 교환하여 섞인 인덱스를 생성
-            while np.array_equal(idx, np.arange(batch_size)):
-                for i in range(batch_size):
-                    if i == idx[i]:
-                        j = np.random.randint(0, batch_size)
-                        idx[i], idx[j] = idx[j], idx[i]
-        
-        image = image[idx]
 
-        # Add noise to the plant images
-        transform = transforms.Compose([
-                    transforms.RandomRotation(20),
-                    transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.2)])
-
-        image = transform(image)
-
-        return image
-    
-    def make_negative_seqs(self, seqs, shuffle=True, noise_level=0.2):
-        # Suffle the seqs along the batch dimension. make sure i != j
-        # Ensure i != j by checking for identity permutation and reshuffling if necessary
-        batch_size = seqs.size(0)
-        # 무작위로 인덱스를 섞음
-        if shuffle:
-            idx = np.random.permutation(batch_size)
-            if 0:
-                # 인덱스가 동일한 경우 요소를 교환하여 섞인 인덱스를 생성
-                while np.array_equal(idx, np.arange(batch_size)):
-                    for i in range(batch_size):
-                        if i == idx[i]:
-                            j = np.random.randint(0, batch_size)
-                            idx[i], idx[j] = idx[j], idx[i]
-            seqs = seqs[idx]
-
-        # Add noise to seq
-        if 0:
-            noises = generate_noise_plant_tokens(seqs)
-        else:
-            noises = torch.randn_like(seqs, requires_grad=True) * noise_level
-        seqs = seqs + noises
-
-        return seqs
-    
     
     def compute_loss(self, batch, mode):
 
