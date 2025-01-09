@@ -133,6 +133,9 @@ class MainModule(pl.LightningModule):
         if self.use_depth:
             self.depth_est_img_proc = AutoImageProcessor.from_pretrained("depth-anything/Depth-Anything-V2-Small-hf")
             self.depth_est_model = AutoModelForDepthEstimation.from_pretrained("depth-anything/Depth-Anything-V2-Small-hf")
+            # Fix the weights 
+            for param in self.depth_est_model.parameters():
+                param.requires_grad = False
             self.depth_background = cv2.resize(cv2.imread(os.path.join(self.current_script_dir, "../src/assets/dirt.jpg")), (self.image_size, self.image_size))
             # Conver to RGB
             self.depth_background = cv2.cvtColor(self.depth_background, cv2.COLOR_BGR2RGB)
@@ -142,8 +145,8 @@ class MainModule(pl.LightningModule):
         # Froze self.feature_extractor
         # self.image_encoder.eval()
         
-        #self.sequence_decoder = TransformerDecoderModel(
-        self.sequence_decoder = MultiModalModel(
+        self.sequence_decoder = TransformerDecoderModel(
+        #self.sequence_decoder = MultiModalModel(
             seq_embedding_dim=self.seq_embedding_dim,
             param_embedding_dim=self.param_embedding_dim,
             num_layers=self.num_layers,
@@ -206,6 +209,9 @@ class MainModule(pl.LightningModule):
             label_p = pred[:,:,:self.seq_dim]
             label = label_p.topk(1)[1].view(-1)[-1].item()  # num with highest probability
             params = pred[:,:,self.seq_dim:]
+            
+            # Unscale params
+            params = self.sequence_decoder.scaler.inverse_transform(params)
 
             # Stop if model predicts end of sentencplant_structure_vit_transformer_withpsudodepth_paramEste
             ## if label == EOS_token:
@@ -231,8 +237,7 @@ class MainModule(pl.LightningModule):
 
                 y_input = y_input.to(device)
 
-
-        return y_input.squeeze(0).tolist()
+        return y_input.squeeze(0)
     
     def label_loss_fn(self, pred, label, ignore_index=None):
 
@@ -339,13 +344,17 @@ class MainModule(pl.LightningModule):
         pred = self(image, plant_info, y_input)
         label_loss = self.label_loss_fn(pred[:, :, :self.seq_dim].permute(0, 2, 1), label, ignore_index=PAD_token) # (N, C, L)
         #label_loss = self.label_loss_fn(pred[:, :, :self.seq_dim].permute(0, 2, 1), label) 
-        if 1:
+        if 0:
+            # Scale the values before the loss calc
+            values = self.sequence_decoder.scaler.transform(values)
             param_loss = self.param_loss_fn(pred[:, :, self.seq_dim:], values)
         else:
+            # Scale the values before the loss calc
+            values = self.sequence_decoder.scaler.transform(values)
             param_loss = self.param_loss_fn_bylabel(label=label, values=values, pred=pred[:, :, self.seq_dim:])
 
         ######### Tensorboard logging
-        loss = label_loss + param_loss
+        loss = label_loss + self.alpha * param_loss
 
         self.log(f'{mode}/label_loss', label_loss, batch_size=image.size(0), sync_dist=True)
         self.log(f'{mode}/param_loss', param_loss, batch_size=image.size(0), sync_dist=True)
@@ -469,7 +478,6 @@ class MainDataModule(pl.LightningDataModule):
         val_plots = [f"{plot:04d}" for plot in range(train_end, val_end)]
         test_plots = [f"{plot:04d}" for plot in range(val_end, test_end)]
 
-
         self.train_dataset = self.load_or_create_dataset(
             self.dataset_dir, "train_dataset", train_plots, growth_stages,
             self.train_transform, self.load_depth, self.process_leaf, self.side_view,
@@ -487,7 +495,6 @@ class MainDataModule(pl.LightningDataModule):
         )
 
         
-
     def collate_fn(self, batch):
         images, plant_info, vectors, lengths = zip(*batch)
         max_length = max(lengths)

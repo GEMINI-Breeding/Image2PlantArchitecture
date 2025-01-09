@@ -12,6 +12,10 @@ script_file_path = os.path.abspath(__file__)
 sys.path.append(os.path.dirname(os.path.dirname(script_file_path)))
 from models.plightning import MainModule, MainDataModule
 from plant_tokenizer import EOS_token, N_PARAMS
+import joblib
+
+torch.autograd.set_detect_anomaly(True)
+
 
 if __name__ == "__main__":
     # Tensor Cores 활용을 위한 설정
@@ -22,18 +26,19 @@ if __name__ == "__main__":
     pl.seed_everything(42)
 
     # Define dataset to solve
-    #dataset_dir = "data/Sideview_Dec04_2024"
     #dataset_dir = "data/generated_Dec10_2024"
-    dataset_dir = "data/2000_Plots_20241210"
+    #dataset_dir = "data/2000_Plots_20241210"
+    dataset_dir = "data/Sideview_Dec23_2024"
     datamodule = MainDataModule(dataset_dir,
-                                image_size=224,
+                                image_size=448,
                                 load_depth=False,
-                                #train_batch_size=1, num_workers=0, process_leaf=False, preload=False) # for debugging
+                                #train_batch_size=8, num_workers=0, process_leaf=False, preload=False) # for debugging
                                 #train_batch_size=100, num_workers=8, process_leaf=False, preload=False) # for a100 gpu
-                                train_batch_size=16, num_workers=8, process_leaf=True, preload=False, side_view=False) # for gpum
+                                train_batch_size=16, num_workers=8, process_leaf=True, preload=False, side_view=True) # for gpum
+    
     if 1:
         module = MainModule(
-            num_layers=12,
+            num_layers=6,
             num_heads=8,
             seq_dim=EOS_token+1,
             seq_embedding_dim=768//2,
@@ -53,7 +58,7 @@ if __name__ == "__main__":
     # Generate today's date string in YYYYMMDD format
     today_date_str = datetime.now().strftime('%Y%m%d')
     tb_logger = TensorBoardLogger(
-        name=f'{today_date_str}_ReducedParamDim',
+        name=f'{today_date_str}_SideView_448_MinMaxScaler',
         save_dir='./log'
     )
 
@@ -63,7 +68,7 @@ if __name__ == "__main__":
         dirpath=os.path.join(tb_logger.log_dir, 'checkpoints'),
         filename="best_{epoch:02d}",
         save_top_k=1,  # Save only the best model
-        save_last=False,
+        save_last=True,
         save_weights_only=True  # 가중치만 저장
     )
 

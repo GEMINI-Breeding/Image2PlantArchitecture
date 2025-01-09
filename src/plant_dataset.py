@@ -18,9 +18,61 @@ from string_to_xml_to_vec import string2vec, vec2string, vec2xml, pretty_print_x
 import xml.etree.ElementTree as ET
 from plant_tokenizer import vec2token as vec2token
 import re
+import joblib
 
 # Enable loading of truncated images
 ImageFile.LOAD_TRUNCATED_IMAGES = True
+
+
+def load_sideview_images(images_dir, image_file_name, img_size, process_leaf):
+
+    # Load side view images and combine them into 2x2
+    # angles = [0, 90, 180, 270]
+    angles = [-1, 0, 120, 240]
+    image_name = image_file_name.split("/")[-1].split(".")[0]
+    # Make a empty image
+    total_img = np.zeros((img_size, img_size, 3), dtype=np.uint8)
+    total_plant_info = []
+    for i, angle in enumerate(angles):
+        try:
+            if angle == -1:
+                image = Image.open(os.path.join(images_dir, f"{image_name}.jpeg"))
+            else:
+                image = Image.open(os.path.join(images_dir, f"{image_name}_{angle}.jpeg"))
+        except:
+            print(f"Error loading {image_file_name}")
+            return None, None, None
+        leaf_area, plant_width, plant_height, processed_img, (x,y,w,h) = process_leaf_image(np.array(image), 
+                                                                            normalize=True, debug=False, sqaure_crop=True)
+        plant_info = [leaf_area, plant_width, plant_height]
+        if process_leaf:
+            # Preprocess image
+            leaf_img = cv2.resize(processed_img, (img_size//2, img_size//2))
+        else:
+            leaf_img = cv2.resize(np.array(image), (img_size//2, img_size//2))
+
+        # Add to the empty image
+        if i == 0:
+            total_img[:img_size//2, :img_size//2] = leaf_img
+        elif i == 1:
+            total_img[:img_size//2, img_size//2:] = leaf_img
+        elif i == 2:
+            total_img[img_size//2:, :img_size//2] = leaf_img
+        elif i == 3:
+            total_img[img_size//2:, img_size//2:] = leaf_img
+        
+        total_plant_info.append(plant_info)
+        # Debug
+        # cv2.imshow("Total", total_img)
+        # cv2.waitKey(0)
+        
+    leaf_img = total_img
+    # Average the plant info
+    plant_info = np.mean(total_plant_info, axis=0)
+
+    return leaf_img, plant_info
+
+
 
 class PlantDataset(Dataset):
     def __init__(self, root_dir, plot=None, stages=None, transform=None, 
@@ -30,21 +82,22 @@ class PlantDataset(Dataset):
         self.root_dir = root_dir
         self.load_depth = load_depth          
         # images_path
-        self.images_path = os.path.join(root_dir, 'images')
-        self.depth_path = os.path.join(root_dir, 'depth')
+        self.current_script_dir = os.path.dirname(os.path.abspath(__file__))
+        self.image_dir = os.path.join(root_dir, 'images')
+        self.depth_image_dir = os.path.join(root_dir, 'depth')
         # plant_string_path
-        self.plant_xml_path = os.path.join(root_dir, 'xml')
+        self.plant_xml_dir = os.path.join(root_dir, 'xml')
         self.preload = preload
         # Get list of plant strings
-        self.plant_xml_files = os.listdir(self.plant_xml_path)
+        self.plant_xml_files = os.listdir(self.plant_xml_dir)
         # Get list of images
-        self.image_paths = [x.replace('.xml', '.jpeg') for x in self.plant_xml_files]
+        self.image_files = [x.replace('.xml', '.jpeg') for x in self.plant_xml_files]
         if load_depth:
-            self.depth_images = os.listdir(self.depth_path)
+            self.depth_images = os.listdir(self.depth_image_dir)
             self.depth_images.sort()
 
         # Sort the lists
-        self.image_paths.sort()
+        self.image_files.sort()
         self.plant_xml_files.sort()
 
         self.img_size = image_size
@@ -52,13 +105,13 @@ class PlantDataset(Dataset):
         # Regular expression to extract plot and day numbers
         pattern = r"cowpea_(\d+)_day_(\d+)"
         if stages:
-            self.image_paths = [x for x in self.image_paths if re.match(pattern, x).group(2) in stages]
+            self.image_files = [x for x in self.image_files if re.match(pattern, x).group(2) in stages]
             self.plant_xml_files = [x for x in self.plant_xml_files if re.match(pattern, x).group(2) in stages]
             if self.load_depth:
                 self.depth_images = [x for x in self.depth_images if re.match(pattern, x).group(2) in stages]
 
         if plot:
-            self.image_paths = [x for x in self.image_paths if re.match(pattern, x).group(1) in plot]
+            self.image_files = [x for x in self.image_files if re.match(pattern, x).group(1) in plot]
             self.plant_xml_files = [x for x in self.plant_xml_files if re.match(pattern, x).group(1) in plot]
             if self.load_depth:
                 self.depth_images = [x for x in self.depth_images if re.match(pattern, x).group(1) in plot]
@@ -69,15 +122,17 @@ class PlantDataset(Dataset):
         self.side_view = side_view
         self.plant_string_raw = ""
         
-        print(f"Total {len(self.image_paths)} images and plant strings loaded")
+        print(f"Total {len(self.image_files)} images and plant strings loaded")
         
+        # self.param_scaler = joblib.load(os.path.join(self.current_script_dir,'scaler.pkl'))
+
         if self.preload:
             # Pre-load data
             self.images = []
             self.vec = []
             self.plant_infos = []
             print("Pre-loading data")
-            for i in tqdm(range(len(self.image_paths))):
+            for i in tqdm(range(len(self.image_files))):
                 image, plant_info, vec = self.getitem(i)
                 if image is not None:
                     self.images.append(image)
@@ -85,63 +140,20 @@ class PlantDataset(Dataset):
                     self.plant_infos.append(plant_info)
 
     def __len__(self):
-        return len(self.image_paths)
+        return len(self.image_files)
     
     def getitem(self, idx):
         # Load image
         if self.side_view:
-            # Load side view images and combine them into 2x2
-            # angles = [0, 90, 180, 270]
-            angles = [-1, 0, 120, 240]
-            image_name = self.image_paths[idx].split(".")[0]
-            # Make a empty image
-            total_img = np.zeros((self.img_size, self.img_size, 3), dtype=np.uint8)
-            total_plant_info = []
-            for i, angle in enumerate(angles):
-                try:
-                    if angle == -1:
-                        image = Image.open(os.path.join(self.images_path, f"{image_name}.jpeg"))
-                    else:
-                        image = Image.open(os.path.join(self.images_path, f"{image_name}_{angle}.jpeg"))
-                except:
-                    print(f"Error loading {self.image_paths[idx]}")
-                    return None, None, None
-                leaf_area, plant_width, plant_height, processed_img, (x,y,w,h) = process_leaf_image(np.array(image), 
-                                                                                    normalize=True, debug=False, sqaure_crop=True)
-                plant_info = [leaf_area, plant_width, plant_height]
-                if self.process_leaf:
-                    # Preprocess image
-                    leaf_img = cv2.resize(processed_img, (self.img_size//2, self.img_size//2))
-                else:
-                    leaf_img = cv2.resize(np.array(image), (self.img_size//2, self.img_size//2))
-
-                # Add to the empty image
-                if i == 0:
-                    total_img[:self.img_size//2, :self.img_size//2] = leaf_img
-                elif i == 1:
-                    total_img[:self.img_size//2, self.img_size//2:] = leaf_img
-                elif i == 2:
-                    total_img[self.img_size//2:, :self.img_size//2] = leaf_img
-                elif i == 3:
-                    total_img[self.img_size//2:, self.img_size//2:] = leaf_img
-                
-                total_plant_info.append(plant_info)
-                # Debug
-                # cv2.imshow("Total", total_img)
-                # cv2.waitKey(0)
-                
-            leaf_img = total_img
-            # Average the plant info
-            plant_info = np.mean(total_plant_info, axis=0)
-        
+            leaf_img, plant_info = load_sideview_images(self.image_dir, self.image_files[idx], self.img_size, process_leaf=self.process_leaf)
                     
         else:
             try:
-                image = Image.open(os.path.join(self.images_path, self.image_paths[idx]))
+                image = Image.open(os.path.join(self.image_dir, self.image_files[idx]))
                 # Convert to numpy array
                 image = np.array(image)
             except:
-                    print(f"Error loading {self.image_paths[idx]}")
+                    print(f"Error loading {self.image_files[idx]}")
                     return None, None, None
             
             leaf_area, plant_width, plant_height, processed_img, (x,y,w,h) = process_leaf_image(np.array(image), 
@@ -155,7 +167,7 @@ class PlantDataset(Dataset):
 
             if self.load_depth:
                 # Convert depth to grayscale
-                depth = Image.open(os.path.join(self.depth_path, self.depth_images[idx]))
+                depth = Image.open(os.path.join(self.depth_image_dir, self.depth_images[idx]))
                 depth = np.array(depth)
                 # Convert to grayscale if not already
                 if len(depth.shape) > 2:
@@ -179,7 +191,7 @@ class PlantDataset(Dataset):
 
         # Load XML file
         # Load and parse the XML file
-        tree = ET.parse(os.path.join(self.plant_xml_path, self.plant_xml_files[idx]))
+        tree = ET.parse(os.path.join(self.plant_xml_dir, self.plant_xml_files[idx]))
 
         # Get the root element
         root = tree.getroot()
@@ -213,6 +225,10 @@ class PlantDataset(Dataset):
         if vec:
             # Tokenize the plant structure
             out = vec2token(vec)
+
+            if 0:
+                # Scale the token
+                out[:,1:] = self.param_scaler.transform(out[:,1:])
                 
             # Add SOS and EOS tokens
             out = np.concatenate(([SOS_vec_padded], out, [EOS_vec_padded]))
