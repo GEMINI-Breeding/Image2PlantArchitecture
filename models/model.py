@@ -17,140 +17,140 @@ import numpy as np
 from collections import OrderedDict
 from plant_tokenizer import SOS_token, PAD_token, EOS_token
 
-def ensure_positive(output_seq, x):
-    """
-    Ensures that specific elements in tensor `x` are positive based on the predicted labels.
-
-    Args:
-        output_seq (Tensor): Logits with shape (seq_len, batch_size, num_classes).
-        x (Tensor): Tensor to be modified, with shape (seq_len, batch_size, dim).
-
-    Returns:
-        Tensor: Modified tensor `x` with certain elements exponentiated to ensure positivity.
-    """
-    softplus = nn.Softplus()
-
-    # Get the predicted labels by taking the index with the highest logit value
-    predicted_label = output_seq.argmax(dim=-1)  # Shape: (seq_len, batch_size)
-
-    # Define special tokens
-    special_tokens = torch.tensor([SOS_token, PAD_token, EOS_token], device=predicted_label.device)
-
-    # Create a mask for non-special tokens
-    is_special = (predicted_label.unsqueeze(-1) == special_tokens).any(dim=-1)  # Shape: (seq_len, batch_size)
-    non_special_mask = ~is_special
-
-    # Compute organ_type from predicted labels
-    organ_type = predicted_label % 6  # Shape: (seq_len, batch_size)
-
-    # Create masks for different organ types
-    shoot_mask = (organ_type == 0) & non_special_mask
-    internode_mask = (organ_type == 1)  & non_special_mask
-    petiole_mask = (organ_type == 2) & non_special_mask
-    leaf_mask = ((organ_type >= 3) & (organ_type <= 5)) & non_special_mask
-
-    # Flatten the tensors to 2D for efficient indexing
-    seq_len, batch_size, dim = x.shape
-
-    x_flat = x.reshape(-1, dim)  # Use reshape instead of view
-
-    # Flatten masks, Shape: (seq_len * batch_size)
-    shoot_mask = shoot_mask.flatten()
-    internode_mask = internode_mask.flatten()
-    petiole_mask = petiole_mask.flatten()
-    leaf_mask_flat = leaf_mask.flatten()
-    non_special_mask = non_special_mask.flatten()
-    is_special = is_special.flatten()
-    
-    orig_type = x_flat[internode_mask, 0].dtype
-    if is_special.any():
-        # Shoot params
-        x_flat[is_special, 0:5] = 0 
-        
-        # Internode params
-        x_flat[is_special, 5:9] = 0
-
-        # Petiole params
-        x_flat[is_special, 9:14] = 0
-
-        # Leaf params
-        x_flat[is_special, 14:18] = 0
-
-    # Apply exponential function to specific features based on organ type
-    if shoot_mask.any():
-        x_flat[shoot_mask, 3] = softplus(x_flat[shoot_mask, 3]).to(dtype=orig_type) # plant_age
-
-        # Internode params
-        x_flat[shoot_mask, 5:9] = 0
-
-        # Petiole params
-        x_flat[shoot_mask, 9:14] = 0
-
-        # Leaf params
-        x_flat[shoot_mask, 14:18] = 0
-        pass
-
-    if internode_mask.any():
-        # Shoot params
-        x_flat[internode_mask, 0:5] = 0 
-        
-        # Internode params
-        x_flat[internode_mask, 5] = softplus(x_flat[internode_mask, 5]).to(dtype=orig_type)
-        x_flat[internode_mask, 6] = softplus(x_flat[internode_mask, 6]).to(dtype=orig_type)
-
-        # Petiole params
-        x_flat[internode_mask, 9:14] = 0
-
-        # Leaf params
-        x_flat[internode_mask, 14:18] = 0
-
-    
-    if petiole_mask.any():
-
-        # Shoot params
-        x_flat[petiole_mask, 0:5] = 0 
-        
-        # Internode params
-        x_flat[petiole_mask, 5:9] = 0
-
-        # Petiole params
-        x_flat[petiole_mask, 0] = softplus(x_flat[petiole_mask, 0]).to(dtype=orig_type)
-        x_flat[petiole_mask, 1] = softplus(x_flat[petiole_mask, 1]).to(dtype=orig_type)
-
-        # Leaf params
-        x_flat[petiole_mask, 14:18] = 0
-
-    if leaf_mask_flat.any():
-        # Shoot params
-        x_flat[leaf_mask_flat, 0:5] = 0 
-        
-        # Internode params
-        x_flat[leaf_mask_flat, 5:9] = 0
-
-        # Petiole params
-        x_flat[leaf_mask_flat, 9:14] = 0
-
-        # Leaf params
-        x_flat[leaf_mask_flat, 0] = softplus(x_flat[leaf_mask_flat, 0]).to(dtype=orig_type)
-
-
-    # Reshape x back to its original shape
-    x = x_flat.reshape(seq_len, batch_size, dim)
-
-    return x
-
 # def ensure_positive(output_seq, x):
+#     """
+#     Ensures that specific elements in tensor `x` are positive based on the predicted labels.
+
+#     Args:
+#         output_seq (Tensor): Logits with shape (seq_len, batch_size, num_classes).
+#         x (Tensor): Tensor to be modified, with shape (seq_len, batch_size, dim).
+
+#     Returns:
+#         Tensor: Modified tensor `x` with certain elements exponentiated to ensure positivity.
+#     """
 #     softplus = nn.Softplus()
 
-#     # Apply positive forcing
-#     x[:,:,3]  = softplus(x[:,:,3]) # plant_age
-#     x[:,:,5]  = softplus(x[:,:,5]) # internode_length
-#     x[:,:,6]  = softplus(x[:,:,6]) # internode_radius
-#     x[:,:,9]  = softplus(x[:,:,9]) # petiole_length
-#     x[:,:,10] = softplus(x[:,:,10]) # petiole_radius
-#     x[:,:,13] = softplus(x[:,:,13]) # leaflet_scale
+#     # Get the predicted labels by taking the index with the highest logit value
+#     predicted_label = output_seq.argmax(dim=-1)  # Shape: (seq_len, batch_size)
+
+#     # Define special tokens
+#     special_tokens = torch.tensor([SOS_token, PAD_token, EOS_token], device=predicted_label.device)
+
+#     # Create a mask for non-special tokens
+#     is_special = (predicted_label.unsqueeze(-1) == special_tokens).any(dim=-1)  # Shape: (seq_len, batch_size)
+#     non_special_mask = ~is_special
+
+#     # Compute organ_type from predicted labels
+#     organ_type = predicted_label % 6  # Shape: (seq_len, batch_size)
+
+#     # Create masks for different organ types
+#     shoot_mask = (organ_type == 0) & non_special_mask
+#     internode_mask = (organ_type == 1)  & non_special_mask
+#     petiole_mask = (organ_type == 2) & non_special_mask
+#     leaf_mask = ((organ_type >= 3) & (organ_type <= 5)) & non_special_mask
+
+#     # Flatten the tensors to 2D for efficient indexing
+#     seq_len, batch_size, dim = x.shape
+
+#     x_flat = x.reshape(-1, dim)  # Use reshape instead of view
+
+#     # Flatten masks, Shape: (seq_len * batch_size)
+#     shoot_mask = shoot_mask.flatten()
+#     internode_mask = internode_mask.flatten()
+#     petiole_mask = petiole_mask.flatten()
+#     leaf_mask_flat = leaf_mask.flatten()
+#     non_special_mask = non_special_mask.flatten()
+#     is_special = is_special.flatten()
+    
+#     orig_type = x_flat[internode_mask, 0].dtype
+#     if is_special.any():
+#         # Shoot params
+#         x_flat[is_special, 0:5] = 0 
+        
+#         # Internode params
+#         x_flat[is_special, 5:9] = 0
+
+#         # Petiole params
+#         x_flat[is_special, 9:14] = 0
+
+#         # Leaf params
+#         x_flat[is_special, 14:18] = 0
+
+#     # Apply exponential function to specific features based on organ type
+#     if shoot_mask.any():
+#         x_flat[shoot_mask, 3] = softplus(x_flat[shoot_mask, 3]).to(dtype=orig_type) # plant_age
+
+#         # Internode params
+#         x_flat[shoot_mask, 5:9] = 0
+
+#         # Petiole params
+#         x_flat[shoot_mask, 9:14] = 0
+
+#         # Leaf params
+#         x_flat[shoot_mask, 14:18] = 0
+#         pass
+
+#     if internode_mask.any():
+#         # Shoot params
+#         x_flat[internode_mask, 0:5] = 0 
+        
+#         # Internode params
+#         x_flat[internode_mask, 5] = softplus(x_flat[internode_mask, 5]).to(dtype=orig_type)
+#         x_flat[internode_mask, 6] = softplus(x_flat[internode_mask, 6]).to(dtype=orig_type)
+
+#         # Petiole params
+#         x_flat[internode_mask, 9:14] = 0
+
+#         # Leaf params
+#         x_flat[internode_mask, 14:18] = 0
+
+    
+#     if petiole_mask.any():
+
+#         # Shoot params
+#         x_flat[petiole_mask, 0:5] = 0 
+        
+#         # Internode params
+#         x_flat[petiole_mask, 5:9] = 0
+
+#         # Petiole params
+#         x_flat[petiole_mask, 0] = softplus(x_flat[petiole_mask, 0]).to(dtype=orig_type)
+#         x_flat[petiole_mask, 1] = softplus(x_flat[petiole_mask, 1]).to(dtype=orig_type)
+
+#         # Leaf params
+#         x_flat[petiole_mask, 14:18] = 0
+
+#     if leaf_mask_flat.any():
+#         # Shoot params
+#         x_flat[leaf_mask_flat, 0:5] = 0 
+        
+#         # Internode params
+#         x_flat[leaf_mask_flat, 5:9] = 0
+
+#         # Petiole params
+#         x_flat[leaf_mask_flat, 9:14] = 0
+
+#         # Leaf params
+#         x_flat[leaf_mask_flat, 0] = softplus(x_flat[leaf_mask_flat, 0]).to(dtype=orig_type)
+
+
+#     # Reshape x back to its original shape
+#     x = x_flat.reshape(seq_len, batch_size, dim)
 
 #     return x
+
+def ensure_positive(output_seq, x):
+    softplus = nn.Softplus()
+
+    # Apply positive forcing
+    x[:,:,3]  = softplus(x[:,:,3]) # plant_age
+    x[:,:,5]  = softplus(x[:,:,5]) # internode_length
+    x[:,:,6]  = softplus(x[:,:,6]) # internode_radius
+    x[:,:,9]  = softplus(x[:,:,9]) # petiole_length
+    x[:,:,10] = softplus(x[:,:,10]) # petiole_radius
+    x[:,:,13] = softplus(x[:,:,13]) # leaflet_scale
+
+    return x
 
 import torch
 
@@ -409,7 +409,7 @@ class ViT_FeatureExtractor(nn.Module):
             # Replace the first layer to accept 4 channel
             self.model.embeddings.patch_embeddings.projection = nn.Conv2d(4, 768, kernel_size=(16, 16), stride=(16, 16))
             self.model.embeddings.patch_embeddings.num_channels = 4
-        elif 0:
+        elif 1:
             self.model = AutoModel.from_pretrained('facebook/dinov2-base') # Use DINOv2, it will give 257x768 feature
             self.img_proc = AutoImageProcessor.from_pretrained('facebook/dinov2-base')
             if self.use_depth:
@@ -648,11 +648,8 @@ class TransformerDecoderModel(nn.Module):
         self.seq_embedding_dim = seq_embedding_dim
         self.param_embedding_dim = param_embedding_dim
 
-        self.seq_embedding = nn.Embedding(num_tokens, self.dim_model)
-        if 0:
-            self.param_embedding = nn.Linear(num_params, self.dim_model)
-        else:
-            self.param_embedding = MLP([num_params, self.dim_model, self.dim_model], last_activation=False)
+        self.seq_embedding = nn.Embedding(num_tokens, self.seq_embedding_dim)
+        self.param_embedding = MLP([num_params, self.param_embedding_dim], batch_norm=False, last_activation=False)
   
         self.activation = nn.ReLU()
         self.self_attn_weights = None
@@ -677,11 +674,16 @@ class TransformerDecoderModel(nn.Module):
                                             num_decoder_layers=num_layers,
                                             dropout=0.1,
                                         )
-
-        self.seq_decode_linear = MLP([self.dim_model, 2048, num_tokens], last_activation=False)
-        self.param_decode_linear = MLP([self.dim_model, 2048, num_params], last_activation=False)
+        if 0:
+            self.seq_decode_linear = MLP([self.seq_embedding_dim, num_tokens], batch_norm=False, last_activation=False)
+            self.param_decode_linear = MLP([self.param_embedding_dim, num_params], batch_norm=False, last_activation=False)
+        else:
+            self.seq_decode_linear = nn.Linear(self.seq_embedding_dim, num_tokens)
+            self.param_decode_linear = nn.Linear(self.param_embedding_dim, num_params)
 
         self.layer_norm = nn.LayerNorm(self.dim_model)
+        self.seq_layer_norm = nn.LayerNorm(self.seq_embedding_dim)
+        self.param_layer_norm = nn.LayerNorm(self.param_embedding_dim)
         self.scaler = MinMaxScalerTorch()
     
     def forward(self, features, tgt_seq):
@@ -713,8 +715,7 @@ class TransformerDecoderModel(nn.Module):
         depth_organ_seq = self.seq_embedding(depth_organ_seq) * math.sqrt(self.dim_model)
         params = self.param_embedding(params) * math.sqrt(self.dim_model)
 
-        tgt = depth_organ_seq + params
-        tgt = self.layer_norm(tgt)
+        tgt = torch.cat((depth_organ_seq, params), dim=2)
 
         # Make sequence length the first dimension 
         # PositionalEncoding은 시퀀스 차원에 대해 적용되므로, Positional Encoding을 적용하기 전에 반드시 시퀀스 차원이 첫 번째가 되어야 합니다.
@@ -729,13 +730,14 @@ class TransformerDecoderModel(nn.Module):
         else:
             decoded = self.transformer(features, tgt, tgt_mask=tgt_mask, tgt_key_padding_mask=tgt_key_padding_mask, tgt_is_causal=True)
 
-        output_seq = self.seq_decode_linear(decoded)
-        output_params = self.param_decode_linear(decoded)
-        # Unscale to apply positive constraints
-        output_params = self.scaler.inverse_transform(output_params)
-        output_params = ensure_positive(output_seq, output_params)
-        # Scale back
-        output_params = self.scaler.transform(output_params)
+        output_seq = self.seq_decode_linear(decoded[:,:,:self.seq_embedding_dim])
+        output_params = self.param_decode_linear(decoded[:,:,self.seq_embedding_dim:])
+        if 0:
+            # Unscale to apply positive constraints
+            output_params = self.scaler.inverse_transform(output_params)
+            #output_params = ensure_positive(output_seq, output_params)
+            # Scale back
+            output_params = self.scaler.transform(output_params)
         # Cat the output_seq and output_params
         output_seq = torch.cat((output_seq, output_params), dim=2)
         return output_seq

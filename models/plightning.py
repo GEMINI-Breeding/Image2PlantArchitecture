@@ -225,7 +225,7 @@ class MainModule(pl.LightningModule):
             y_input = torch.cat((y_input, next_item), dim=1)
 
             # Vector cleaning
-            if 0:
+            if 1:
                 # Convert y_input to vec to clean erratic params. It will remove SOS Token
                 vec = token2vec(y_input.squeeze(0).tolist())
 
