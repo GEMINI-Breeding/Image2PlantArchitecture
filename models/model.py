@@ -15,7 +15,12 @@ import torchvision.transforms as transforms
 import numpy as np
 
 from collections import OrderedDict
-from plant_tokenizer import SOS_token, PAD_token, EOS_token
+
+import os, sys
+script_file_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(os.path.join(script_file_dir,"../"))
+
+from src.plant_tokenizer import SOS_token, PAD_token, EOS_token
 
 # def ensure_positive(output_seq, x):
 #     """
@@ -444,13 +449,13 @@ class ViT_FeatureExtractor(nn.Module):
 
 
     def forward(self, x, y):
-        if 0:
+        if self.use_depth:
+            x = self.normalize(x)
+            x = self.model(x).last_hidden_state
+        else:
             # Use Dinov2 image processor
             x = self.img_proc(images=x, return_tensors="pt").to(x.device)
             x = self.model(**x).last_hidden_state
-        else:
-            x = self.normalize(x)
-            x = self.model(x).last_hidden_state
         x = self.projection(x)
         y = self.plant_info_embedding(y).unsqueeze(1)
         x = torch.cat((x, y), dim=1)

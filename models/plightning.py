@@ -12,14 +12,16 @@ from pytorch_lightning.callbacks import BatchSizeFinder, LearningRateFinder
 from transformers import AutoImageProcessor, AutoModelForDepthEstimation
 import cv2
 from concurrent.futures import ThreadPoolExecutor
-# 경로 설정
-script_file_dir = os.path.dirname(os.path.abspath(__file__))
-sys.path.append(script_file_dir)
+
+# # 경로 설정
+# script_file_dir = os.path.dirname(os.path.abspath(__file__))
+# sys.path.append(script_file_dir)
 
 # 모듈 임포트
 from models.model import TransformerDecoderModel, RegressionModel, ViT_FeatureExtractor, CNN_FeatureExtractor, MultiModalModel
 from models.model import RegressionModel_Transformer, PositionalEncoding, VAE, MLP, SeqEmbeddingModel
 from models.model import create_organ_mask, get_tgt_mask, create_pad_mask, text_global_pool
+from models.model import PlantArchitectureTransformer
 from src.plant_tokenizer import SOS_token, EOS_token, PAD_token, EOS_vec_padded, SOS_vec_padded
 from src.plant_tokenizer import generate_noise_plant_tokens
 from src.plant_dataset import PlantDataset
@@ -27,11 +29,10 @@ from src.plantstring2model import plantstring2model
 from src.plant_tokenizer import token2vec, vec2token
 from src.string_to_xml_to_vec import vec2string
 from src.image_process import process_leaf_image
-from plant_architecture_utils import coordinates_to_angle
+from src.plant_architecture_utils import coordinates_to_angle
 import pickle
 import copy
 
-from models.model import PlantArchitectureTransformer
 
 # from open_clip.transformer import text_global_pool
 
@@ -181,7 +182,7 @@ class MainModule(pl.LightningModule):
         outputs = self.sequence_decoder(features, tgt)
         outputs = outputs.permute(1, 0, 2)
         return outputs
-    
+
     def generate(self, image, plant_info, stage='val'):
         device = image.device
         SOS_tensor = torch.tensor(SOS_vec_padded, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
@@ -237,7 +238,114 @@ class MainModule(pl.LightningModule):
 
                 y_input = y_input.to(device)
 
-        return y_input.squeeze(0)
+        return y_input.squeeze(0)                    
+    # def generate(self, image, plant_info, stage='val', beam_size=3, no_repeat_ngram_size=5):
+    #     device = image.device
+    #     SOS_tensor = torch.tensor(SOS_vec_padded, dtype=torch.float32).unsqueeze(0).unsqueeze(0).to(device)
+    #     y_input = SOS_tensor
+
+    #     if self.use_depth:
+    #         image = self.add_depth_to_image(image)
+
+    #     feature = self.image_encoder(image, plant_info)
+
+    #     # Initialize beams
+    #     beams = [(y_input, 0, [])]  # (sequence, score, label_sequence)
+
+    #     for _ in range(self.max_len):
+    #         new_beams = []
+    #         for y_input, score, label_seq in beams:
+    #             tgt_mask = get_tgt_mask(y_input.size(1))
+    #             tgt_padding_mask = create_pad_mask(y_input, PAD_token)
+
+    #             pred = self._decode_sequence(feature, y_input, stage)
+    #             if pred is None:
+    #                 continue
+
+    #             label_p = pred[:, :, :self.seq_dim]
+    #             params = pred[:, :, self.seq_dim:]
+
+    #             # Unscale params
+    #             params = self.sequence_decoder.scaler.inverse_transform(params)
+
+    #             topk_probs, topk_indices = label_p[:, -1, :].topk(beam_size, dim=-1)
+    #             for i in range(beam_size):
+    #                 label = topk_indices[0, i].item()
+    #                 prob = topk_probs[0, i].item()
+
+    #                 # Stop if model predicts end of sentence
+    #                 if label == EOS_token or label == PAD_token:
+    #                     new_beams.append((y_input, score + prob, label_seq))
+    #                     continue
+
+    #                 # Make next tensor using label and params
+    #                 next_item = self._create_next_item(label, params, device)
+
+    #                 # Concatenate previous input with predicted best word
+    #                 new_y_input = torch.cat((y_input, next_item), dim=1)
+
+    #                 # Apply no_repeat_ngram_size constraint
+    #                 new_label_seq = label_seq + [label]
+    #                 if self._has_repeated_ngram(new_label_seq, no_repeat_ngram_size):
+    #                     continue
+
+    #                 # Vector cleaning
+    #                 new_y_input = self._clean_vector(new_y_input, SOS_tensor, device)
+
+    #                 new_beams.append((new_y_input, score + prob, new_label_seq))
+
+    #         # Select top beams
+    #         if not new_beams:
+    #             break
+    #         beams = sorted(new_beams, key=lambda x: x[1], reverse=True)[:beam_size]
+
+    #         # Stop if all beams are finished
+    #         if all(self._is_finished_beam(y_input) for y_input, _, _ in beams):
+    #             break
+
+    #     # Return the best beam
+    #     if not beams:
+    #         return torch.tensor([]).to(device)  # Return an empty tensor if no beams are left
+    #     best_beam = max(beams, key=lambda x: x[1])[0]
+    #     return best_beam.squeeze(0)
+
+    # def _decode_sequence(self, feature, y_input, stage):
+    #     try:
+    #         if stage == 'val':
+    #             with torch.no_grad():
+    #                 return self.sequence_decoder(feature, y_input)
+    #         else:
+    #             return self.sequence_decoder(feature, y_input)
+    #     except Exception as e:
+    #         print(e)
+    #         return None
+
+    # def _create_next_item(self, label, params, device):
+    #     label_tensor = torch.tensor([[label]], dtype=torch.float32, device=device)
+    #     next_item = torch.cat((label_tensor, params[-1]), dim=1).unsqueeze(0)
+    #     return next_item
+
+    # def _has_repeated_ngram(self, label_seq, n):
+    #     if len(label_seq) < n:
+    #         return False
+    #     ngrams = [tuple(label_seq[i:i+n]) for i in range(len(label_seq) - n + 1)]
+    #     return len(ngrams) != len(set(ngrams))
+
+    # def _is_finished_beam(self, y_input):
+    #     last_label = y_input[0, -1, 0].item()
+    #     return last_label == EOS_token or last_label == PAD_token
+
+    # def _clean_vector(self, y_input, SOS_tensor, device):
+    #     # Convert y_input to vec to clean erratic params. It will remove SOS Token
+    #     vec = token2vec(y_input.squeeze(0).tolist())
+
+    #     # Convert back to token
+    #     y_input = torch.tensor(vec2token(vec), dtype=torch.float).unsqueeze(0)
+
+    #     # Cat SOS_tensor
+    #     y_input = torch.cat((SOS_tensor, y_input), dim=1)
+
+    #     return y_input.to(device)
     
     def label_loss_fn(self, pred, label, ignore_index=None):
 
@@ -532,3 +640,169 @@ class MainDataModule(pl.LightningDataModule):
             self.test_dataset, batch_size=self.val_batch_size, shuffle=True,
             collate_fn=self.collate_fn, num_workers=self.num_workers, pin_memory=self.pin_memory
         )
+    
+
+import unittest
+import torch
+from models.plightning import MainModule
+from src.plant_tokenizer import SOS_vec_padded
+
+class TestMainModule(unittest.TestCase):
+    def setUp(self):
+        self.model = MainModule()
+        self.model.eval()  # 모델을 평가 모드로 설정
+        self.image = torch.randn(1, 3, 224, 224)  # 임의의 이미지 텐서
+        self.plant_info = torch.randn(1, 10)  # 임의의 식물 정보 텐서
+
+    def test_generate(self):
+        with torch.no_grad():
+            result = self.model.generate(self.image, self.plant_info)
+            self.assertIsInstance(result, torch.Tensor)
+            self.assertEqual(result.dim(), 2)  # 결과 텐서는 2차원이어야 함
+            self.assertEqual(result.size(0), 1)  # 배치 크기는 1이어야 함
+
+    def test_generate_with_beam_search(self):
+        with torch.no_grad():
+            result = self.model.generate(self.image, self.plant_info, beam_size=5)
+            self.assertIsInstance(result, torch.Tensor)
+            self.assertEqual(result.dim(), 2)  # 결과 텐서는 2차원이어야 함
+            self.assertEqual(result.size(0), 1)  # 배치 크기는 1이어야 함
+
+    def test_generate_with_no_repeat_ngram(self):
+        with torch.no_grad():
+            result = self.model.generate(self.image, self.plant_info, no_repeat_ngram_size=3)
+            self.assertIsInstance(result, torch.Tensor)
+            self.assertEqual(result.dim(), 2)  # 결과 텐서는 2차원이어야 함
+            self.assertEqual(result.size(0), 1)  # 배치 크기는 1이어야 함
+
+if __name__ == '__main__':
+
+    import os
+    import sys
+    import torch
+    import numpy as np
+    import torch.nn as nn
+    import torch.optim as optim
+    import cv2
+    import matplotlib.pyplot as plt
+    import shutil
+    import subprocess
+    from PIL import Image
+    from torchvision import transforms
+    from tqdm.notebook import tqdm
+
+    from models.plightning import MainModule, MainDataModule
+    from models.model import get_tgt_mask
+    from src.plant_tokenizer import SOS_vec_padded, SOS_token, EOS_token, token2vec
+    from src.string_to_xml_to_vec import vec2xml, pretty_print_xml, recursive_to_linked
+    from src.plant_dataset import load_sideview_images
+    from src.image_process import process_leaf_image
+
+    def re_render_xml(output_path, filename, program_path, rotation=True):
+        image_name = filename.split("/")[-1].split(".")[0]
+        os.environ["DISPLAY"] = ":12.0"
+        command = f"cd {program_path} && ./main -h 1.0 -o {output_path} -name {image_name} -tile none -f {os.path.join(output_path, filename)}"
+        if rotation:
+            command += " -r"
+        result = subprocess.run(command, shell=True, capture_output=True, text=True)
+        print(result.stdout)
+        print(result.stderr)
+        return result
+
+    def process_and_display_images(model, dataloader, n_figures, temp_folder, program_path):
+        fig, axes = plt.subplots(3, n_figures, figsize=(20, 8))
+        image_size = model.image_size
+        device = model.device
+
+        for idx, (image, plant_info, out, lengths) in enumerate(dataloader):
+            if idx >= n_figures:
+                break
+
+            if image.dim() == 3:
+                image = image.unsqueeze(0)
+
+            image = image.to(device)
+            plant_info = plant_info.to(device)
+            out = torch.tensor(out).to(device)
+            ground_truth = out.squeeze(0).cpu().numpy()
+
+            plant_vec = token2vec(ground_truth)
+            plant_xml = vec2xml(plant_vec, debug=True)
+            plant_xml_file_name = f"{temp_folder}/plant_{idx}_gt.xml"
+            plant_xml_str = pretty_print_xml(plant_xml)
+            with open(plant_xml_file_name, "w") as f:
+                f.write(plant_xml_str)
+            plant_xml = recursive_to_linked(plant_xml)
+            plant_xml_str = pretty_print_xml(plant_xml)
+            with open(plant_xml_file_name, "w") as f:
+                f.write(plant_xml_str)
+
+            with torch.no_grad():
+                result = model.generate(image, plant_info, no_repeat_ngram_size=5)
+                result = result.cpu().numpy()
+
+            plant_vec = token2vec(result)
+            plant_xml = vec2xml(plant_vec, debug=True)
+            plant_xml_file_name = f"{temp_folder}/plant_{idx}.xml"
+            plant_xml_str = pretty_print_xml(plant_xml)
+            with open(plant_xml_file_name, "w") as f:
+                f.write(plant_xml_str)
+            plant_xml = recursive_to_linked(plant_xml)
+            plant_xml_str = pretty_print_xml(plant_xml)
+            with open(plant_xml_file_name, "w") as f:
+                f.write(plant_xml_str)
+
+            re_render_xml(os.path.abspath(temp_folder), os.path.abspath(plant_xml_file_name), program_path)
+            img, _ = load_sideview_images(temp_folder, plant_xml_file_name.replace("xml", "jpeg"), model.image_size, True)
+
+            image_vis = image[0].permute(1, 2, 0).cpu()
+            image_vis = cv2.normalize(np.array(image_vis), None, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+            row, col = divmod(idx, n_figures)
+            axes[row, col].imshow(image_vis[:, :, 0:3])
+            axes[row, col].set_title(f"Input Image {idx + 1}")
+            axes[row, col].axis('off')
+
+            depth = model.predicted_depth.squeeze().cpu()
+            axes[row+1, col].imshow(depth)
+            axes[row+1, col].set_title(f"Estimated Depth Image {idx + 1}")
+            axes[row+1, col].axis('off')
+
+            axes[row + 2, col].imshow(img)
+            axes[row + 2, col].set_title(f"Output Model {idx + 1}")
+            axes[row + 2, col].axis('off')
+
+        plt.tight_layout()
+        plt.show()
+
+    def main():
+        # Add ../ as a directory to import from
+        sys.path.append('../')
+
+        # Load model
+        model = MainModule.load_from_checkpoint("log/20250110_SideView_224_MinMaxScaler_RGBOnlyFixViT/version_0/checkpoints/best_epoch=29.ckpt")
+        model.eval()
+
+        # Setup data module
+        dataset_dir = "data/Sideview_Dec23_2024"
+        datamodule = MainDataModule(dataset_dir,
+                                    image_size=model.image_size,
+                                    load_depth=False,
+                                    train_batch_size=1, num_workers=0, process_leaf=True, preload=False, side_view=True)
+        growth_stages = [f"{day:02d}" for day in range(0, 2)]
+        datamodule.setup(growth_stages=growth_stages)
+        datamodule.setup()
+        dataloader = datamodule.test_dataloader()
+
+        # Create temp folder
+        temp_folder = "temp"
+        shutil.rmtree(temp_folder, ignore_errors=True)
+        os.makedirs(temp_folder, exist_ok=True)
+
+        # Process and display images
+        process_and_display_images(model, dataloader, n_figures=5, temp_folder=temp_folder, program_path="src/GenerateDataset/build")
+
+    main()
+
+
+    #####
+    unittest.main()

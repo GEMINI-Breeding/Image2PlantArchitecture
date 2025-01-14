@@ -2,8 +2,8 @@ import numpy as np
 import math
 import random
 
-from plant_architecture_utils import euler_to_quaternion, quaternion_to_euler
-from plant_architecture_utils import coordinates_to_angle, angle_to_coordinates
+from src.plant_architecture_utils import euler_to_quaternion, quaternion_to_euler
+from src.plant_architecture_utils import coordinates_to_angle, angle_to_coordinates
 
 import torch
 
