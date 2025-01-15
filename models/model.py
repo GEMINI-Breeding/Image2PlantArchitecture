@@ -20,7 +20,7 @@ import os, sys
 script_file_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.join(script_file_dir,"../"))
 
-from src.plant_tokenizer import SOS_token, PAD_token, EOS_token
+from src.plant_tokenizer import SOS_token, PAD_token, EOS_token, ParamQuantizer, N_PARAMS
 
 # def ensure_positive(output_seq, x):
 #     """
@@ -263,7 +263,7 @@ def create_organ_mask():
         [np.ones(5),  np.ones(4),  np.ones(5),  np.zeros(4)],  # leaf0_mask
         [np.ones(5),  np.ones(4),  np.ones(5),  np.zeros(4)],  # leaf1_mask
         [np.ones(5),  np.ones(4),  np.ones(5),  np.zeros(4)],  # leaf2_mask
-        [np.ones(5),  np.ones(4),  np.ones(5),   np.ones(4)]    # all_mask
+        [np.ones(5),  np.ones(4),  np.ones(5),   np.ones(4)]   # all_mask
     ]
     # Create masks
     masks = torch.stack([torch.tensor(np.concatenate(pattern, axis=0), dtype=torch.bool) for pattern in mask_patterns])
@@ -514,132 +514,6 @@ class PositionalEncoding(nn.Module):
         token_embedding = self.layer_norm(token_embedding)
         token_embedding = self.dropout(token_embedding)
         return token_embedding
-    
-class MultiModalModel(nn.Module):
-    def __init__(self, seq_embedding_dim, param_embedding_dim, 
-                 num_layers, num_heads, num_tokens, num_params, 
-                 max_seq_length=1024, use_depth=True, decoder_only=False, image_size=448, dropout=0.1):
-        super(MultiModalModel, self).__init__()
-
-        self.dim_model = seq_embedding_dim + param_embedding_dim
-        self.dropout = dropout
-
-        self.seq_embedding_dim = seq_embedding_dim
-        self.param_embedding_dim = param_embedding_dim
-
-        self.seq_embedding = nn.Embedding(num_tokens, self.dim_model)
-        self.param_embedding = nn.Linear(num_params, self.dim_model)
-  
-        self.activation = nn.ReLU()
-        self.self_attn_weights = None
-        self.multihead_attn_weights = None
-        # Positional Encoding for Sequence
-        self.Seq_positional_encoding = PositionalEncoding(dim_model=self.dim_model, max_len=max_seq_length, dropout_p=self.dropout)
-        # Positional Encoding for Image features
-        self.ImgFeature_positional_encoding = PositionalEncoding(dim_model=self.dim_model, max_len=(image_size//16)**2 + 1 + 1, dropout_p=self.dropout) 
-        self.learnable_positional_encoding = LearnablePositionalEncoding(dim_model=self.dim_model, max_len=max_seq_length, dropout_p=self.dropout)
-        self.decoder_only = decoder_only
-        if self.decoder_only:
-            # self.transformer_decoder_layer = nn.TransformerDecoderLayer(d_model=self.dim_model, nhead=num_heads)
-            # self.transformer_decoder = nn.TransformerDecoder(self.transformer_decoder_layer, num_layers=num_layers)
-            self.transformer_decoder_layer = TransformerDecoderLayerWithAttention(d_model=self.dim_model, 
-                                                                                  nhead=num_heads, dropout=self.dropout)
-            self.transformer_decoder = TransformerDecoderWithAttention(self.transformer_decoder_layer, num_layers=num_layers)
-        else:
-            self.transformer = nn.Transformer(
-                                            d_model=self.dim_model,
-                                            nhead=num_heads,
-                                            num_encoder_layers=num_layers,
-                                            num_decoder_layers=num_layers,
-                                            dropout=0.1,
-                                        )
-
-        self.seq_decode_linear = MLP([self.dim_model, 2048, num_tokens], last_activation=False)
-        self.param_decode_linear = MLP([self.dim_model, 2048, num_params], last_activation=False)
-
-        self.layer_norm = nn.LayerNorm(self.dim_model)
-
-        self.scaler = MinMaxScalerTorch()
-
-    def forward(self, image_features, tgt_seq):
-        # features = self.cnn(images)
-        # Check dimensions
-        if len(image_features.shape) == 2:
-            image_features = image_features.unsqueeze(1) 
-        else:
-            pass
-        
-        device = tgt_seq.device
-        # Categorical sequence to embedding
-        if len(tgt_seq.shape) == 2:
-            tgt_seq = tgt_seq.unsqueeze(1)
-        depth_organ_seq = tgt_seq[:, :, 0]
-        # Conver to torch.long
-        depth_organ_seq = depth_organ_seq.long()
-        params = tgt_seq[:, :, 1:]
-
-        params = self.scaler.transform(params)
-        
-        depth_organ_seq = self.seq_embedding(depth_organ_seq) * math.sqrt(self.dim_model)
-        params = self.param_embedding(params) * math.sqrt(self.dim_model)
-
-        seq_features = depth_organ_seq + params
-        seq_features = self.layer_norm(seq_features)
-
-        # Make sequence length the first dimension
-        # PositionalEncoding은 시퀀스 차원에 대해 적용되므로, Positional Encoding을 적용하기 전에 반드시 시퀀스 차원이 첫 번째가 되어야 합니다.
-        seq_features = seq_features.permute(1,0,2)
-        image_features = image_features.permute(1,0,2)
-
-        tgt = torch.cat((seq_features[:1], image_features, seq_features[1:]), dim=0) # Move SOS Token to Front
-        if 0:
-            tgt = self.Seq_positional_encoding(tgt)
-        else:
-            tgt = self.learnable_positional_encoding(tgt)
-
-        tgt_mask = get_tgt_mask(tgt.size(0))
-        if 1:
-            # Make Transformer can see entire <SOS> + ViT features 
-            tgt_mask[:image_features.size(0)+1,:image_features.size(0)+1] = 0
-
-        dummy_seq = torch.zeros([tgt_seq.size(0), image_features.size(0), tgt_seq.size(2)]).to(device)
-        tgt_seq_with_dummy = torch.cat((dummy_seq, tgt_seq), dim=1)
-        tgt_key_padding_mask = create_pad_mask(tgt_seq_with_dummy, PAD_token)
-
-        if tgt_mask is not None:
-            tgt_mask = tgt_mask.to(device)
-        if tgt_key_padding_mask is not None:
-            tgt_key_padding_mask = tgt_key_padding_mask.to(device)
-
-        if self.decoder_only:
-            output, self.self_attn_weights, self.multihead_attn_weights = self.transformer_decoder(tgt, tgt, 
-                                                                                                   memory_mask=tgt_mask,
-                                                                                                   tgt_mask=tgt_mask,
-                                                                                                   tgt_key_padding_mask=tgt_key_padding_mask,
-                                                                                                   memory_key_padding_mask=tgt_key_padding_mask)
-        else:
-            '''
-            def forward(self, src: Tensor, tgt: Tensor, src_mask: Optional[Tensor] = None, tgt_mask: Optional[Tensor] = None,
-                        memory_mask: Optional[Tensor] = None, src_key_padding_mask: Optional[Tensor] = None,
-                        tgt_key_padding_mask: Optional[Tensor] = None, memory_key_padding_mask: Optional[Tensor] = None,
-                        src_is_causal: Optional[bool] = None, tgt_is_causal: Optional[bool] = None,
-                        memory_is_causal: bool = False) -> Tensor:
-            '''
-            output = self.transformer(tgt, tgt, 
-                                      src_mask=tgt_mask,
-                                      tgt_mask=tgt_mask,
-                                      src_key_padding_mask=tgt_key_padding_mask,
-                                      tgt_key_padding_mask=tgt_key_padding_mask)
-
-        output_seq = self.seq_decode_linear(output[image_features.size(0):])
-        output_params = self.param_decode_linear(output[image_features.size(0):])
-        output_params = self.scaler.inverse_transform(output_params)
-        output_params = ensure_positive(output_seq, output_params)
-
-        # Cat the output_seq and output_params
-        output_seq = torch.cat((output_seq, output_params), dim=2)
-        return output_seq
-
 
 class TransformerDecoderModel(nn.Module):
     def __init__(self, seq_embedding_dim, param_embedding_dim, 
@@ -653,8 +527,13 @@ class TransformerDecoderModel(nn.Module):
         self.seq_embedding_dim = seq_embedding_dim
         self.param_embedding_dim = param_embedding_dim
 
+        #self.scaler = MinMaxScalerTorch()
+        self.scaler = ParamQuantizer()
+        self.n_scales = len(self.scaler.predetermined_centers)
+
         self.seq_embedding = nn.Embedding(num_tokens, self.seq_embedding_dim)
-        self.param_embedding = MLP([num_params, self.param_embedding_dim], batch_norm=False, last_activation=False)
+        #self.param_embedding = MLP([num_params, self.param_embedding_dim], batch_norm=False, last_activation=False)
+        self.param_embedding = MLP([num_params, num_params*self.n_scales, self.param_embedding_dim], batch_norm=True, last_activation=False)
   
         self.activation = nn.ReLU()
         self.self_attn_weights = None
@@ -679,17 +558,18 @@ class TransformerDecoderModel(nn.Module):
                                             num_decoder_layers=num_layers,
                                             dropout=0.1,
                                         )
+
         if 0:
             self.seq_decode_linear = MLP([self.seq_embedding_dim, num_tokens], batch_norm=False, last_activation=False)
             self.param_decode_linear = MLP([self.param_embedding_dim, num_params], batch_norm=False, last_activation=False)
         else:
             self.seq_decode_linear = nn.Linear(self.seq_embedding_dim, num_tokens)
-            self.param_decode_linear = nn.Linear(self.param_embedding_dim, num_params)
+            self.param_decode_linear = nn.Linear(self.param_embedding_dim, 
+                                                 num_params*self.n_scales)
 
         self.layer_norm = nn.LayerNorm(self.dim_model)
         self.seq_layer_norm = nn.LayerNorm(self.seq_embedding_dim)
         self.param_layer_norm = nn.LayerNorm(self.param_embedding_dim)
-        self.scaler = MinMaxScalerTorch()
     
     def forward(self, features, tgt_seq):
         # features = self.cnn(images)
@@ -715,8 +595,6 @@ class TransformerDecoderModel(nn.Module):
         # Conver to torch.long
         depth_organ_seq = depth_organ_seq.long()
         params = tgt_seq[:, :, 1:]
-        # Scale the params to -1 to 1
-        params = self.scaler.transform(params)
         depth_organ_seq = self.seq_embedding(depth_organ_seq) * math.sqrt(self.dim_model)
         params = self.param_embedding(params) * math.sqrt(self.dim_model)
 
@@ -737,15 +615,10 @@ class TransformerDecoderModel(nn.Module):
 
         output_seq = self.seq_decode_linear(decoded[:,:,:self.seq_embedding_dim])
         output_params = self.param_decode_linear(decoded[:,:,self.seq_embedding_dim:])
-        if 0:
-            # Unscale to apply positive constraints
-            output_params = self.scaler.inverse_transform(output_params)
-            #output_params = ensure_positive(output_seq, output_params)
-            # Scale back
-            output_params = self.scaler.transform(output_params)
-        # Cat the output_seq and output_params
-        output_seq = torch.cat((output_seq, output_params), dim=2)
-        return output_seq
+        output_params = output_params.view(*output_seq.shape[:2], N_PARAMS, self.n_scales)
+        # # Cat the output_seq and output_params
+        # output_seq = torch.cat((output_seq, output_params), dim=2)
+        return output_seq, output_params
     
 
 class RegressionModel(nn.Module):

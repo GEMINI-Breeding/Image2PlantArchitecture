@@ -13,7 +13,7 @@ import sys
 script_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(script_dir)
 from image_process import process_leaf_image
-from plant_tokenizer import SOS_token, EOS_token, PAD_token, EOS_vec_padded, SOS_vec_padded
+from plant_tokenizer import SOS_token, EOS_token, PAD_token, EOS_vec_padded, SOS_vec_padded, ParamQuantizer
 from string_to_xml_to_vec import string2vec, vec2string, vec2xml, pretty_print_xml, xml2vec, linked_to_recursive
 import xml.etree.ElementTree as ET
 from plant_tokenizer import vec2token as vec2token
@@ -125,6 +125,8 @@ class PlantDataset(Dataset):
         print(f"Total {len(self.image_files)} images and plant strings loaded")
         
         # self.param_scaler = joblib.load(os.path.join(self.current_script_dir,'scaler.pkl'))
+        self.scaler = ParamQuantizer()
+        self.n_scales = len(self.scaler.predetermined_centers)
 
         if self.preload:
             # Pre-load data
@@ -225,14 +227,13 @@ class PlantDataset(Dataset):
         if vec:
             # Tokenize the plant structure
             out = vec2token(vec)
-
-            if 0:
-                # Scale the token
-                out[:,1:] = self.param_scaler.transform(out[:,1:])
-                
+            
             # Add SOS and EOS tokens
             out = np.concatenate(([SOS_vec_padded], out, [EOS_vec_padded]))
             out_len = len(out)
+
+            # Quantize params
+            out[:,1:] = self.scaler.transform(out[:,1:])
         else:
             out = None
             out_len = 0

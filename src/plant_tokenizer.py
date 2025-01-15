@@ -1,11 +1,19 @@
 import numpy as np
 import math
 import random
+import os, sys
+# Path Settings
+project_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),"../")
+sys.path.append(project_dir)
 
 from src.plant_architecture_utils import euler_to_quaternion, quaternion_to_euler
 from src.plant_architecture_utils import coordinates_to_angle, angle_to_coordinates
 
+from sklearn.cluster import MiniBatchKMeans, KMeans
+
 import torch
+
+import pandas as pd
 
 # Create a dict convert plant structure to token
 # Depth, organ type | Token
@@ -236,6 +244,40 @@ def generate_noise_plant_tokens(tokens, noise_level=0.1, mode='train'):
     if mode == 'train':
         noise_token.requires_grad = True
     return noise_token
+
+
+class ParamQuantizer():
+    def __init__(self):
+        # Define predetermined centers using numpy
+        predetermined_centers = np.unique(np.concatenate([
+            np.array([0, 10, -10, 15, -15, 20, 40, 90]),  # Some special angles
+            np.linspace(-360, 360, 18+1),  # angles
+            np.array([0.9, 1.0]),  # Some special float values
+            np.array([1, 3]),  # Some special integer values
+            np.linspace(0, 1.0, 11),
+            np.linspace(0, 0.1, 11),
+            np.linspace(0, 0.01, 11),  # float values for lengths
+            np.linspace(0, 0.001, 11)  # float values for lengths
+        ])).reshape(-1, 1)
+
+        # Convert numpy array to torch tensor
+        self.predetermined_centers = torch.tensor(predetermined_centers, dtype=torch.float32)
+
+    def transform(self, x):
+        if isinstance(x, np.ndarray):
+            x = torch.tensor(x, dtype=torch.float32)
+        x_flatten = x.reshape(-1, 1)
+        distances = torch.cdist(x_flatten, self.predetermined_centers)
+        quantized = torch.argmin(distances, dim=1).reshape(x.shape)
+        return quantized
+
+    def inverse_transform(self, x):
+        if isinstance(x, np.ndarray):
+            x = torch.tensor(x, dtype=torch.int64)
+        x_flatten = x.reshape(-1, 1).to(torch.int64)
+        recovered = self.predetermined_centers[x_flatten].reshape(x.shape)
+        return recovered
+
 
 if __name__ == "__main__":
 

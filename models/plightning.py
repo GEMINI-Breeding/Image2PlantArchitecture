@@ -13,12 +13,12 @@ from transformers import AutoImageProcessor, AutoModelForDepthEstimation
 import cv2
 from concurrent.futures import ThreadPoolExecutor
 
-# # 경로 설정
-# script_file_dir = os.path.dirname(os.path.abspath(__file__))
-# sys.path.append(script_file_dir)
+# Path Settings
+project_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),"../")
+sys.path.append(project_dir)
 
 # 모듈 임포트
-from models.model import TransformerDecoderModel, RegressionModel, ViT_FeatureExtractor, CNN_FeatureExtractor, MultiModalModel
+from models.model import TransformerDecoderModel, RegressionModel, ViT_FeatureExtractor, CNN_FeatureExtractor
 from models.model import RegressionModel_Transformer, PositionalEncoding, VAE, MLP, SeqEmbeddingModel
 from models.model import create_organ_mask, get_tgt_mask, create_pad_mask, text_global_pool
 from models.model import PlantArchitectureTransformer
@@ -179,9 +179,10 @@ class MainModule(pl.LightningModule):
         if self.use_depth:
             image = self.add_depth_to_image(image)
         features = self.image_encoder(image, plant_info)
-        outputs = self.sequence_decoder(features, tgt)
-        outputs = outputs.permute(1, 0, 2)
-        return outputs
+        seq, params = self.sequence_decoder(features, tgt)
+        seq = seq.permute(1, 0, 2)
+        params = params.permute(1, 0, 2, 3)
+        return seq, params
 
     def generate(self, image, plant_info, stage='val'):
         device = image.device
@@ -200,20 +201,16 @@ class MainModule(pl.LightningModule):
             try:
                 if stage == 'val':
                     with torch.no_grad():
-                        pred = self.sequence_decoder(feature, y_input)
+                       label_p, params_p  = self.sequence_decoder(feature, y_input)
                 else:
-                    pred = self.sequence_decoder(feature, y_input)
+                    label_p, params_p = self.sequence_decoder(feature, y_input)
             except Exception as e:
                 print(e)
                 print(f"Error in {i} iteration")
                 break
-            label_p = pred[:,:,:self.seq_dim]
             label = label_p.topk(1)[1].view(-1)[-1].item()  # num with highest probability
-            params = pred[:,:,self.seq_dim:]
             
-            # Unscale params
-            params = self.sequence_decoder.scaler.inverse_transform(params)
-
+            params = params_p.topk(1)[1].squeeze(-1)
             # Stop if model predicts end of sentencplant_structure_vit_transformer_withpsudodepth_paramEste
             ## if label == EOS_token:
             if label == EOS_token or label == PAD_token:
@@ -226,12 +223,17 @@ class MainModule(pl.LightningModule):
             y_input = torch.cat((y_input, next_item), dim=1)
 
             # Vector cleaning
-            if 1:
+            if 0:
+                scaler = self.sequence_decoder.scaler
+                y_input[:,1:] = scaler.inverse_transform(y_input[:,1:])
                 # Convert y_input to vec to clean erratic params. It will remove SOS Token
                 vec = token2vec(y_input.squeeze(0).tolist())
 
                 # Convert back to token
-                y_input = torch.tensor(vec2token(vec),dtype=torch.float).unsqueeze(0)
+                tokens = vec2token(vec)
+                tokens[:,1:] = torch.tensor(scaler.transform(tokens[:,1:],dtype=torch.float))
+                
+                y_input = torch.tensor(tokens, dtype=torch.float).unsqueeze(0)
 
                 # Cat SOS_tensor
                 y_input = torch.cat((SOS_tensor, y_input), dim=1)
@@ -396,6 +398,42 @@ class MainModule(pl.LightningModule):
         masked_loss = loss_mse * mask
         return masked_loss.sum() / (mask).sum()
         #return masked_loss.sum() / masked_loss.size(0)
+    
+    def param_cross_entropy(self, label, values, pred, ignore_index=PAD_token):
+        # label: (batch_size, seq_len)
+        # pred: (batch_size, seq_len, param_dim)
+        # Masked values are not included in the loss
+        if 0:
+            # Create masks
+            neg_organ_masks = create_organ_mask().to(pred.device) # Negative masks
+
+            # Ensure label_mod and masks have compatible dimensions
+            label_mod = label % 6
+            values = values.long()
+            neg_mask = (label == ignore_index).expand(values.shape)  # First mask is for padding
+            neg_mask = neg_mask.permute(0, 2, 1)  # (N, C, L)
+            for i in range(6):
+                neg_mask = neg_mask | ((label_mod == i).unsqueeze(1).expand_as(neg_mask) & neg_organ_masks[i].unsqueeze(0).unsqueeze(2).expand_as(neg_mask))
+            neg_mask = neg_mask.permute(0, 2, 1)  # (N, C, L)
+            # Compute loss
+            pred = pred.reshape(-1, pred.size(-1))  # [8*100*18, 63]
+            values = values.reshape(-1)  # [8*100*18]
+            loss = F.cross_entropy(pred, values, reduction='none')
+            mask = ~neg_mask
+            masked_loss = loss * mask
+            return masked_loss.sum() / (mask).sum()
+        else:
+            values = values.long()
+            pred = pred.reshape(-1, pred.size(-1))  # [8*100*18, 63]
+            loss = F.cross_entropy(pred, values.reshape(-1), reduction='none')
+            loss = loss.reshape(values.shape)
+            mask = (label == PAD_token) | (label == SOS_token) | (label == EOS_token)
+            mask = ~mask
+            # Expand mask to match the shape of loss
+            mask = mask.unsqueeze(-1).expand_as(loss)  # [8, 100, 1] -> [8, 100, 18]
+            masked_loss = loss * mask
+            return masked_loss.sum() / (mask).sum()
+        
 
     def add_depth_to_image(self, image, add_background=True):
     
@@ -449,17 +487,20 @@ class MainModule(pl.LightningModule):
         values = y_expected[:, :, 1:]
 
         # Decoder loss
-        pred = self(image, plant_info, y_input)
-        label_loss = self.label_loss_fn(pred[:, :, :self.seq_dim].permute(0, 2, 1), label, ignore_index=PAD_token) # (N, C, L)
+        seq, params = self(image, plant_info, y_input)
+        label_loss = self.label_loss_fn(seq.permute(0, 2, 1), label, ignore_index=PAD_token) # (N, C, L)
         #label_loss = self.label_loss_fn(pred[:, :, :self.seq_dim].permute(0, 2, 1), label) 
         if 0:
             # Scale the values before the loss calc
             values = self.sequence_decoder.scaler.transform(values)
             param_loss = self.param_loss_fn(pred[:, :, self.seq_dim:], values)
-        else:
+        elif 0:
             # Scale the values before the loss calc
             values = self.sequence_decoder.scaler.transform(values)
             param_loss = self.param_loss_fn_bylabel(label=label, values=values, pred=pred[:, :, self.seq_dim:])
+        else:
+            param_loss = self.param_cross_entropy(label=label, values=values, pred=params)
+
 
         ######### Tensorboard logging
         loss = label_loss + self.alpha * param_loss
@@ -738,7 +779,7 @@ if __name__ == '__main__':
                 f.write(plant_xml_str)
 
             with torch.no_grad():
-                result = model.generate(image, plant_info, no_repeat_ngram_size=5)
+                result = model.generate(image, plant_info)
                 result = result.cpu().numpy()
 
             plant_vec = token2vec(result)
@@ -779,7 +820,7 @@ if __name__ == '__main__':
         sys.path.append('../')
 
         # Load model
-        model = MainModule.load_from_checkpoint("log/20250110_SideView_224_MinMaxScaler_RGBOnlyFixViT/version_0/checkpoints/best_epoch=29.ckpt")
+        model = MainModule.load_from_checkpoint("log/20250114_SideView_224_QuantizedParams/version_0/checkpoints/last.ckpt")
         model.eval()
 
         # Setup data module
