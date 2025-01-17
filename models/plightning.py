@@ -109,7 +109,8 @@ class MainModule(pl.LightningModule):
                  image_size=224, alpha=1.0, lr=1e-5, 
                  dropout=0.10, 
                  max_len=1024,
-                 use_depth=False):
+                 use_depth=False,
+                 label_smoothing=0.0):
         super(MainModule, self).__init__()
         self.save_hyperparameters()  # 전달된 모든 인수를 저장
 
@@ -130,6 +131,7 @@ class MainModule(pl.LightningModule):
         self.max_len = max_len
         self.num_warmup_steps = 1000
         self.num_training_steps = 10000
+        self.label_smoothing = label_smoothing
 
         if self.use_depth:
             self.depth_est_img_proc = AutoImageProcessor.from_pretrained("depth-anything/Depth-Anything-V2-Small-hf")
@@ -349,7 +351,7 @@ class MainModule(pl.LightningModule):
 
     #     return y_input.to(device)
     
-    def label_loss_fn(self, pred, label, ignore_index=None):
+    def label_loss_fn(self, pred, label, ignore_index=None, label_smoothing=0.0):
 
         # Define the number of classes (0 to 26)
         num_classes = EOS_token+1  # Adjust if there are more tokens
@@ -364,7 +366,7 @@ class MainModule(pl.LightningModule):
         if ignore_index is not None:
             return F.cross_entropy(pred, label, ignore_index=ignore_index, weight=weights)
         else:
-            return F.cross_entropy(pred, label, weight=weights)
+            return F.cross_entropy(pred, label, weight=weights, label_smoothing=label_smoothing)
 
 
     def param_loss_fn(self, pred, params, ignore_index=PAD_token):
@@ -399,7 +401,7 @@ class MainModule(pl.LightningModule):
         return masked_loss.sum() / (mask).sum()
         #return masked_loss.sum() / masked_loss.size(0)
     
-    def param_cross_entropy(self, label, values, pred, ignore_index=PAD_token):
+    def param_cross_entropy(self, label, values, pred, ignore_index=PAD_token, label_smoothing=0.0):
         # label: (batch_size, seq_len)
         # pred: (batch_size, seq_len, param_dim)
         # Masked values are not included in the loss
@@ -425,7 +427,7 @@ class MainModule(pl.LightningModule):
         else:
             values = values.long()
             pred = pred.reshape(-1, pred.size(-1))  # [8*100*18, 63]
-            loss = F.cross_entropy(pred, values.reshape(-1), reduction='none')
+            loss = F.cross_entropy(pred, values.reshape(-1), reduction='none', label_smoothing=label_smoothing)
             loss = loss.reshape(values.shape)
             mask = (label == PAD_token) | (label == SOS_token) | (label == EOS_token)
             mask = ~mask
@@ -488,7 +490,7 @@ class MainModule(pl.LightningModule):
 
         # Decoder loss
         seq, params = self(image, plant_info, y_input)
-        label_loss = self.label_loss_fn(seq.permute(0, 2, 1), label, ignore_index=PAD_token) # (N, C, L)
+        label_loss = self.label_loss_fn(seq.permute(0, 2, 1), label, ignore_index=PAD_token, label_smoothing=self.label_smoothing) # (N, C, L)
         #label_loss = self.label_loss_fn(pred[:, :, :self.seq_dim].permute(0, 2, 1), label) 
         if 0:
             # Scale the values before the loss calc
@@ -499,7 +501,7 @@ class MainModule(pl.LightningModule):
             values = self.sequence_decoder.scaler.transform(values)
             param_loss = self.param_loss_fn_bylabel(label=label, values=values, pred=pred[:, :, self.seq_dim:])
         else:
-            param_loss = self.param_cross_entropy(label=label, values=values, pred=params)
+            param_loss = self.param_cross_entropy(label=label, values=values, pred=params, label_smoothing=self.label_smoothing)
 
 
         ######### Tensorboard logging

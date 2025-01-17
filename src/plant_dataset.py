@@ -126,7 +126,7 @@ class PlantDataset(Dataset):
         
         # self.param_scaler = joblib.load(os.path.join(self.current_script_dir,'scaler.pkl'))
         self.scaler = ParamQuantizer()
-        self.n_scales = len(self.scaler.predetermined_centers)
+        self.n_clusters = self.scaler.n_clusters
 
         if self.preload:
             # Pre-load data

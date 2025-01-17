@@ -529,11 +529,11 @@ class TransformerDecoderModel(nn.Module):
 
         #self.scaler = MinMaxScalerTorch()
         self.scaler = ParamQuantizer()
-        self.n_scales = len(self.scaler.predetermined_centers)
+        self.n_clusters = self.scaler.n_clusters
 
         self.seq_embedding = nn.Embedding(num_tokens, self.seq_embedding_dim)
         #self.param_embedding = MLP([num_params, self.param_embedding_dim], batch_norm=False, last_activation=False)
-        self.param_embedding = MLP([num_params, num_params*self.n_scales, self.param_embedding_dim], batch_norm=True, last_activation=False)
+        self.param_embedding = MLP([num_params, num_params*self.n_clusters, self.param_embedding_dim], batch_norm=True, last_activation=False)
   
         self.activation = nn.ReLU()
         self.self_attn_weights = None
@@ -565,7 +565,7 @@ class TransformerDecoderModel(nn.Module):
         else:
             self.seq_decode_linear = nn.Linear(self.seq_embedding_dim, num_tokens)
             self.param_decode_linear = nn.Linear(self.param_embedding_dim, 
-                                                 num_params*self.n_scales)
+                                                 num_params*self.n_clusters)
 
         self.layer_norm = nn.LayerNorm(self.dim_model)
         self.seq_layer_norm = nn.LayerNorm(self.seq_embedding_dim)
@@ -615,7 +615,7 @@ class TransformerDecoderModel(nn.Module):
 
         output_seq = self.seq_decode_linear(decoded[:,:,:self.seq_embedding_dim])
         output_params = self.param_decode_linear(decoded[:,:,self.seq_embedding_dim:])
-        output_params = output_params.view(*output_seq.shape[:2], N_PARAMS, self.n_scales)
+        output_params = output_params.view(*output_seq.shape[:2], N_PARAMS, self.n_clusters)
         # # Cat the output_seq and output_params
         # output_seq = torch.cat((output_seq, output_params), dim=2)
         return output_seq, output_params
