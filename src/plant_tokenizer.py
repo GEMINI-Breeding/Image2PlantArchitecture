@@ -122,6 +122,33 @@ def vec2token(vec, n_params=N_PARAMS):
     return np.array(tokens)
 
 def token2vec(tokens):
+    """
+    Shoot Parameters:
+    Shoot parameter 0: max = 59.9308, min = 0.0
+    Shoot parameter 1: max = 359.98, min = -19.997
+    Shoot parameter 2: max = 359.721, min = 0.051564
+    Shoot parameter 3: max = 19.0, min = 0.0
+    Shoot parameter 4: max = 3.0, min = 1.0
+
+    Internode Parameters:
+    Internode parameter 0: max = 0.03, min = 0.000249986
+    Internode parameter 1: max = 0.00317704, min = 0.0005
+    Internode parameter 2: max = 20.0, min = 0.0
+    Internode parameter 3: max = 214.997, min = 145.001
+
+    Petiole Parameters:
+    Petiole parameter 0: max = 0.099999, min = 1e-06
+    Petiole parameter 1: max = 0.0018, min = 4e-06
+    Petiole parameter 2: max = 79.9864, min = 45.0005
+    Petiole parameter 3: max = -50.0003, min = -333.113
+    Petiole parameter 4: max = 1.0, min = 0.9
+
+    Leaf Parameters:
+    Leaf parameter 0: max = 0.107999, min = 0.0002
+    Leaf parameter 1: max = 37.7116, min = -43.7484
+    Leaf parameter 2: max = 10.0, min = 0.0
+    Leaf parameter 3: max = -15.0, min = -15.0
+    """
     vec = []
     for token in tokens:
         label = token[0]
@@ -147,23 +174,23 @@ def token2vec(tokens):
                 params[4] = 1.0 if abs(1.0 - token[5]) < abs(3.0 - token[5]) else 3.0 # shoot_type
             elif j == 1:
                 # Internode
-                params[0] = token[6]     # internode_length
-                params[1] = token[7]     # internode_radius
+                params[0] = max(token[6], 0.0002)     # internode_length
+                params[1] = max(token[7], 0.0005)     # internode_radius
                 params[2] = token[8]     # internode_pitch
                 params[3] = token[9]     # phyllotactic angle, random.uniform(130, 145)
             elif j == 2:
                 # Petiole
-                params[0] = token[10]    # petiole_length
-                params[1] = token[11]    # petiole radius, random.uniform(0.00075, 0.00125)
+                params[0] = max(token[10], 1e-7)    # petiole_length
+                params[1] = max(token[11], 4e-06)    # petiole radius, random.uniform(0.00075, 0.00125)
                 params[2] = token[12]    # petiole_pitch
                 params[3] = token[13]    # petiole_curvature
                 params[4] = token[14]    # leaflet_scale
             elif j == 3 or j == 4 or j == 5:
                 # Leaf
-                params[0] = token[15]    # leaf_scale
+                params[0] = max(token[15], 0.0002)    # leaf_scale
                 params[1] = token[16]    # leaf pitch
-                params[2] = token[17]
-                params[3] = token[18]
+                params[2] = token[17]    # leaf yaw
+                params[3] = token[18]    # leaf roll
 
                 # Convert 0-360 to -180-180
                 for k in range(1, 4):

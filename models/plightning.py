@@ -458,9 +458,6 @@ class MainDataModule(pl.LightningDataModule):
         return dataset
 
     def setup(self, stage=None, growth_stages=None):
-        if growth_stages is None:
-            growth_stages = [f"{day:02d}" for day in range(20)]
-
         train_ratio = 0.5
         val_ratio = 0.25
         test_ratio = 0.25

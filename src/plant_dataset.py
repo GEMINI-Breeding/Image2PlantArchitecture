@@ -145,16 +145,19 @@ class PlantDataset(Dataset):
     def getitem(self, idx):
         # Load image
         if self.side_view:
-            leaf_img, plant_info = load_sideview_images(self.image_dir, self.image_files[idx], self.img_size, process_leaf=self.process_leaf)
-                    
+            try:
+                leaf_img, plant_info = load_sideview_images(self.image_dir, self.image_files[idx], self.img_size, process_leaf=self.process_leaf)
+            except:
+                print(f"Error loading {self.image_files[idx]}")
+                return None, None, None          
         else:
             try:
                 image = Image.open(os.path.join(self.image_dir, self.image_files[idx]))
                 # Convert to numpy array
                 image = np.array(image)
             except:
-                    print(f"Error loading {self.image_files[idx]}")
-                    return None, None, None
+                print(f"Error loading {self.image_files[idx]}")
+                return None, None, None
             
             leaf_area, plant_width, plant_height, processed_img, (x,y,w,h) = process_leaf_image(np.array(image), 
                                                                                 normalize=True, debug=False, sqaure_crop=True)

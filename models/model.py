@@ -167,19 +167,30 @@ class MinMaxScalerTorch(nn.Module):
     def __init__(self, feature_range=(-1, 1)):
         super(MinMaxScalerTorch, self).__init__()
         self.min, self.max = feature_range
-        self.data_min_ = torch.tensor([0, -19.3456, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, -331.326, 0, 0, -38.3441, -10, -15],
+        self.data_min_ = torch.tensor([0, -20, 0, 0, 0,   # Shoot [pitch, yaw, roll, age, type]
+                                       0, 0, 0, 0,        # Internode [length, radius, pitch, phyllotactic]
+                                       0, 0, 0, -333, 0,  # Petiole [length, radius, pitch, curvature, scale]
+                                       0, -45, -10, -15], # Leaf [scale, pitch, yaw, roll]
                                        dtype=torch.float32, requires_grad=False)
-        self.data_max_ = torch.tensor([59.842, 356.159, 357.383, 19, 3, 0.03, 0.00673295, 20, 215, 0.0999985, 0.0018, 79.5954, 0, 1, 0.12, 40.49, 10, 0],
+        self.data_max_ = torch.tensor([60, 360, 360, 20, 3, 
+                                       0.03, 0.00673295, 20, 215, 
+                                       0.1, 0.0018, 80, 0, 1, 
+                                       0.12, 45, 10, 0],
                                        dtype=torch.float32, requires_grad=False)
-        self.scale_ = torch.tensor([3.34213429e-02, 5.32616644e-03, 5.59623709e-03, 1.05263158e-01,
-                                    6.66666667e-01, 6.66666667e+01, 2.97046614e+02, 1.00000000e-01,
-                                    9.30232558e-03, 2.00003000e+01, 1.11111111e+03, 2.51270802e-02,
-                                    6.03635091e-03, 2.00000000e+00, 1.66666667e+01, 2.53697321e-02,
-                                    1.00000000e-01, 1.33333333e-01], 
+
+        if 0:
+            self.scale_ = torch.tensor([3.34213429e-02, 5.32616644e-03, 5.59623709e-03, 1.05263158e-01,
+                                        6.66666667e-01, 6.66666667e+01, 2.97046614e+02, 1.00000000e-01,
+                                        9.30232558e-03, 2.00003000e+01, 1.11111111e+03, 2.51270802e-02,
+                                        6.03635091e-03, 2.00000000e+00, 1.66666667e+01, 2.53697321e-02,
+                                        1.00000000e-01, 1.33333333e-01], 
+                                        dtype=torch.float32, requires_grad=False)
+            self.min_ = torch.tensor([-1., -0.89696211, -1., -1., -1., -1., -1., -1., -1., -1., -1., -1.,
+                                    1., -1., -1., -0.02722045, 0., 1.], 
                                     dtype=torch.float32, requires_grad=False)
-        self.min_ = torch.tensor([-1., -0.89696211, -1., -1., -1., -1., -1., -1., -1., -1., -1., -1.,
-                                  1., -1., -1., -0.02722045, 0., 1.], 
-                                  dtype=torch.float32, requires_grad=False)
+        else:
+            self.scale_ = (self.max - self.min) / (self.data_max_ - self.data_min_)
+            self.min_ = self.min - self.data_min_ * self.scale_
 
         # 1D Convolution layer for scaling and inverse scaling
         self.conv = nn.Conv1d(in_channels=18, out_channels=18, kernel_size=1, bias=True)
@@ -200,6 +211,8 @@ class MinMaxScalerTorch(nn.Module):
             param.requires_grad = False
 
     def fit(self, data):
+        if isinstance(data, np.ndarray):
+            data = torch.tensor(data, dtype=torch.float32)
         self.data_min_ = data.min(0, keepdim=True)[0]
         self.data_max_ = data.max(0, keepdim=True)[0]
         self.scale_ = (self.max - self.min) / (self.data_max_ - self.data_min_)
@@ -214,11 +227,19 @@ class MinMaxScalerTorch(nn.Module):
         self.inv_conv.bias.data = -self.min_ / self.scale_
 
     def transform(self, data):
+        if isinstance(data, np.ndarray):
+            data = torch.tensor(data, dtype=torch.float32, device=self.conv.weight.device)
+        if data.dim() == 2:
+            data = data.unsqueeze(0)  # Add batch dimension
         data = data.permute(0, 2, 1)  # (batch_size, seq_len, num_features) -> (batch_size, num_features, seq_len)
         transformed = self.conv(data)
         return transformed.permute(0, 2, 1)  # (batch_size, num_features, seq_len) -> (batch_size, seq_len, num_features)
 
     def inverse_transform(self, data):
+        if isinstance(data, np.ndarray):
+            data = torch.tensor(data, dtype=torch.float32, device=self.conv.weight.device)
+        if data.dim() == 2:
+            data = data.unsqueeze(0)  # Add batch dimension   
         data = data.permute(0, 2, 1)  # (batch_size, seq_len, num_features) -> (batch_size, num_features, seq_len)
         inverse_transformed = self.inv_conv(data)
         return inverse_transformed.permute(0, 2, 1)  # (batch_size, num_features, seq_len) -> (batch_size, seq_len, num_features)
@@ -738,6 +759,11 @@ class TransformerDecoderModel(nn.Module):
             #output_params = ensure_positive(output_seq, output_params)
             # Scale back
             output_params = self.scaler.transform(output_params)
+        else:
+            # Apply clamp
+            # output_params = torch.clamp(output_params, -1.0, 1.0)
+            pass
+            
         # Cat the output_seq and output_params
         output_seq = torch.cat((output_seq, output_params), dim=2)
         return output_seq

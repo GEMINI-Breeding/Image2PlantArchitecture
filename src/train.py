@@ -26,19 +26,15 @@ if __name__ == "__main__":
     pl.seed_everything(42)
 
     # Define dataset to solve
-    #dataset_dir = "data/generated_Dec10_2024"
-    #dataset_dir = "data/2000_Plots_20241210"
-    dataset_dir = "data/Sideview_Dec23_2024"
+    dataset_dir = "data/20250123_Sideview_40Days"
     datamodule = MainDataModule(dataset_dir,
-                                image_size=448,
+                                image_size=224,
                                 load_depth=False,
-                                #train_batch_size=8, num_workers=0, process_leaf=False, preload=False) # for debugging
-                                #train_batch_size=100, num_workers=8, process_leaf=False, preload=False) # for a100 gpu
-                                train_batch_size=16, num_workers=8, process_leaf=True, preload=False, side_view=True) # for gpum
+                                train_batch_size=16, num_workers=8, process_leaf=True, preload=True, side_view=True)
     
     if 1:
         module = MainModule(
-            num_layers=6,
+            num_layers=12,
             num_heads=8,
             seq_dim=EOS_token+1,
             seq_embedding_dim=768//2,
@@ -51,14 +47,14 @@ if __name__ == "__main__":
             dropout=0.10,
         )
     else:
-        module = MainModule.load_from_checkpoint('log/20241217_ReducedParamDim/version_5/checkpoints/best_epoch=08.ckpt')
+        module = MainModule.load_from_checkpoint("log/20250121_SideView_224_MinMaxScalerClamp/version_0/checkpoints/best_epoch=20.ckpt")
 
     tqdm_cb = TQDMProgressBar(refresh_rate=10)
 
     # Generate today's date string in YYYYMMDD format
     today_date_str = datetime.now().strftime('%Y%m%d')
     tb_logger = TensorBoardLogger(
-        name=f'{today_date_str}_SideView_448_MinMaxScaler',
+        name=f'{today_date_str}_SideView_224_40Days',
         save_dir='./log'
     )
 
@@ -76,7 +72,7 @@ if __name__ == "__main__":
 
     early_stop_cb = EarlyStopping(
         monitor='val/loss', # Metric to monitor
-        patience=200,
+        patience=50,
         verbose=True,
         mode='min'
     )
