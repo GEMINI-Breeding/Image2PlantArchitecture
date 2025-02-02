@@ -26,15 +26,13 @@ if __name__ == "__main__":
     pl.seed_everything(42)
 
     # Define dataset to solve
-    #dataset_dir = "data/generated_Dec10_2024"
-    #dataset_dir = "data/2000_Plots_20241210"
-    dataset_dir = "data/Sideview_Dec23_2024"
+    dataset_dir = "data/20250123_Sideview_40Days"
     datamodule = MainDataModule(dataset_dir,
                                 image_size=224,
                                 load_depth=False,
                                 #train_batch_size=8, num_workers=0, process_leaf=False, preload=False) # for debugging
                                 #train_batch_size=100, num_workers=8, process_leaf=False, preload=False) # for a100 gpu
-                                train_batch_size=8, num_workers=8, process_leaf=False, preload=False, side_view=True) # for gpum
+                                train_batch_size=8, num_workers=8, process_leaf=True, preload=False, side_view=True) # for gpum
     
     if 1:
         module = MainModule(
@@ -58,7 +56,7 @@ if __name__ == "__main__":
     # Generate today's date string in YYYYMMDD format
     today_date_str = datetime.now().strftime('%Y%m%d')
     tb_logger = TensorBoardLogger(
-        name=f'{today_date_str}_SideView_224_NoResize',
+        name=f'{today_date_str}_40days_Quantize',
         save_dir='./log'
     )
 
@@ -76,7 +74,7 @@ if __name__ == "__main__":
 
     early_stop_cb = EarlyStopping(
         monitor='val/loss', # Metric to monitor
-        patience=50,
+        patience=20,
         verbose=True,
         mode='min'
     )
@@ -93,7 +91,7 @@ if __name__ == "__main__":
     trainer = pl.Trainer(
         accelerator=accelerator,
         devices="auto",
-        max_epochs=2000,
+        max_epochs=200,
         callbacks=[tqdm_cb, ckpt_cb, lr_monitor, early_stop_cb, 
                 #    FineTuneBatchSizeFinder(milestones=(5, 10)),
                 #    FineTuneLearningRateFinder(milestones=(5, 10))
