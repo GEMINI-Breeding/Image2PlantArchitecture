@@ -23,7 +23,7 @@ from models.model import RegressionModel_Transformer, PositionalEncoding, VAE, M
 from models.model import create_organ_mask, get_tgt_mask, create_pad_mask, text_global_pool
 from models.model import PlantArchitectureTransformer
 from src.plant_tokenizer import SOS_token, EOS_token, PAD_token, EOS_vec_padded, SOS_vec_padded
-from src.plant_tokenizer import generate_noise_plant_tokens
+from src.plant_tokenizer import generate_noise_plant_tokens, N_PARAMS
 from src.plant_dataset import PlantDataset
 from src.plantstring2model import plantstring2model
 from src.plant_tokenizer import token2vec, vec2token
@@ -41,6 +41,29 @@ import copy
 
 from torch.optim.lr_scheduler import LambdaLR, CosineAnnealingLR
 import math
+
+class GaussianWeightedCrossEntropyLoss(nn.Module):
+    def __init__(self, num_classes, sigma=0.5):
+        super(GaussianWeightedCrossEntropyLoss, self).__init__()
+        self.num_classes = num_classes
+        self.sigma = sigma
+
+    def forward(self, inputs, targets):
+        probabilities = F.softmax(inputs, dim=1)
+        batch_size = probabilities.size(0)
+        device = inputs.device
+
+        # Vectorized Gaussian profile creation
+        gauss_range = torch.arange(self.num_classes, device=device).unsqueeze(0).float()
+        gauss_range = gauss_range.expand(batch_size, -1)
+        gauss_center = targets.unsqueeze(1).float()
+
+        gaussian = torch.exp(-0.5 * ((gauss_range - gauss_center) / self.sigma) ** 2)
+        gaussian /= gaussian.sum(dim=1, keepdim=True)
+
+        loss = -torch.sum(gaussian * torch.log(probabilities + 1e-12), dim=1)
+        return loss
+    
 def get_cosine_schedule_with_warmup(optimizer, num_warmup_steps, num_training_steps, num_cycles=0.5, last_epoch=-1):
     def lr_lambda(current_step):
         if current_step < num_warmup_steps:
@@ -176,6 +199,7 @@ class MainModule(pl.LightningModule):
         self.prev_epoch = -1
         self.current_train_step = 0
         self.current_val_step = 0
+        self.gaussian_smooth_loss = GaussianWeightedCrossEntropyLoss(num_classes=self.sequence_decoder.scaler.n_clusters)
 
     def forward(self, image, plant_info, tgt):
         if self.use_depth:
@@ -364,7 +388,10 @@ class MainModule(pl.LightningModule):
 
         # Compute cross-entropy loss with the defined weights
         if ignore_index is not None:
-            return F.cross_entropy(pred, label, ignore_index=ignore_index, weight=weights)
+            #return F.cross_entropy(pred, label, ignore_index=ignore_index, weight=weights)
+            loss = F.cross_entropy(pred, label, ignore_index=ignore_index, reduction='sum')
+            
+            return loss / pred.size(0)
         else:
             return F.cross_entropy(pred, label, weight=weights, label_smoothing=label_smoothing)
 
@@ -401,6 +428,7 @@ class MainModule(pl.LightningModule):
         return masked_loss.sum() / (mask).sum()
         #return masked_loss.sum() / masked_loss.size(0)
     
+    
     def param_cross_entropy(self, label, values, pred, ignore_index=PAD_token, label_smoothing=0.0):
         # label: (batch_size, seq_len)
         # pred: (batch_size, seq_len, param_dim)
@@ -427,14 +455,18 @@ class MainModule(pl.LightningModule):
         else:
             values = values.long()
             pred = pred.reshape(-1, pred.size(-1))  # [8*100*18, 63]
-            loss = F.cross_entropy(pred, values.reshape(-1), reduction='none', label_smoothing=label_smoothing)
+            if 0:
+                loss = F.cross_entropy(pred, values.reshape(-1), reduction='none', label_smoothing=label_smoothing)
+            else:
+                loss = self.gaussian_smooth_loss(pred, values.reshape(-1))
             loss = loss.reshape(values.shape)
             mask = (label == PAD_token) | (label == SOS_token) | (label == EOS_token)
             mask = ~mask
             # Expand mask to match the shape of loss
             mask = mask.unsqueeze(-1).expand_as(loss)  # [8, 100, 1] -> [8, 100, 18]
             masked_loss = loss * mask
-            return masked_loss.sum() / (mask).sum()
+            #return masked_loss.sum() / (mask).sum()
+            return masked_loss.sum() / masked_loss.size(0) / N_PARAMS
         
 
     def add_depth_to_image(self, image, add_background=True):
@@ -478,7 +510,7 @@ class MainModule(pl.LightningModule):
         return image
     
 
-    
+
     def compute_loss(self, batch, mode):
 
         # Load batch and preprocess

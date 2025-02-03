@@ -166,7 +166,7 @@ def attrib2vec(attrib,max_len = 5):
 
 #organ2num = {'shoot': 0, 'internode': 1, 'petiole': 2, 'leaf': 3}
 organ2num = {'shoot': 0, 'internode': 1, 'petiole': 2, 
-             'leaf0': 3, 'leaf1': 4, 'leaf2':5}
+             'leaf0': 3, 'leaf1': 4, 'leaf2':5, 'leaf3':5, 'leaf4':5}
 def xml2vec(root, plant_array, depth=0, plant_age=0, leaf_count=0):
     tag = root.tag
     if tag == 'plant_instance':
@@ -207,7 +207,7 @@ def xml2vec(root, plant_array, depth=0, plant_age=0, leaf_count=0):
     elif tag == 'phytomer':
         for elem in root:
             # Phytomer and internode are at the same depth
-            xml2vec(elem, plant_array, depth=depth)
+            xml2vec(elem, plant_array, depth=depth, plant_age=plant_age)
 
     elif tag == 'internode':
         # Define the internode vector
@@ -247,7 +247,8 @@ def xml2vec(root, plant_array, depth=0, plant_age=0, leaf_count=0):
                 # Append the line to the plant_array
                 plant_array.append(line)
             elif "leaf" in subelem.tag:
-                xml2vec(subelem, plant_array, depth=depth,plant_age=plant_age, leaf_count=leaf_count)
+                if leaf_count < 3:
+                    xml2vec(subelem, plant_array, depth=depth,plant_age=plant_age, leaf_count=leaf_count)
                 leaf_count += 1
             elif "shoot" in subelem.tag:
                 xml2vec(subelem, plant_array, depth=depth+1,plant_age=plant_age)

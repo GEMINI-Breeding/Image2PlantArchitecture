@@ -32,9 +32,9 @@ if __name__ == "__main__":
                                 load_depth=False,
                                 #train_batch_size=8, num_workers=0, process_leaf=False, preload=False) # for debugging
                                 #train_batch_size=100, num_workers=8, process_leaf=False, preload=False) # for a100 gpu
-                                train_batch_size=8, num_workers=8, process_leaf=True, preload=False, side_view=True) # for gpum
+                                train_batch_size=16, num_workers=8, process_leaf=True, preload=True, side_view=True) # for gpum
     
-    if 1:
+    if 0:
         module = MainModule(
             num_layers=12,
             num_heads=8,
@@ -49,14 +49,14 @@ if __name__ == "__main__":
             dropout=0.10,
         )
     else:
-        module = MainModule.load_from_checkpoint('log/20241217_ReducedParamDim/version_5/checkpoints/best_epoch=08.ckpt')
+        module = MainModule.load_from_checkpoint('log/20250131_40days_Quantize/version_0/checkpoints/best_epoch=27.ckpt')
 
     tqdm_cb = TQDMProgressBar(refresh_rate=10)
 
     # Generate today's date string in YYYYMMDD format
     today_date_str = datetime.now().strftime('%Y%m%d')
     tb_logger = TensorBoardLogger(
-        name=f'{today_date_str}_40days_Quantize',
+        name=f'{today_date_str}_40days_Quantize_Finetune_Sumreduction',
         save_dir='./log'
     )
 
