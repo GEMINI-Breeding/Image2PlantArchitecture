@@ -30,7 +30,7 @@ if __name__ == "__main__":
     datamodule = MainDataModule(dataset_dir,
                                 image_size=224,
                                 load_depth=False,
-                                train_batch_size=16, num_workers=8, process_leaf=True, preload=True, side_view=True)
+                                train_batch_size=16, num_workers=8, process_leaf=True, preload=False, side_view=True)
     
     if 1:
         module = MainModule(
@@ -54,7 +54,7 @@ if __name__ == "__main__":
     # Generate today's date string in YYYYMMDD format
     today_date_str = datetime.now().strftime('%Y%m%d')
     tb_logger = TensorBoardLogger(
-        name=f'{today_date_str}_SideView_224_40Days',
+        name=f'{today_date_str}_DistPred',
         save_dir='./log'
     )
 

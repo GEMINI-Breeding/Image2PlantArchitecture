@@ -18,7 +18,7 @@ sys.path.append(script_file_dir)
 
 # 모듈 임포트
 from models.model import TransformerDecoderModel, RegressionModel, ViT_FeatureExtractor, CNN_FeatureExtractor, MultiModalModel
-from models.model import RegressionModel_Transformer, PositionalEncoding, VAE, MLP, SeqEmbeddingModel
+from models.model import RegressionModel_Transformer, PositionalEncoding, VAE, SeqMLP, SeqEmbeddingModel, MinMaxMeanStdModel
 from models.model import create_organ_mask, get_tgt_mask, create_pad_mask, text_global_pool
 from src.plant_tokenizer import SOS_token, EOS_token, PAD_token, EOS_vec_padded, SOS_vec_padded
 from src.plant_tokenizer import generate_noise_plant_tokens
@@ -27,7 +27,7 @@ from src.plantstring2model import plantstring2model
 from src.plant_tokenizer import token2vec, vec2token
 from src.string_to_xml_to_vec import vec2string
 from src.image_process import process_leaf_image
-from plant_architecture_utils import coordinates_to_angle
+from src.plant_architecture_utils import coordinates_to_angle
 import pickle
 import copy
 
@@ -159,7 +159,7 @@ class MainModule(pl.LightningModule):
             dropout=self.dropout,
             max_seq_length=max_len,
         )
-        
+        self.distribution_model = MinMaxMeanStdModel(model_dim=seq_embedding_dim+param_embedding_dim, num_params=param_dim)
         self.multihead_attn_weights = None
         self.self_attn_weights = None
 
@@ -178,9 +178,10 @@ class MainModule(pl.LightningModule):
         if self.use_depth:
             image = self.add_depth_to_image(image)
         features = self.image_encoder(image, plant_info)
+        dist_info = self.distribution_model(features)
         outputs = self.sequence_decoder(features, tgt)
         outputs = outputs.permute(1, 0, 2)
-        return outputs
+        return outputs, dist_info
     
     def generate(self, image, plant_info, stage='val'):
         device = image.device
@@ -289,6 +290,20 @@ class MainModule(pl.LightningModule):
         return masked_loss.sum() / (mask).sum()
         #return masked_loss.sum() / masked_loss.size(0)
 
+    def dist_loss_fn(self, y_input, dist_pred):
+        params = y_input[:,:,1:]
+        # Get min, max, mean, std from params
+        param_min = torch.min(params, dim=1)[0].unsqueeze(-1)
+        param_max = torch.max(params, dim=1)[0].unsqueeze(-1)
+        param_mean = torch.mean(params, dim=1).unsqueeze(-1)
+        param_std = torch.std(params, dim=1).unsqueeze(-1)
+
+        dist_gt = torch.cat([param_min,param_max,param_mean,param_std],dim=-1) # Batch, Num_Params, 4
+
+        # Calculate loss between dist_pred and param_mean
+        loss = F.mse_loss(dist_gt, dist_pred)
+        return loss
+
     def add_depth_to_image(self, image, add_background=True):
     
         if add_background:
@@ -341,7 +356,7 @@ class MainModule(pl.LightningModule):
         values = y_expected[:, :, 1:]
 
         # Decoder loss
-        pred = self(image, plant_info, y_input)
+        pred, dist_pred = self(image, plant_info, y_input)
         label_loss = self.label_loss_fn(pred[:, :, :self.seq_dim].permute(0, 2, 1), label, ignore_index=PAD_token) # (N, C, L)
         #label_loss = self.label_loss_fn(pred[:, :, :self.seq_dim].permute(0, 2, 1), label) 
         if 0:
@@ -353,11 +368,14 @@ class MainModule(pl.LightningModule):
             values = self.sequence_decoder.scaler.transform(values)
             param_loss = self.param_loss_fn_bylabel(label=label, values=values, pred=pred[:, :, self.seq_dim:])
 
+        dist_loss = self.dist_loss_fn(y_input,dist_pred)
+
         ######### Tensorboard logging
-        loss = label_loss + self.alpha * param_loss
+        loss = label_loss + self.alpha * param_loss + dist_loss
 
         self.log(f'{mode}/label_loss', label_loss, batch_size=image.size(0), sync_dist=True)
         self.log(f'{mode}/param_loss', param_loss, batch_size=image.size(0), sync_dist=True)
+        self.log(f'{mode}/dist_loss', dist_loss, batch_size=image.size(0), sync_dist=True)
         self.log(f'{mode}/loss', loss, batch_size=image.size(0), sync_dist=True)
 
         # Add images to tensorboard

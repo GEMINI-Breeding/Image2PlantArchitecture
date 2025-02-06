@@ -314,9 +314,9 @@ class seqBatchNorm(nn.Module):
 
         return x
 
-class MLP(nn.Module):
+class SeqMLP(nn.Module):
     def __init__(self, hidden_size, last_activation=True, batch_norm=True):
-        super(MLP, self).__init__()
+        super(SeqMLP, self).__init__()
         q = []
         for i in range(len(hidden_size) - 1):
             in_dim = hidden_size[i]
@@ -334,6 +334,24 @@ class MLP(nn.Module):
         x = self.mlp(x)
         # Convert back to Seq Len first (L B C)
         x = x.permute(1,0,2)
+        return x
+    
+class MLP(nn.Module):
+    def __init__(self, hidden_size, last_activation=True, batch_norm=True):
+        super(MLP, self).__init__()
+        q = []
+        for i in range(len(hidden_size) - 1):
+            in_dim = hidden_size[i]
+            out_dim = hidden_size[i + 1]
+            q.append(("Linear_%d" % i, nn.Linear(in_dim, out_dim)))
+            if (i < len(hidden_size) - 2) or ((i == len(hidden_size) - 2) and last_activation):
+                if batch_norm:
+                    q.append(("BatchNorm_%d" % i, nn.BatchNorm1d(out_dim)))
+                q.append(("ReLU_%d" % i, nn.ReLU(inplace=True)))
+        self.mlp = nn.Sequential(OrderedDict(q))
+
+    def forward(self, x):
+        x = self.mlp(x)
         return x
     
 class TransformerDecoderLayerWithAttention(nn.TransformerDecoderLayer):
@@ -461,7 +479,7 @@ class ViT_FeatureExtractor(nn.Module):
                                                   nn.Linear(512, 768))
         self.output_size = output_size
         
-        self.projection = MLP([768, output_size])  # Reduce feature dimension
+        self.projection = SeqMLP([768, output_size])  # Reduce feature dimension
 
 
     def forward(self, x, y):
@@ -570,8 +588,8 @@ class MultiModalModel(nn.Module):
                                             dropout=0.1,
                                         )
 
-        self.seq_decode_linear = MLP([self.dim_model, 2048, num_tokens], last_activation=False)
-        self.param_decode_linear = MLP([self.dim_model, 2048, num_params], last_activation=False)
+        self.seq_decode_linear = SeqMLP([self.dim_model, 2048, num_tokens], last_activation=False)
+        self.param_decode_linear = SeqMLP([self.dim_model, 2048, num_params], last_activation=False)
 
         self.layer_norm = nn.LayerNorm(self.dim_model)
 
@@ -656,6 +674,22 @@ class MultiModalModel(nn.Module):
         output_seq = torch.cat((output_seq, output_params), dim=2)
         return output_seq
 
+class MinMaxMeanStdModel(nn.Module):
+    def __init__(self, model_dim, num_params):
+        super().__init__()
+
+        self.model_dim = model_dim
+        self.distribution_model = MLP([self.model_dim, num_params*4], batch_norm=False, last_activation=False)
+
+
+    def forward(self, vit_features):
+        # Get the last token of the vit
+        cls_token = vit_features[:,256,:]
+
+        
+        return self.distribution_model(cls_token).reshape(cls_token.size(0), -1, 4)
+    
+       
 
 class TransformerDecoderModel(nn.Module):
     def __init__(self, seq_embedding_dim, param_embedding_dim, 
@@ -670,8 +704,8 @@ class TransformerDecoderModel(nn.Module):
         self.param_embedding_dim = param_embedding_dim
 
         self.seq_embedding = nn.Embedding(num_tokens, self.seq_embedding_dim)
-        self.param_embedding = MLP([num_params, self.param_embedding_dim], batch_norm=False, last_activation=False)
-  
+        self.param_embedding = SeqMLP([num_params, self.param_embedding_dim], batch_norm=False, last_activation=False)
+ 
         self.activation = nn.ReLU()
         self.self_attn_weights = None
         self.multihead_attn_weights = None
@@ -696,8 +730,8 @@ class TransformerDecoderModel(nn.Module):
                                             dropout=0.1,
                                         )
         if 0:
-            self.seq_decode_linear = MLP([self.seq_embedding_dim, num_tokens], batch_norm=False, last_activation=False)
-            self.param_decode_linear = MLP([self.param_embedding_dim, num_params], batch_norm=False, last_activation=False)
+            self.seq_decode_linear = SeqMLP([self.seq_embedding_dim, num_tokens], batch_norm=False, last_activation=False)
+            self.param_decode_linear = SeqMLP([self.param_embedding_dim, num_params], batch_norm=False, last_activation=False)
         else:
             self.seq_decode_linear = nn.Linear(self.seq_embedding_dim, num_tokens)
             self.param_decode_linear = nn.Linear(self.param_embedding_dim, num_params)
