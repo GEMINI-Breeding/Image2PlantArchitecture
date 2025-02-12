@@ -193,8 +193,12 @@ class PlantDataset(Dataset):
 
         # Load XML file
         # Load and parse the XML file
-        tree = ET.parse(os.path.join(self.plant_xml_dir, self.plant_xml_files[idx]))
-
+        try:
+            xml_path = os.path.join(self.plant_xml_dir, self.plant_xml_files[idx])
+            tree = ET.parse(xml_path)
+        except Exception as e:
+            print(e)
+            print(xml_path)
         # Get the root element
         root = tree.getroot()
 
@@ -231,9 +235,6 @@ class PlantDataset(Dataset):
             # Add SOS and EOS tokens
             out = np.concatenate(([SOS_vec_padded], out, [EOS_vec_padded]))
             out_len = len(out)
-
-            # Quantize params
-            out[:,1:] = self.scaler.transform(out[:,1:])
         else:
             out = None
             out_len = 0

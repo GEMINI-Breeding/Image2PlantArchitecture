@@ -49,14 +49,14 @@ if __name__ == "__main__":
             dropout=0.10,
         )
     else:
-        module = MainModule.load_from_checkpoint('log/20250131_40days_Quantize/version_0/checkpoints/best_epoch=27.ckpt')
+        module = MainModule.load_from_checkpoint('log/20250211_Quantize_MinMaxScale_FixPadding/version_0/checkpoints/best_epoch=05.ckpt')
 
     tqdm_cb = TQDMProgressBar(refresh_rate=10)
 
     # Generate today's date string in YYYYMMDD format
     today_date_str = datetime.now().strftime('%Y%m%d')
     tb_logger = TensorBoardLogger(
-        name=f'{today_date_str}_40days_Quantize_Finetune_Sumreduction',
+        name=f'{today_date_str}_Quantize_MinMaxScale_FixPadding',
         save_dir='./log'
     )
 

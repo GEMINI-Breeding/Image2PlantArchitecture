@@ -17,7 +17,9 @@ int main(int argc, char* argv[]){
     bool save_xml = false;
     bool grow = false;
     bool rotation_view = false;
+    bool stats_only = false;
     float height = 0;
+    int days = 20; // Default day
     std::string tile_file = "plugins/visualizer/textures/dirt.jpg";
     std::string plant_model_file = "";
     std::string output_name = "cowpea";
@@ -42,12 +44,16 @@ int main(int argc, char* argv[]){
             printf("Save dir: %s\n", save_dir.c_str());
         } else if (arg == "-f" && i + 1 < argc) {
             plant_model_file = argv[++i];
+        } else if (arg == "-days" && i + 1 < argc) {
+            days = std::stoi(argv[++i]);
         } else if (arg == "-seed" && i + 1 < argc) {
             seed = std::stoi(argv[++i]);
             printf("Seed: %u\n", seed);
         } else if (arg == "-name" && i + 1 < argc) {
             output_name = argv[++i];
             printf("Output name: %s\n", output_name.c_str());
+        } else if (arg == "-stats_only" ) {
+            stats_only = true;
         } else {
             printf("Unknown argument: %s\n", arg.c_str());
         }
@@ -99,6 +105,27 @@ int main(int argc, char* argv[]){
         height = 1.0; // Default height
     }
 
+    // Calc bulk parameters
+    float plant_height = plantarchitecture.getPlantHeight(plantID);
+    std::cout << "Plant Height: " <<plant_height << std::endl;
+    float stemheight = plantarchitecture.getPlantStemHeight(plantID);
+    std::cout << "Stem Height: " << stemheight << std::endl;
+    uint leafcount = plantarchitecture.getPlantLeafCount(plantID);
+    std::cout << "Leaf count: " << leafcount << std::endl;
+    float leafarea = plantarchitecture.sumPlantLeafArea(plantID);
+    std::cout << "Leaf area: " << leafarea << std::endl;
+    std::vector<float> leafinclination = plantarchitecture.getPlantLeafInclinationAngleDistribution(plantID, 10, true);
+    std::cout << "Leaf inclination: ";
+    for( float angle : leafinclination ) {
+        std::cout << angle << " ";
+    }
+    std::cout << std::endl;
+    plantarchitecture.writePlantMeshVertices(plantID,"plantvertices.txt");
+
+    if(stats_only){
+        return 0;
+    }
+
     Visualizer vis(1200);
     vis.clearGeometry();
     vis.buildContextGeometry(&context);
@@ -118,13 +145,18 @@ int main(int argc, char* argv[]){
     // vis.plotUpdate();
     vis.plotUpdate(true);
     
-    // // Save xml
+    // Save xml
     // if (save_xml)
     // {
     //     // Write the plant structure to an XML file
-    //     std::string xml_file = output_name + ".xml";
-    //     plantarchitecture.writePlantStructureXML(plantID, xml_file);
+    //     std::string save_path = save_dir + "/" + output_name + ".xml";
+    //     plantarchitecture.writePlantStructureXML(plantID, save_path);
     // }
+
+
+
+
+
     if(~plant_model_file.empty()){
         std::string output_file = save_dir + "/" + output_name + ".jpeg";
         vis.printWindow(output_file.c_str());
@@ -201,10 +233,11 @@ int main(int argc, char* argv[]){
     }
 
     if (grow) {
-        // Grow the plant for 20 days
+        // Grow the plant for days
+        // The default days are 20
         float accum_day = 0;
-        for (int i = 0; i < 20; ++i) {
-            float dt = 1.0;
+        float dt = 1.0;
+        for (int i = 0; i < days; ++i) {
             vis.clearGeometry();
             if(i > 0){
                 plantarchitecture.advanceTime(plantID, dt);

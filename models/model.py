@@ -527,13 +527,14 @@ class TransformerDecoderModel(nn.Module):
         self.seq_embedding_dim = seq_embedding_dim
         self.param_embedding_dim = param_embedding_dim
 
-        #self.scaler = MinMaxScalerTorch()
-        self.scaler = ParamQuantizer()
-        self.n_clusters = self.scaler.n_clusters
+        self.scaler = MinMaxScalerTorch()
+        self.quantizer = ParamQuantizer()
+        self.n_clusters = self.quantizer.n_clusters
 
         self.seq_embedding = nn.Embedding(num_tokens, self.seq_embedding_dim)
         #self.param_embedding = MLP([num_params, self.param_embedding_dim], batch_norm=False, last_activation=False)
-        self.param_embedding = MLP([num_params, num_params*self.n_clusters, self.param_embedding_dim], batch_norm=True, last_activation=False)
+        self.quantized_param_embedding = MLP([num_params, num_params*self.n_clusters, self.param_embedding_dim], batch_norm=False, last_activation=False)
+        self.scaled_param_embedding = MLP([num_params, num_params*self.n_clusters, self.param_embedding_dim], batch_norm=False, last_activation=False)
   
         self.activation = nn.ReLU()
         self.self_attn_weights = None
@@ -561,11 +562,13 @@ class TransformerDecoderModel(nn.Module):
 
         if 0:
             self.seq_decode_linear = MLP([self.seq_embedding_dim, num_tokens], batch_norm=False, last_activation=False)
-            self.param_decode_linear = MLP([self.param_embedding_dim, num_params], batch_norm=False, last_activation=False)
+            self.quantized_param_decode_linear = MLP([self.param_embedding_dim, num_params], batch_norm=False, last_activation=False)
         else:
             self.seq_decode_linear = nn.Linear(self.seq_embedding_dim, num_tokens)
-            self.param_decode_linear = nn.Linear(self.param_embedding_dim, 
+            self.quantized_param_decode_linear = nn.Linear(self.param_embedding_dim, 
                                                  num_params*self.n_clusters)
+            self.scaled_param_decode_linear = nn.Linear(self.param_embedding_dim, 
+                                                 num_params)
 
         self.layer_norm = nn.LayerNorm(self.dim_model)
         self.seq_layer_norm = nn.LayerNorm(self.seq_embedding_dim)
@@ -595,8 +598,16 @@ class TransformerDecoderModel(nn.Module):
         # Conver to torch.long
         depth_organ_seq = depth_organ_seq.long()
         params = tgt_seq[:, :, 1:]
+
         depth_organ_seq = self.seq_embedding(depth_organ_seq) * math.sqrt(self.dim_model)
-        params = self.param_embedding(params) * math.sqrt(self.dim_model)
+        
+        # Decide whether to use quantized or scaled embeddings with 0.5 probability
+        # if torch.rand(1).item() < 0.5:
+        #     params_quantized = self.quantizer.transform(params)
+        #     params = self.quantized_param_embedding(params_quantized) * math.sqrt(self.dim_model)
+        # else:
+        params_scaled = self.scaler.transform(params)
+        params = self.scaled_param_embedding(params_scaled) * math.sqrt(self.dim_model)
 
         tgt = torch.cat((depth_organ_seq, params), dim=2)
 
@@ -614,11 +625,14 @@ class TransformerDecoderModel(nn.Module):
             decoded = self.transformer(features, tgt, tgt_mask=tgt_mask, tgt_key_padding_mask=tgt_key_padding_mask, tgt_is_causal=True)
 
         output_seq = self.seq_decode_linear(decoded[:,:,:self.seq_embedding_dim])
-        output_params = self.param_decode_linear(decoded[:,:,self.seq_embedding_dim:])
-        output_params = output_params.view(*output_seq.shape[:2], N_PARAMS, self.n_clusters)
+        output_quantized_params = self.quantized_param_decode_linear(decoded[:,:,self.seq_embedding_dim:])
+        output_quantized_params = output_quantized_params.view(*output_seq.shape[:2], N_PARAMS, self.n_clusters)
+
+        output_scaled_params = self.scaled_param_decode_linear(decoded[:,:,self.seq_embedding_dim:])
+
         # # Cat the output_seq and output_params
         # output_seq = torch.cat((output_seq, output_params), dim=2)
-        return output_seq, output_params
+        return output_seq, [output_quantized_params, output_scaled_params]
     
 
 class RegressionModel(nn.Module):

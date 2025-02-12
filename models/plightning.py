@@ -199,7 +199,7 @@ class MainModule(pl.LightningModule):
         self.prev_epoch = -1
         self.current_train_step = 0
         self.current_val_step = 0
-        self.gaussian_smooth_loss = GaussianWeightedCrossEntropyLoss(num_classes=self.sequence_decoder.scaler.n_clusters)
+        self.gaussian_smooth_loss = GaussianWeightedCrossEntropyLoss(num_classes=self.sequence_decoder.quantizer.n_clusters)
 
     def forward(self, image, plant_info, tgt):
         if self.use_depth:
@@ -207,10 +207,11 @@ class MainModule(pl.LightningModule):
         features = self.image_encoder(image, plant_info)
         seq, params = self.sequence_decoder(features, tgt)
         seq = seq.permute(1, 0, 2)
-        params = params.permute(1, 0, 2, 3)
+        params[0] = params[0].permute(1, 0, 2, 3) # Quantized Params
+        params[1] = params[1].permute(1, 0, 2)    # Scaled Params
         return seq, params
 
-    def generate(self, image, plant_info, stage='val'):
+    def generate(self, image, plant_info, stage='val', mode='quantize'):
         device = image.device
         SOS_tensor = torch.tensor(SOS_vec_padded, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
         y_input = SOS_tensor
@@ -219,6 +220,8 @@ class MainModule(pl.LightningModule):
             image = self.add_depth_to_image(image)
 
         feature = self.image_encoder(image, plant_info)
+
+
         for i in range(self.max_len):
             # Add Masks
             tgt_mask = get_tgt_mask(y_input.size(1))
@@ -227,16 +230,23 @@ class MainModule(pl.LightningModule):
             try:
                 if stage == 'val':
                     with torch.no_grad():
-                       label_p, params_p  = self.sequence_decoder(feature, y_input)
+                       label_p, params  = self.sequence_decoder(feature, y_input)
                 else:
-                    label_p, params_p = self.sequence_decoder(feature, y_input)
+                    label_p, params = self.sequence_decoder(feature, y_input)
             except Exception as e:
                 print(e)
                 print(f"Error in {i} iteration")
                 break
             label = label_p.topk(1)[1].view(-1)[-1].item()  # num with highest probability
             
-            params = params_p.topk(1)[1].squeeze(-1)
+            if mode == 'quantize':
+                # Use quantized
+                params = params[0].topk(1)[1].squeeze(-1)
+                params = self.sequence_decoder.quantizer.inverse_transform(params)
+            else:
+                # Use scaled
+                params = params[1]
+                params = self.sequence_decoder.scaler.inverse_transform(params)
             # Stop if model predicts end of sentencplant_structure_vit_transformer_withpsudodepth_paramEste
             ## if label == EOS_token:
             if label == EOS_token or label == PAD_token:
@@ -249,21 +259,15 @@ class MainModule(pl.LightningModule):
             y_input = torch.cat((y_input, next_item), dim=1)
 
             # Vector cleaning
-            if 0:
-                scaler = self.sequence_decoder.scaler
-                y_input[:,1:] = scaler.inverse_transform(y_input[:,1:])
+            if 1:
                 # Convert y_input to vec to clean erratic params. It will remove SOS Token
                 vec = token2vec(y_input.squeeze(0).tolist())
-
                 # Convert back to token
                 tokens = vec2token(vec)
-                tokens[:,1:] = torch.tensor(scaler.transform(tokens[:,1:],dtype=torch.float))
-                
                 y_input = torch.tensor(tokens, dtype=torch.float).unsqueeze(0)
 
                 # Cat SOS_tensor
                 y_input = torch.cat((SOS_tensor, y_input), dim=1)
-
                 y_input = y_input.to(device)
 
         return y_input.squeeze(0)                    
@@ -376,32 +380,23 @@ class MainModule(pl.LightningModule):
     #     return y_input.to(device)
     
     def label_loss_fn(self, pred, label, ignore_index=None, label_smoothing=0.0):
-
         # Define the number of classes (0 to 26)
         num_classes = EOS_token+1  # Adjust if there are more tokens
 
-        # Initialize weights to 1 for all classes
-        weights = torch.ones(num_classes, device=pred.device)
-
-        # Assign a higher weight (e.g., 2.0) to tokens 12 through 23
-        weights[12:24] = 2.0
-
-        # Compute cross-entropy loss with the defined weights
-        if ignore_index is not None:
-            #return F.cross_entropy(pred, label, ignore_index=ignore_index, weight=weights)
-            loss = F.cross_entropy(pred, label, ignore_index=ignore_index, reduction='sum')
-            
-            return loss / pred.size(0)
+        #return F.cross_entropy(pred, label, ignore_index=ignore_index, weight=weights)
+        if 0:
+            loss = F.cross_entropy(pred, label, ignore_index=ignore_index, reduction='sum') / pred.size(0)   
         else:
-            return F.cross_entropy(pred, label, weight=weights, label_smoothing=label_smoothing)
+            loss = F.cross_entropy(pred, label, ignore_index=ignore_index)
+        return loss 
+     
 
-
-    def param_loss_fn(self, pred, params, ignore_index=PAD_token):
+    def param_loss_fn(self, pred, target, target_scaled, ignore_index=PAD_token):
         # Create neg mask
-        neg_mask = (params == ignore_index)
+        neg_mask = (target == ignore_index)
         # Create masks
         mask = ~neg_mask
-        loss_mse = F.smooth_l1_loss(pred, params, reduction='none') # mse_loss or smooth_l1_loss
+        loss_mse = F.smooth_l1_loss(pred, target_scaled, reduction='none') # mse_loss or smooth_l1_loss
         masked_loss = loss_mse * mask
         return masked_loss.sum() / (mask).sum()
 
@@ -455,8 +450,8 @@ class MainModule(pl.LightningModule):
         else:
             values = values.long()
             pred = pred.reshape(-1, pred.size(-1))  # [8*100*18, 63]
-            if 0:
-                loss = F.cross_entropy(pred, values.reshape(-1), reduction='none', label_smoothing=label_smoothing)
+            if 1:
+                loss = F.cross_entropy(pred, values.reshape(-1), reduction='none', ignore_index=PAD_token)
             else:
                 loss = self.gaussian_smooth_loss(pred, values.reshape(-1))
             loss = loss.reshape(values.shape)
@@ -465,8 +460,9 @@ class MainModule(pl.LightningModule):
             # Expand mask to match the shape of loss
             mask = mask.unsqueeze(-1).expand_as(loss)  # [8, 100, 1] -> [8, 100, 18]
             masked_loss = loss * mask
-            #return masked_loss.sum() / (mask).sum()
-            return masked_loss.sum() / masked_loss.size(0) / N_PARAMS
+            return masked_loss.sum() / (mask).sum()
+        
+            #return masked_loss.sum() / masked_loss.size(0) / N_PARAMS
         
 
     def add_depth_to_image(self, image, add_background=True):
@@ -526,21 +522,25 @@ class MainModule(pl.LightningModule):
         #label_loss = self.label_loss_fn(pred[:, :, :self.seq_dim].permute(0, 2, 1), label) 
         if 0:
             # Scale the values before the loss calc
-            values = self.sequence_decoder.scaler.transform(values)
-            param_loss = self.param_loss_fn(pred[:, :, self.seq_dim:], values)
+            values = self.sequence_decoder.quantizer.transform(values)
+            quantized_param_loss = self.param_loss_fn(pred[:, :, self.seq_dim:], values)
         elif 0:
             # Scale the values before the loss calc
-            values = self.sequence_decoder.scaler.transform(values)
-            param_loss = self.param_loss_fn_bylabel(label=label, values=values, pred=pred[:, :, self.seq_dim:])
+            values = self.sequence_decoder.quantizer.transform(values)
+            quantized_param_loss = self.param_loss_fn_bylabel(label=label, values=values, pred=pred[:, :, self.seq_dim:])
         else:
-            param_loss = self.param_cross_entropy(label=label, values=values, pred=params, label_smoothing=self.label_smoothing)
+            values_quantized = self.sequence_decoder.quantizer.transform(values)
+            values_scaled = self.sequence_decoder.scaler.transform(values)
+            quantized_param_loss = self.param_cross_entropy(label=label, values=values_quantized, pred=params[0], label_smoothing=self.label_smoothing)
+            scaled_param_loss = self.param_loss_fn(target=values, target_scaled=values_scaled, pred=params[1])
 
-
+        
         ######### Tensorboard logging
-        loss = label_loss + self.alpha * param_loss
+        loss = label_loss + quantized_param_loss + scaled_param_loss
 
         self.log(f'{mode}/label_loss', label_loss, batch_size=image.size(0), sync_dist=True)
-        self.log(f'{mode}/param_loss', param_loss, batch_size=image.size(0), sync_dist=True)
+        self.log(f'{mode}/quantized_param_loss', quantized_param_loss, batch_size=image.size(0), sync_dist=True)
+        self.log(f'{mode}/scaled_param_loss', scaled_param_loss, batch_size=image.size(0), sync_dist=True)
         self.log(f'{mode}/loss', loss, batch_size=image.size(0), sync_dist=True)
 
         # Add images to tensorboard
@@ -680,11 +680,7 @@ class MainDataModule(pl.LightningDataModule):
         images, plant_info, vectors, lengths = zip(*batch)
         max_length = max(lengths)
         vec_dim = vectors[0].shape[-1]
-        if len(vectors[0].shape) == 1:
-            vectors_padded = np.ones((len(vectors), max_length), dtype=int) * PAD_token
-        else:
-            vectors_padded = np.zeros((len(vectors), max_length, vec_dim))
-            vectors_padded[:, :, 0] = PAD_token
+        vectors_padded = np.ones((len(vectors), max_length, vec_dim)) * PAD_token
 
         for i, vector in enumerate(vectors):
             end = lengths[i]
