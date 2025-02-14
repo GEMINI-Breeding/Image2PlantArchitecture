@@ -22,7 +22,7 @@ from models.model import TransformerDecoderModel, RegressionModel, ViT_FeatureEx
 from models.model import RegressionModel_Transformer, PositionalEncoding, VAE, MLP, SeqEmbeddingModel
 from models.model import create_organ_mask, get_tgt_mask, create_pad_mask, text_global_pool
 from models.model import PlantArchitectureTransformer
-from src.plant_tokenizer import SOS_token, EOS_token, PAD_token, EOS_vec_padded, SOS_vec_padded
+from src.plant_tokenizer import SOS_token, EOS_token, PAD_token, param_PAD_token, EOS_vec_padded, SOS_vec_padded
 from src.plant_tokenizer import generate_noise_plant_tokens, N_PARAMS
 from src.plant_dataset import PlantDataset
 from src.plantstring2model import plantstring2model
@@ -243,10 +243,23 @@ class MainModule(pl.LightningModule):
                 # Use quantized
                 params = params[0].topk(1)[1].squeeze(-1)
                 params = self.sequence_decoder.quantizer.inverse_transform(params)
-            else:
+            elif mode == 'regression':
                 # Use scaled
                 params = params[1]
                 params = self.sequence_decoder.scaler.inverse_transform(params)
+            elif mode == 'mix':
+                quantized_params = params[0].topk(1)[1].squeeze(-1)
+                quantized_params = self.sequence_decoder.quantizer.inverse_transform(quantized_params)
+
+                scaled_params = params[1]
+                scaled_params = self.sequence_decoder.scaler.inverse_transform(scaled_params)
+
+                params = (scaled_params + quantized_params) / 2
+            else:
+                # Default -> Scaled
+                params = params[1]
+                params = self.sequence_decoder.scaler.inverse_transform(params)
+
             # Stop if model predicts end of sentencplant_structure_vit_transformer_withpsudodepth_paramEste
             ## if label == EOS_token:
             if label == EOS_token or label == PAD_token:
@@ -381,17 +394,13 @@ class MainModule(pl.LightningModule):
     
     def label_loss_fn(self, pred, label, ignore_index=None, label_smoothing=0.0):
         # Define the number of classes (0 to 26)
-        num_classes = EOS_token+1  # Adjust if there are more tokens
-
-        #return F.cross_entropy(pred, label, ignore_index=ignore_index, weight=weights)
         if 0:
             loss = F.cross_entropy(pred, label, ignore_index=ignore_index, reduction='sum') / pred.size(0)   
         else:
             loss = F.cross_entropy(pred, label, ignore_index=ignore_index)
         return loss 
      
-
-    def param_loss_fn(self, pred, target, target_scaled, ignore_index=PAD_token):
+    def param_regression_loss(self, pred, target, target_scaled, ignore_index=PAD_token):
         # Create neg mask
         neg_mask = (target == ignore_index)
         # Create masks
@@ -451,7 +460,7 @@ class MainModule(pl.LightningModule):
             values = values.long()
             pred = pred.reshape(-1, pred.size(-1))  # [8*100*18, 63]
             if 1:
-                loss = F.cross_entropy(pred, values.reshape(-1), reduction='none', ignore_index=PAD_token)
+                loss = F.cross_entropy(pred, values.reshape(-1), reduction='none', ignore_index=0)
             else:
                 loss = self.gaussian_smooth_loss(pred, values.reshape(-1))
             loss = loss.reshape(values.shape)
@@ -518,12 +527,12 @@ class MainModule(pl.LightningModule):
 
         # Decoder loss
         seq, params = self(image, plant_info, y_input)
-        label_loss = self.label_loss_fn(seq.permute(0, 2, 1), label, ignore_index=PAD_token, label_smoothing=self.label_smoothing) # (N, C, L)
+        label_loss = self.label_loss_fn(seq.permute(0, 2, 1), label, ignore_index=PAD_token) # (N, C, L)
         #label_loss = self.label_loss_fn(pred[:, :, :self.seq_dim].permute(0, 2, 1), label) 
         if 0:
             # Scale the values before the loss calc
             values = self.sequence_decoder.quantizer.transform(values)
-            quantized_param_loss = self.param_loss_fn(pred[:, :, self.seq_dim:], values)
+            quantized_param_loss = self.param_regression_loss(pred[:, :, self.seq_dim:], values)
         elif 0:
             # Scale the values before the loss calc
             values = self.sequence_decoder.quantizer.transform(values)
@@ -531,8 +540,8 @@ class MainModule(pl.LightningModule):
         else:
             values_quantized = self.sequence_decoder.quantizer.transform(values)
             values_scaled = self.sequence_decoder.scaler.transform(values)
-            quantized_param_loss = self.param_cross_entropy(label=label, values=values_quantized, pred=params[0], label_smoothing=self.label_smoothing)
-            scaled_param_loss = self.param_loss_fn(target=values, target_scaled=values_scaled, pred=params[1])
+            quantized_param_loss = self.param_cross_entropy(label=label, values=values_quantized, pred=params[0])
+            scaled_param_loss = self.param_regression_loss(target=values, target_scaled=values_scaled, pred=params[1],ignore_index=param_PAD_token)
 
         
         ######### Tensorboard logging
@@ -680,7 +689,8 @@ class MainDataModule(pl.LightningDataModule):
         images, plant_info, vectors, lengths = zip(*batch)
         max_length = max(lengths)
         vec_dim = vectors[0].shape[-1]
-        vectors_padded = np.ones((len(vectors), max_length, vec_dim)) * PAD_token
+        vectors_padded = np.ones((len(vectors), max_length, vec_dim)) * param_PAD_token
+        vectors_padded[:,:,0] = PAD_token
 
         for i, vector in enumerate(vectors):
             end = lengths[i]

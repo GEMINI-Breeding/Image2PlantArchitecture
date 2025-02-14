@@ -49,7 +49,7 @@ if __name__ == "__main__":
             dropout=0.10,
         )
     else:
-        module = MainModule.load_from_checkpoint('log/20250211_Quantize_MinMaxScale_FixPadding/version_0/checkpoints/best_epoch=05.ckpt')
+        module = MainModule.load_from_checkpoint('log/20250209_Quantize_MinMaxScale/version_1/checkpoints/best_epoch=35.ckpt')
 
     tqdm_cb = TQDMProgressBar(refresh_rate=10)
 

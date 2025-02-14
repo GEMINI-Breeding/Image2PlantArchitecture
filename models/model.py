@@ -606,8 +606,13 @@ class TransformerDecoderModel(nn.Module):
         #     params_quantized = self.quantizer.transform(params)
         #     params = self.quantized_param_embedding(params_quantized) * math.sqrt(self.dim_model)
         # else:
-        params_scaled = self.scaler.transform(params)
-        params = self.scaled_param_embedding(params_scaled) * math.sqrt(self.dim_model)
+        
+        if 0:
+            params_scaled = self.scaler.transform(params)
+            params = self.scaled_param_embedding(params_scaled) * math.sqrt(self.dim_model)
+        else:
+            params_quantized = self.quantizer.transform(params)
+            params = self.quantized_param_embedding(params_quantized) * math.sqrt(self.dim_model)
 
         tgt = torch.cat((depth_organ_seq, params), dim=2)
 

@@ -181,3 +181,4 @@ tests/lightning_logs
 src/attention_output*
 .DS_Store
 *.xml
+*.jpg
