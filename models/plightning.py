@@ -17,7 +17,7 @@ script_file_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(script_file_dir)
 
 # 모듈 임포트
-from models.model import TransformerDecoderModel, RegressionModel, ViT_FeatureExtractor, CNN_FeatureExtractor, MultiModalModel
+from models.model import TransformerDecoderModel, RegressionModel, ViT_FeatureExtractor, CNN_FeatureExtractor
 from models.model import RegressionModel_Transformer, PositionalEncoding, VAE, MLP, SeqEmbeddingModel
 from models.model import create_organ_mask, get_tgt_mask, create_pad_mask, text_global_pool
 from src.plant_tokenizer import SOS_token, EOS_token, PAD_token, EOS_vec_padded, SOS_vec_padded
@@ -130,6 +130,10 @@ class MainModule(pl.LightningModule):
         self.num_warmup_steps = 1000
         self.num_training_steps = 10000
 
+        self.SOS_token = SOS_token
+        self.EOS_token = EOS_token
+        self.PAD_token = PAD_token
+
         if self.use_depth:
             self.depth_est_img_proc = AutoImageProcessor.from_pretrained("depth-anything/Depth-Anything-V2-Small-hf")
             self.depth_est_model = AutoModelForDepthEstimation.from_pretrained("depth-anything/Depth-Anything-V2-Small-hf")
@@ -228,17 +232,110 @@ class MainModule(pl.LightningModule):
             if 1:
                 # Convert y_input to vec to clean erratic params. It will remove SOS Token
                 vec = token2vec(y_input.squeeze(0).tolist())
-
                 # Convert back to token
                 y_input = torch.tensor(vec2token(vec),dtype=torch.float).unsqueeze(0)
-
-                # Cat SOS_tensor
-                y_input = torch.cat((SOS_tensor, y_input), dim=1)
-
                 y_input = y_input.to(device)
 
         return y_input.squeeze(0)
     
+    def generate_beam(self, image, plant_info, beam_width=3, max_len=1024, stage='val'):
+        device = image.device
+        SOS_tensor = torch.tensor(SOS_vec_padded, dtype=torch.float32).unsqueeze(0).unsqueeze(0).to(device)
+        EOS_token = self.EOS_token
+        PAD_token = self.PAD_token
+
+        if self.use_depth:
+            image = self.add_depth_to_image(image)
+
+        feature = self.image_encoder(image, plant_info)
+        sequences = [[SOS_tensor, 0.0]]  # List of tuples (sequence, score)
+
+        for _ in range(max_len):
+            all_candidates = []
+            for seq, score in sequences:
+                tgt_mask = get_tgt_mask(seq.size(1))
+                tgt_padding_mask = create_pad_mask(seq, PAD_token)
+
+                with torch.no_grad():
+                    pred = self.sequence_decoder(feature, seq)
+
+                label_p = pred[:, :, :self.seq_dim]
+                params = pred[:, :, self.seq_dim:]
+
+                # Unscale params
+                params = self.sequence_decoder.scaler.inverse_transform(params)
+
+                # Get top k candidates
+                topk_probs, topk_indices = F.log_softmax(label_p[-1, :, :], dim=-1).topk(beam_width)
+
+                for i in range(beam_width):
+                    next_label = topk_indices[:, i].unsqueeze(0).unsqueeze(0).float()
+                    next_params = params[-1, :, :].unsqueeze(0)
+                    next_label = next_label.expand(next_params.size(0), next_params.size(1), next_label.size(-1))
+
+                    # Sanitize params based on next_label
+                    next_params = self.sanitize_params(next_label, next_params)
+                    next_item = torch.cat((next_label, next_params), dim=-1)
+                    candidate = torch.cat((seq, next_item), dim=1)
+                    candidate_score = score + topk_probs[0, i].item()
+                    all_candidates.append((candidate, candidate_score))
+
+            # Order all candidates by score
+            ordered = sorted(all_candidates, key=lambda tup: tup[1], reverse=True)
+            sequences = ordered[:beam_width]
+
+            # Check if any sequence has reached EOS
+            if any(seq[0][0, -1, 0].item() == EOS_token for seq in sequences):
+                break
+
+        # Return the best sequence
+        best_sequence = sequences[0][0].squeeze(0)
+        return best_sequence
+        
+    def sanitize_params(self, labels, params):
+        """
+        Sanitize parameters based on the labels.
+
+        Args:
+            labels (torch.Tensor): Tensor containing the labels.
+            params (torch.Tensor): Tensor containing the parameters.
+
+        Returns:
+            torch.Tensor: Sanitized parameters.
+        """
+        if labels.shape[0] != params.shape[0]:
+            raise ValueError("Labels and parameters must have the same sequence length.")
+
+        new_params = torch.zeros_like(params)
+        organ_ranges = {
+            0: slice(0, 5),
+            1: slice(5, 9),
+            2: slice(9, 14),
+            3: slice(14, 18),
+            4: slice(14, 18),
+            5: slice(14, 18)
+        }
+
+        for i, label in enumerate(labels):
+            organ = label % 6
+            param_range = organ_ranges.get(organ.squeeze().tolist())
+            if param_range:
+                new_params[i, :, param_range] = params[i, :, param_range]
+
+            # Apply contraints
+            if organ == 0:
+                new_params[i, :, 4] = 1.0 if abs(1.0 - new_params[i, :, 4]) < abs(3.0 - new_params[i, :, 4]) else 3.0 # shoot_type
+            elif organ == 1:
+                new_params[i, :, 5] = max(new_params[i, :, 5], 0.0002) # internode_length
+                new_params[i, :, 6] = max(new_params[i, :, 6], 0.0005) # internode_radius
+            elif organ == 2:
+                new_params[i, :, 9] = max(new_params[i, :, 9], 1e-7)    # petiole_length
+                new_params[i, :, 10] = max(new_params[i, :, 10], 4e-06) # petiole radius, random.uniform(0.00075, 0.00125)
+            elif organ in [3, 4, 5]:
+                new_params[i, :, 14] = max(new_params[i, :, 14], 0.0002) # leaf_scale
+
+        return new_params
+
     def label_loss_fn(self, pred, label, ignore_index=None):
 
         # Define the number of classes (0 to 26)
