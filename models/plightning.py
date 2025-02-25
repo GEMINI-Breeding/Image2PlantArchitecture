@@ -195,6 +195,7 @@ class MainModule(pl.LightningModule):
             image = self.add_depth_to_image(image)
 
         feature = self.image_encoder(image, plant_info)
+        total_score = 0.0
         for i in range(self.max_len):
             # Add Masks
             tgt_mask = get_tgt_mask(y_input.size(1))
@@ -217,8 +218,7 @@ class MainModule(pl.LightningModule):
             # Unscale params
             params = self.sequence_decoder.scaler.inverse_transform(params)
 
-            # Stop if model predicts end of sentencplant_structure_vit_transformer_withpsudodepth_paramEste
-            ## if label == EOS_token:
+            # Stop if model predicts end of sentence
             if label == EOS_token or label == PAD_token:
                 break
 
@@ -236,62 +236,120 @@ class MainModule(pl.LightningModule):
                 y_input = torch.tensor(vec2token(vec),dtype=torch.float).unsqueeze(0)
                 y_input = y_input.to(device)
 
-        return y_input.squeeze(0)
-    
-    def generate_beam(self, image, plant_info, beam_width=3, max_len=1024, stage='val'):
+            # Update total score
+            total_score += F.log_softmax(label_p[-1, :, :], dim=-1)[0, label].item()
+
+        return y_input.squeeze(0), total_score
+
+    def generate_beam(self, image, plant_info, beam_width=3, max_len=1024, stage='val', ngram_size=0, add_noise=False):
         device = image.device
         SOS_tensor = torch.tensor(SOS_vec_padded, dtype=torch.float32).unsqueeze(0).unsqueeze(0).to(device)
         EOS_token = self.EOS_token
         PAD_token = self.PAD_token
 
+        # Depth information addition if required
         if self.use_depth:
             image = self.add_depth_to_image(image)
-
+        
+        # Encode the image to get features
         feature = self.image_encoder(image, plant_info)
-        sequences = [[SOS_tensor, 0.0]]  # List of tuples (sequence, score)
+        
+        # Initialize the beam with the start of sequence token
+        sequences = [(SOS_tensor, 0.0, [])]  # List of tuples (sequence, score, ngram_list)
 
         for _ in range(max_len):
             all_candidates = []
-            for seq, score in sequences:
+            
+            for seq, score, label_list in sequences:
+
+                if len(label_list) > 0:
+                    if label_list[-1] == EOS_token:
+                        # If seqence reached EOS token, just add to candidate
+                        all_candidates.append((seq, score, label_list))
+                        continue
+
                 tgt_mask = get_tgt_mask(seq.size(1))
                 tgt_padding_mask = create_pad_mask(seq, PAD_token)
 
+                # Perform decoding without tracking gradients
                 with torch.no_grad():
                     pred = self.sequence_decoder(feature, seq)
 
                 label_p = pred[:, :, :self.seq_dim]
                 params = pred[:, :, self.seq_dim:]
 
-                # Unscale params
-                params = self.sequence_decoder.scaler.inverse_transform(params)
-
                 # Get top k candidates
                 topk_probs, topk_indices = F.log_softmax(label_p[-1, :, :], dim=-1).topk(beam_width)
 
                 for i in range(beam_width):
                     next_label = topk_indices[:, i].unsqueeze(0).unsqueeze(0).float()
-                    next_params = params[-1, :, :].unsqueeze(0)
-                    next_label = next_label.expand(next_params.size(0), next_params.size(1), next_label.size(-1))
 
-                    # Sanitize params based on next_label
+                    if add_noise:
+                        # Add noise
+                        params = self.add_noise(params=params, min=-0.1, max=0.1)
+                    params = self.sequence_decoder.scaler.inverse_transform(params)
+                    
+                    next_params = params[-1, :, :].unsqueeze(0)
+                    
+                    # Expand next_label to match the dimensions of next_params
+                    next_label = next_label.expand(next_params.size(0), next_params.size(1), next_label.size(-1))
+                    
+                    # Add noise
+                    # Sanitize parameters based on the selected label
                     next_params = self.sanitize_params(next_label, next_params)
+                    
+                    # Create a new candidate sequence
                     next_item = torch.cat((next_label, next_params), dim=-1)
                     candidate = torch.cat((seq, next_item), dim=1)
                     candidate_score = score + topk_probs[0, i].item()
-                    all_candidates.append((candidate, candidate_score))
 
-            # Order all candidates by score
-            ordered = sorted(all_candidates, key=lambda tup: tup[1], reverse=True)
-            sequences = ordered[:beam_width]
+                    # Update ngram_list with the new addition
+                    new_label_list = label_list + [next_label.item()]
+                    if ngram_size > 0:
+                        # Remove repeated n-grams
+                        if self.is_repeated_ngram(new_label_list, ngram_size):
+                            continue
 
-            # Check if any sequence has reached EOS
-            if any(seq[0][0, -1, 0].item() == EOS_token for seq in sequences):
+                    all_candidates.append((candidate, candidate_score, new_label_list))
+
+            # Debug prinf if any other idx has higher score
+            if 1:
+                max_score = -1000
+                for i in range(beam_width):
+                    score = all_candidates[i][1]
+                    if score > max_score:
+                        max_score = score
+                        max_idx = i
+
+                if max_idx > 0:
+                    print(f"max_idx: {max_idx}")
+
+            # Sort all candidates by score and keep the top beam_width
+            sequences = sorted(all_candidates, key=lambda tup: tup[1], reverse=True)[:beam_width]
+            
+            # Check if all sequences contain EOS or PAD tokens
+            if all(any(token in [EOS_token, PAD_token] for token in seq[0][0, :, 0].tolist()) for seq in sequences):
                 break
-
-        # Return the best sequence
-        best_sequence = sequences[0][0].squeeze(0)
-        return best_sequence
         
+        # Return the best sequence found
+        best_sequence, best_score, _ = sequences[0]
+        return best_sequence.squeeze(0), best_score
+
+
+    def is_repeated_ngram(self, ngram_list, ngram_size):
+        """Check for repeated n-grams in the list."""
+        if len(ngram_list) < ngram_size:
+            return False
+        
+        ngrams = [tuple(ngram_list[j:j + ngram_size]) for j in range(len(ngram_list) - ngram_size + 1)]
+        return len(ngrams) != len(set(ngrams))  # If duplicates exist, the lengths will differ
+    
+    def add_noise(self, params, min=-1, max=1):
+        """ Add noise vector"""
+        noise_vector = min + torch.rand_like(params) * (max - min)
+
+        return params + noise_vector
+
     def sanitize_params(self, labels, params):
         """
         Sanitize parameters based on the labels.
@@ -621,8 +679,8 @@ class MainDataModule(pl.LightningDataModule):
             collate_fn=self.collate_fn, num_workers=self.num_workers, pin_memory=self.pin_memory
         )
 
-    def test_dataloader(self):
+    def test_dataloader(self, shuffle=True):
         return DataLoader(
-            self.test_dataset, batch_size=self.val_batch_size, shuffle=True,
+            self.test_dataset, batch_size=self.val_batch_size, shuffle=shuffle,
             collate_fn=self.collate_fn, num_workers=self.num_workers, pin_memory=self.pin_memory
         )

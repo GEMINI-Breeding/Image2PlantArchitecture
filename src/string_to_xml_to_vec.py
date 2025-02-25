@@ -313,6 +313,10 @@ def vec2element(root, plant_array, depth=0, debug=False):
     # print(pretty_print_xml(root))
     cnt = 0
     last_elem = None
+
+    current_shoot = None
+    current_internode = None
+    current_petiole = None
     while len(plant_array) > 0:
         cnt += 1
         if cnt > 2048:
@@ -368,7 +372,7 @@ def vec2element(root, plant_array, depth=0, debug=False):
             organ_name = list(organ2num.keys())[list(organ2num.values()).index(organ_type)]
             organ_name = organ_name.capitalize()
             params = line[2:]
-            if organ_name == 'Petiole':
+            if organ_name == 'Petiole' and current_internode:
                 current_petiole = ET.SubElement(current_internode, "petiole")
                 add_trait_subelement(current_petiole,"petiole_length",f"{(params[0]):.6g}")
                 add_trait_subelement(current_petiole,"petiole_radius",f"{(params[1]):.6g}")
@@ -385,13 +389,15 @@ def vec2element(root, plant_array, depth=0, debug=False):
             organ_name = list(organ2num.keys())[list(organ2num.values()).index(organ_type)]
             organ_name = organ_name.capitalize()
             params = line[2:]
-            if "Leaf" in organ_name:
+            if "Leaf" in organ_name and current_petiole:
                 current_leaf = ET.SubElement(current_petiole, "leaf")
                 add_trait_subelement(current_leaf,"leaf_scale",f"{(params[0]):.6g}")
                 add_trait_subelement(current_leaf,"leaf_pitch",f"{(params[1]):.6g}")
                 add_trait_subelement(current_leaf,"leaf_yaw",f"{(params[2]):.6g}")
                 add_trait_subelement(current_leaf,"leaf_roll",f"{(params[3]):.6g}")
                 plant_array = plant_array[1:]
+            elif current_petiole is None:
+                print("Error: current_petiole is None, skip adding leaf")
 
             if debug:
                 # Pretty print the XML
