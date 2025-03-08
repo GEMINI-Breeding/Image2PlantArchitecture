@@ -25,7 +25,7 @@ from src.plant_tokenizer import generate_noise_plant_tokens
 from src.plant_dataset import PlantDataset
 from src.plantstring2model import plantstring2model
 from src.plant_tokenizer import token2vec, vec2token
-from src.string_to_xml_to_vec import vec2string
+from src.string_to_xml_to_vec import vec2string, vec2xml
 from src.image_process import process_leaf_image
 from plant_architecture_utils import coordinates_to_angle
 import pickle
@@ -48,6 +48,13 @@ def get_cosine_schedule_with_warmup(optimizer, num_warmup_steps, num_training_st
         return max(0.0, 0.5 * (1.0 + math.cos(math.pi * num_cycles * 2.0 * progress)))
     
     return LambdaLR(optimizer, lr_lambda, last_epoch)
+
+def contains_consecutive_sequence(array, sequence):
+    seq_len = len(sequence)
+    for i in range(len(array) - seq_len + 1):
+        if array[i:i + seq_len] == sequence:
+            return True
+    return False
 
 
 def make_negative_imgs(image):
@@ -108,7 +115,8 @@ class MainModule(pl.LightningModule):
                  image_size=224, alpha=1.0, lr=1e-5, 
                  dropout=0.10, 
                  max_len=1024,
-                 use_depth=False):
+                 use_depth=False,
+                 cat_emb=True):
         super(MainModule, self).__init__()
         self.save_hyperparameters()  # 전달된 모든 인수를 저장
 
@@ -162,6 +170,7 @@ class MainModule(pl.LightningModule):
             image_size=self.image_size,
             dropout=self.dropout,
             max_seq_length=max_len,
+            cat_emb=cat_emb
         )
         
         self.multihead_attn_weights = None
@@ -241,7 +250,8 @@ class MainModule(pl.LightningModule):
 
         return y_input.squeeze(0), total_score
 
-    def generate_beam(self, image, plant_info, beam_width=3, max_len=1024, stage='val', ngram_size=0, add_noise=False):
+    def generate_beam(self, image, plant_info, beam_width=3, max_len=1024, 
+                      stage='val', ngram_size=0, add_noise=False, check_grammar=True):
         device = image.device
         SOS_tensor = torch.tensor(SOS_vec_padded, dtype=torch.float32).unsqueeze(0).unsqueeze(0).to(device)
         EOS_token = self.EOS_token
@@ -310,19 +320,32 @@ class MainModule(pl.LightningModule):
                         if self.is_repeated_ngram(new_label_list, ngram_size):
                             continue
 
+                    if check_grammar:
+                        # Check if candidate can be converted to xml
+                        # Check grammar when the last element is leaf
+                        organ_type = new_label_list[-1] % 6
+                        if organ_type in [3,4,5]:
+                            try:
+                                vec = token2vec(candidate.squeeze().tolist())
+                                vec2xml(vec)
+                                # If it succeed, increase the probablity
+                                #candidate_score += np.log(2)
+                                candidate_score += 0.1
+                                candidate_score = min(candidate_score, 0) # Clamp the max p as 1.0
+                            except:
+                                # If it failes, decrease the probablity
+                                #candidate_score += np.log(1/2)
+                                candidate_score -= 0.1
+
+
+                        # Check if any concecutive leaves more than 4
+                        leaf_list = [(x % 6 in [4,5,6]) for x in new_label_list]
+                        if contains_consecutive_sequence(leaf_list,[True, True, True, True]):
+                            # Do not append to the candidate
+                            continue
+
                     all_candidates.append((candidate, candidate_score, new_label_list))
 
-            # Debug prinf if any other idx has higher score
-            if 1:
-                max_score = -1000
-                for i in range(beam_width):
-                    score = all_candidates[i][1]
-                    if score > max_score:
-                        max_score = score
-                        max_idx = i
-
-                if max_idx > 0:
-                    print(f"max_idx: {max_idx}")
 
             # Sort all candidates by score and keep the top beam_width
             sequences = sorted(all_candidates, key=lambda tup: tup[1], reverse=True)[:beam_width]
@@ -332,9 +355,132 @@ class MainModule(pl.LightningModule):
                 break
         
         # Return the best sequence found
-        best_sequence, best_score, _ = sequences[0]
+        for best_sequence, best_score, _ in sequences:
+            try:
+                # Check grammar before return it
+                vec = token2vec(best_sequence.squeeze().tolist())
+                vec2xml(vec)
+                # If success, break the loop
+                break
+            except:
+                continue
+            
         return best_sequence.squeeze(0), best_score
 
+    def generate_param_beam(self, image, plant_info, beam_width=3, max_len=1024, 
+                      stage='val', ngram_size=0, add_noise=False, check_grammar=True):
+        device = image.device
+        SOS_tensor = torch.tensor(SOS_vec_padded, dtype=torch.float32).unsqueeze(0).unsqueeze(0).to(device)
+        EOS_token = self.EOS_token
+        PAD_token = self.PAD_token
+
+        # Depth information addition if required
+        if self.use_depth:
+            image = self.add_depth_to_image(image)
+        
+        # Encode the image to get features
+        feature = self.image_encoder(image, plant_info)
+        
+        # Initialize the beam with the start of sequence token
+        sequences = [(SOS_tensor, 0.0, [])]  # List of tuples (sequence, score, ngram_list)
+
+        for _ in range(max_len):
+            all_candidates = []
+            
+            for seq, score, label_list in sequences:
+
+                if len(label_list) > 0:
+                    if label_list[-1] == EOS_token:
+                        # If seqence reached EOS token, just add to candidate
+                        all_candidates.append((seq, score, label_list))
+                        continue
+
+                tgt_mask = get_tgt_mask(seq.size(1))
+                tgt_padding_mask = create_pad_mask(seq, PAD_token)
+
+                # Perform decoding without tracking gradients
+                with torch.no_grad():
+                    pred = self.sequence_decoder(feature, seq)
+
+                label_p = pred[:, :, :self.seq_dim]
+                params = pred[:, :, self.seq_dim:]
+
+                # Get top k candidates
+                topk_probs, topk_indices = F.log_softmax(label_p[-1, :, :], dim=-1).topk(beam_width)
+
+                for i in range(beam_width):
+                    next_label = topk_indices[:, 0].unsqueeze(0).unsqueeze(0).float()
+ 
+                    params = self.add_noise(params=params, min=-0.5, max=0.5)
+                    params = torch.clamp(params, -1, 1)
+                    params = self.sequence_decoder.scaler.inverse_transform(params)
+                    
+                    next_params = params[-1, :, :].unsqueeze(0)
+                    
+                    # Expand next_label to match the dimensions of next_params
+                    next_label = next_label.expand(next_params.size(0), next_params.size(1), next_label.size(-1))
+                    
+                    # Sanitize parameters based on the selected label
+                    next_params = self.sanitize_params(next_label, next_params)
+                    
+                    # Create a new candidate sequence
+                    next_item = torch.cat((next_label, next_params), dim=-1)
+                    candidate = torch.cat((seq, next_item), dim=1)
+                    candidate_score = score + topk_probs[0, i].item()
+
+                    # Update ngram_list with the new addition
+                    new_label_list = label_list + [next_label.item()]
+                    if ngram_size > 0:
+                        # Remove repeated n-grams
+                        if self.is_repeated_ngram(new_label_list, ngram_size):
+                            continue
+
+                    if check_grammar:
+                        # Check if candidate can be converted to xml
+                        # Check grammar when the last element is leaf
+                        organ_type = new_label_list[-1] % 6
+                        if organ_type in [3,4,5]:
+                            try:
+                                vec = token2vec(candidate.squeeze().tolist())
+                                vec2xml(vec)
+                                # If it succeed, increase the probablity
+                                #candidate_score += np.log(2)
+                                candidate_score += 0.1
+                                candidate_score = min(candidate_score, 0) # Clamp the max p as 1.0
+                            except:
+                                # If it failes, decrease the probablity
+                                #candidate_score += np.log(1/2)
+                                candidate_score -= 0.1
+
+
+                        # Check if any concecutive leaves more than 4
+                        leaf_list = [(x % 6 in [4,5,6]) for x in new_label_list]
+                        if contains_consecutive_sequence(leaf_list,[True, True, True, True]):
+                            # Do not append to the candidate
+                            continue
+
+                    all_candidates.append((candidate, candidate_score, new_label_list))
+
+
+            # Sort all candidates by score and keep the top beam_width
+            sequences = sorted(all_candidates, key=lambda tup: tup[1], reverse=True)[:beam_width]
+            
+            # Check if all sequences contain EOS or PAD tokens
+            if all(any(token in [EOS_token, PAD_token] for token in seq[0][0, :, 0].tolist()) for seq in sequences):
+                break
+        
+        # Return the best sequence found
+        for best_sequence, best_score, _ in sequences:
+            try:
+                # Check grammar before return it
+                vec = token2vec(best_sequence.squeeze().tolist())
+                vec2xml(vec)
+                # If success, break the loop
+                break
+            except:
+                continue
+            
+        return best_sequence.squeeze(0), best_score
 
     def is_repeated_ngram(self, ngram_list, ngram_size):
         """Check for repeated n-grams in the list."""
@@ -417,7 +563,7 @@ class MainModule(pl.LightningModule):
         neg_mask = (params == ignore_index)
         # Create masks
         mask = ~neg_mask
-        loss_mse = F.smooth_l1_loss(pred, params, reduction='none') # mse_loss or smooth_l1_loss
+        loss_mse = F.mse_loss(pred, params, reduction='none') # mse_loss or smooth_l1_loss
         masked_loss = loss_mse * mask
         return masked_loss.sum() / (mask).sum()
 
@@ -437,7 +583,7 @@ class MainModule(pl.LightningModule):
             neg_mask = neg_mask | ((label_mod == i).unsqueeze(1).expand_as(neg_mask) & neg_organ_masks[i].unsqueeze(0).unsqueeze(2).expand_as(neg_mask))
         neg_mask = neg_mask.permute(0, 2, 1)  # (N, C, L)
         # Compute loss
-        loss_mse = F.smooth_l1_loss(pred, values, reduction='none') # mse_loss or smooth_l1_loss
+        loss_mse = F.mse_loss(pred, values, reduction='none') # mse_loss or smooth_l1_loss
         # Create masks by negating the neg_mask
         mask = ~neg_mask
         masked_loss = loss_mse * mask

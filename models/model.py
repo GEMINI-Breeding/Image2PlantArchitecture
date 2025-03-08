@@ -535,15 +535,19 @@ class PositionalEncoding(nn.Module):
 class TransformerDecoderModel(nn.Module):
     def __init__(self, seq_embedding_dim, param_embedding_dim, 
                  num_layers, num_heads, num_tokens, num_params, 
-                 max_seq_length=2048, use_depth=True, decoder_only=False, image_size=448, dropout=0.1):
+                 max_seq_length=2048, use_depth=True, decoder_only=False, cat_emb=True, image_size=448, dropout=0.1):
         super(TransformerDecoderModel, self).__init__()
 
         self.dim_model = seq_embedding_dim + param_embedding_dim
         self.dropout = dropout
+        self.cat_emb = cat_emb
 
-        self.seq_embedding_dim = seq_embedding_dim
-        self.param_embedding_dim = param_embedding_dim
-
+        if self.cat_emb:
+            self.seq_embedding_dim = seq_embedding_dim
+            self.param_embedding_dim = param_embedding_dim
+        else:
+            self.seq_embedding_dim = self.dim_model
+            self.param_embedding_dim = self.dim_model
         self.seq_embedding = nn.Embedding(num_tokens, self.seq_embedding_dim)
         self.param_embedding = MLP([num_params, self.param_embedding_dim], batch_norm=False, last_activation=False)
   
@@ -611,7 +615,10 @@ class TransformerDecoderModel(nn.Module):
         depth_organ_seq = self.seq_embedding(depth_organ_seq) * math.sqrt(self.dim_model)
         params = self.param_embedding(params) * math.sqrt(self.dim_model)
 
-        tgt = torch.cat((depth_organ_seq, params), dim=2)
+        if self.cat_emb:
+            tgt = torch.cat((depth_organ_seq, params), dim=2)
+        else:
+            tgt = (depth_organ_seq + params) / 2
 
         # Make sequence length the first dimension 
         # PositionalEncoding은 시퀀스 차원에 대해 적용되므로, Positional Encoding을 적용하기 전에 반드시 시퀀스 차원이 첫 번째가 되어야 합니다.
@@ -626,18 +633,12 @@ class TransformerDecoderModel(nn.Module):
         else:
             decoded = self.transformer(features, tgt, tgt_mask=tgt_mask, tgt_key_padding_mask=tgt_key_padding_mask, tgt_is_causal=True)
 
-        output_seq = self.seq_decode_linear(decoded[:,:,:self.seq_embedding_dim])
-        output_params = self.param_decode_linear(decoded[:,:,self.seq_embedding_dim:])
-        if 0:
-            # Unscale to apply positive constraints
-            output_params = self.scaler.inverse_transform(output_params)
-            #output_params = ensure_positive(output_seq, output_params)
-            # Scale back
-            output_params = self.scaler.transform(output_params)
+        if self.cat_emb:
+            output_seq = self.seq_decode_linear(decoded[:,:,:self.seq_embedding_dim])
+            output_params = self.param_decode_linear(decoded[:,:,self.seq_embedding_dim:])
         else:
-            # Apply clamp
-            # output_params = torch.clamp(output_params, -1.0, 1.0)
-            pass
+            output_seq = self.seq_decode_linear(decoded)
+            output_params = self.param_decode_linear(decoded)
             
         # Cat the output_seq and output_params
         output_seq = torch.cat((output_seq, output_params), dim=2)

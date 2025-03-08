@@ -381,6 +381,8 @@ def vec2element(root, plant_array, depth=0, debug=False):
                 add_trait_subelement(current_petiole,"leaflet_scale",f"{(params[4]):.6g}")
                 plant_array = plant_array[1:]
                 last_elem = 'Petiole'
+            elif current_internode is None:
+                raise("Error: current_internode is None, skip adding current_petiole")
 
         if len(plant_array) > 0:
             line = plant_array[0]
@@ -397,7 +399,7 @@ def vec2element(root, plant_array, depth=0, debug=False):
                 add_trait_subelement(current_leaf,"leaf_roll",f"{(params[3]):.6g}")
                 plant_array = plant_array[1:]
             elif current_petiole is None:
-                print("Error: current_petiole is None, skip adding leaf")
+                raise("Error: current_petiole is None, skip adding leaf")
 
             if debug:
                 # Pretty print the XML

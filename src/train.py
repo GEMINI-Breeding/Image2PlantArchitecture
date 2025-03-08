@@ -41,20 +41,21 @@ if __name__ == "__main__":
             param_dim=N_PARAMS,
             param_embedding_dim=768//2,
             image_size=datamodule.image_size,
-            alpha=1.0,
+            alpha=10.0,
             lr=1e-5,
             use_depth=True,
+            cat_emb=False,
             dropout=0.10,
         )
     else:
-        module = MainModule.load_from_checkpoint("log/20250121_SideView_224_MinMaxScalerClamp/version_0/checkpoints/best_epoch=20.ckpt")
+        module = MainModule.load_from_checkpoint("log/20250306_Final_for_Paper/version_2/checkpoints/best_epoch=07.ckpt")
 
     tqdm_cb = TQDMProgressBar(refresh_rate=10)
 
     # Generate today's date string in YYYYMMDD format
     today_date_str = datetime.now().strftime('%Y%m%d')
     tb_logger = TensorBoardLogger(
-        name=f'{today_date_str}_SideView_224_40Days',
+        name=f'{today_date_str}_Final_for_Paper_aplha10_add_emb',
         save_dir='./log'
     )
 
@@ -68,11 +69,11 @@ if __name__ == "__main__":
         save_weights_only=True  # 가중치만 저장
     )
 
-    lr_monitor = LearningRateMonitor(logging_interval='epoch')
+    lr_monitor = LearningRateMonitor(logging_interval='step')
 
     early_stop_cb = EarlyStopping(
         monitor='val/loss', # Metric to monitor
-        patience=50,
+        patience=10,
         verbose=True,
         mode='min'
     )
@@ -89,7 +90,7 @@ if __name__ == "__main__":
     trainer = pl.Trainer(
         accelerator=accelerator,
         devices="auto",
-        max_epochs=2000,
+        max_epochs=100,
         callbacks=[tqdm_cb, ckpt_cb, lr_monitor, early_stop_cb, 
                 #    FineTuneBatchSizeFinder(milestones=(5, 10)),
                 #    FineTuneLearningRateFinder(milestones=(5, 10))
