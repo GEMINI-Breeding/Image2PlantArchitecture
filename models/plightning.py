@@ -411,7 +411,7 @@ class MainModule(pl.LightningModule):
                 for i in range(beam_width):
                     next_label = topk_indices[:, 0].unsqueeze(0).unsqueeze(0).float()
  
-                    params = self.add_noise(params=params, min=-0.5, max=0.5)
+                    params = self.add_noise(params=params, min=-0.1, max=0.1)
                     params = torch.clamp(params, -1, 1)
                     params = self.sequence_decoder.scaler.inverse_transform(params)
                     
@@ -541,22 +541,18 @@ class MainModule(pl.LightningModule):
         return new_params
 
     def label_loss_fn(self, pred, label, ignore_index=None):
-
         # Define the number of classes (0 to 26)
         num_classes = EOS_token+1  # Adjust if there are more tokens
 
-        # Initialize weights to 1 for all classes
-        weights = torch.ones(num_classes, device=pred.device)
+        # # Initialize weights to 1 for all classes
+        # weights = torch.ones(num_classes, device=pred.device)
+        # # Assign a higher weight (e.g., 2.0) to tokens 12 through 23
+        # weights[12:24] = 2.0
+        # return F.cross_entropy(pred, label, weight=weights)
 
-        # Assign a higher weight (e.g., 2.0) to tokens 12 through 23
-        weights[12:24] = 2.0
-
-        # Compute cross-entropy loss with the defined weights
-        if ignore_index is not None:
-            return F.cross_entropy(pred, label, ignore_index=ignore_index, weight=weights)
-        else:
-            return F.cross_entropy(pred, label, weight=weights)
-
+        #return F.cross_entropy(pred, label, ignore_index=ignore_index, weight=weights)
+        ce_loss = F.cross_entropy(pred, label, ignore_index=ignore_index)
+        return ce_loss
 
     def param_loss_fn(self, pred, params, ignore_index=PAD_token):
         # Create neg mask
@@ -565,7 +561,7 @@ class MainModule(pl.LightningModule):
         mask = ~neg_mask
         loss_mse = F.mse_loss(pred, params, reduction='none') # mse_loss or smooth_l1_loss
         masked_loss = loss_mse * mask
-        return masked_loss.sum() / (mask).sum()
+        return masked_loss.sum() / masked_loss.size(0)
 
     def param_loss_fn_bylabel(self, label, values, pred, ignore_index=PAD_token):
         # label: (batch_size, seq_len)
@@ -576,12 +572,16 @@ class MainModule(pl.LightningModule):
         neg_organ_masks = create_organ_mask().to(pred.device) # Negative masks
 
         # Ensure label_mod and masks have compatible dimensions
-        label_mod = label % 6
-        neg_mask = (values == ignore_index)  # First mask is for padding
-        neg_mask = neg_mask.permute(0, 2, 1)  # (N, C, L)
+        neg_mask = (label == ignore_index).unsqueeze(2).expand_as(values)  # First mask is for padding
+        if 1:
+            neg_mask = neg_mask | (label == PAD_token).unsqueeze(2).expand_as(values)  
+            neg_mask = neg_mask | (label == SOS_token).unsqueeze(2).expand_as(values)  
+            neg_mask = neg_mask | (label == EOS_token).unsqueeze(2).expand_as(values)  
+
+        # neg_mask = neg_mask.permute(0, 2, 1)  # (N, C, L)
         for i in range(6):
-            neg_mask = neg_mask | ((label_mod == i).unsqueeze(1).expand_as(neg_mask) & neg_organ_masks[i].unsqueeze(0).unsqueeze(2).expand_as(neg_mask))
-        neg_mask = neg_mask.permute(0, 2, 1)  # (N, C, L)
+            neg_mask = neg_mask | ((label % 6 == i).unsqueeze(2).expand_as(neg_mask) & neg_organ_masks[i].unsqueeze(0).unsqueeze(1).expand_as(neg_mask))
+        # neg_mask = neg_mask.permute(0, 2, 1)  # (N, C, L)
         # Compute loss
         loss_mse = F.mse_loss(pred, values, reduction='none') # mse_loss or smooth_l1_loss
         # Create masks by negating the neg_mask
@@ -645,13 +645,11 @@ class MainModule(pl.LightningModule):
         pred = self(image, plant_info, y_input)
         label_loss = self.label_loss_fn(pred[:, :, :self.seq_dim].permute(0, 2, 1), label, ignore_index=PAD_token) # (N, C, L)
         #label_loss = self.label_loss_fn(pred[:, :, :self.seq_dim].permute(0, 2, 1), label) 
+        # Scale the values before the loss calc
+        values = self.sequence_decoder.scaler.transform(values)
         if 0:
-            # Scale the values before the loss calc
-            values = self.sequence_decoder.scaler.transform(values)
             param_loss = self.param_loss_fn(pred[:, :, self.seq_dim:], values)
         else:
-            # Scale the values before the loss calc
-            values = self.sequence_decoder.scaler.transform(values)
             param_loss = self.param_loss_fn_bylabel(label=label, values=values, pred=pred[:, :, self.seq_dim:])
 
         ######### Tensorboard logging
