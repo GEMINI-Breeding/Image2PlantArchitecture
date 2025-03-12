@@ -168,7 +168,7 @@ class MainModule(pl.LightningModule):
             decoder_only=True,
             use_depth=self.use_depth,
             image_size=self.image_size,
-            dropout=self.dropout,
+            dropout_p=self.dropout,
             max_seq_length=max_len,
             cat_emb=cat_emb
         )
@@ -694,7 +694,7 @@ class MainModule(pl.LightningModule):
             self.current_val_step = 0
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=1e-5)
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
         scheduler = get_cosine_schedule_with_warmup(
             optimizer, 
             num_warmup_steps=self.num_warmup_steps, 

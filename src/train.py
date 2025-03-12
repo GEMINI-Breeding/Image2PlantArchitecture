@@ -26,16 +26,16 @@ if __name__ == "__main__":
     pl.seed_everything(42)
 
     # Define dataset to solve
-    dataset_dir = "data/20250123_Sideview_40Days"
+    dataset_dir = "data/2000_Plots_20241210"
     datamodule = MainDataModule(dataset_dir,
                                 image_size=224,
                                 load_depth=False,
-                                train_batch_size=16, num_workers=8, process_leaf=True, preload=True, side_view=True,
-                                growth_stages = ["01","02","03","04","05"])
+                                train_batch_size=16, num_workers=8, process_leaf=True, preload=False, side_view=False)
+                                # growth_stages = ["01","02","03","04","05"])
     
     if 1:
         module = MainModule(
-            num_layers=12,
+            num_layers=6,
             num_heads=8,
             seq_dim=EOS_token+1,
             seq_embedding_dim=768//2,
@@ -43,9 +43,9 @@ if __name__ == "__main__":
             param_embedding_dim=768//2,
             image_size=datamodule.image_size,
             alpha=10.0,
-            lr=1e-5,
-            use_depth=True,
-            cat_emb=False,
+            lr=1e-4,
+            use_depth=False,
+            cat_emb=True,
             dropout=0.10,
         )
     else:
@@ -56,7 +56,7 @@ if __name__ == "__main__":
     # Generate today's date string in YYYYMMDD format
     today_date_str = datetime.now().strftime('%Y%m%d')
     tb_logger = TensorBoardLogger(
-        name=f'{today_date_str}_Final_for_Paper_day_01to05',
+        name=f'{today_date_str}_Final_for_Paper_Topview_RGBOnly_FixViT',
         save_dir='./log'
     )
 

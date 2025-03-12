@@ -431,18 +431,18 @@ class ViT_FeatureExtractor(nn.Module):
             self.model.embeddings.patch_embeddings.projection = nn.Conv2d(4, 768, kernel_size=(16, 16), stride=(16, 16))
             self.model.embeddings.patch_embeddings.num_channels = 4
         elif 1:
-            self.model = AutoModel.from_pretrained('facebook/dinov2-base') # Use DINOv2, it will give 257x768 feature
-            self.img_proc = AutoImageProcessor.from_pretrained('facebook/dinov2-base')
+            self.model = AutoModel.from_pretrained('facebook/dinov2-small') # Use DINOv2, it will give 257x768 feature
+            self.img_proc = AutoImageProcessor.from_pretrained('facebook/dinov2-small')
             if self.use_depth:
                 self.normalize = transforms.Normalize(mean=[0.5, 0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5, 0.5])
                 self.model.embeddings.patch_embeddings.projection = nn.Conv2d(4, 768, kernel_size=(14, 14), stride=(14, 14))
                 self.model.embeddings.patch_embeddings.num_channels = 4
             else:
                 self.normalize = transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
-
                 # Fix the weights of the Vision Transformer model
                 for param in self.model.parameters():
                     param.requires_grad = False
+            self.embedding_size = self.model.config.hidden_size  # Get the embedding size from the model config
         else:
             num_channels = 4 if self.use_depth else 3
             config = ViTConfig(image_size=image_size, 
@@ -461,11 +461,11 @@ class ViT_FeatureExtractor(nn.Module):
                                                   nn.Linear(512, 768))
         self.output_size = output_size
         
-        self.projection = MLP([768, output_size])  # Reduce feature dimension
+        self.projection = MLP([self.embedding_size, output_size])  # Reduce feature dimension
 
 
     def forward(self, x, y):
-        if 0:
+        if 1:
             # Use Dinov2 image processor
             x = self.img_proc(images=x, return_tensors="pt").to(x.device)
             x = self.model(**x).last_hidden_state
@@ -535,11 +535,11 @@ class PositionalEncoding(nn.Module):
 class TransformerDecoderModel(nn.Module):
     def __init__(self, seq_embedding_dim, param_embedding_dim, 
                  num_layers, num_heads, num_tokens, num_params, 
-                 max_seq_length=2048, use_depth=True, decoder_only=False, cat_emb=True, image_size=448, dropout=0.1):
+                 max_seq_length=2048, use_depth=True, decoder_only=False, cat_emb=True, image_size=448, dropout_p=0.1):
         super(TransformerDecoderModel, self).__init__()
 
         self.dim_model = seq_embedding_dim + param_embedding_dim
-        self.dropout = dropout
+        self.dropout_p = dropout_p
         self.cat_emb = cat_emb
 
         if self.cat_emb:
@@ -556,15 +556,15 @@ class TransformerDecoderModel(nn.Module):
         self.multihead_attn_weights = None
         
         # Positional Encoding for Sequence
-        self.Seq_positional_encoding = PositionalEncoding(dim_model=self.dim_model, max_len=max_seq_length, dropout_p=self.dropout)
+        self.Seq_positional_encoding = PositionalEncoding(dim_model=self.dim_model, max_len=max_seq_length, dropout_p=self.dropout_p)
         # Positional Encoding for Image features
-        self.ImgFeature_positional_encoding = PositionalEncoding(dim_model=self.dim_model, max_len=(image_size//14)**2 + 1 + 1, dropout_p=self.dropout) 
+        self.ImgFeature_positional_encoding = PositionalEncoding(dim_model=self.dim_model, max_len=(image_size//14)**2 + 1 + 1, dropout_p=self.dropout_p) 
         self.decoder_only = decoder_only
         if self.decoder_only:
             # self.transformer_decoder_layer = nn.TransformerDecoderLayer(d_model=self.dim_model, nhead=num_heads)
             # self.transformer_decoder = nn.TransformerDecoder(self.transformer_decoder_layer, num_layers=num_layers)
             self.transformer_decoder_layer = TransformerDecoderLayerWithAttention(d_model=self.dim_model, 
-                                                                                  nhead=num_heads, dropout=self.dropout)
+                                                                                  nhead=num_heads, dropout=self.dropout_p)
             self.transformer_decoder = TransformerDecoderWithAttention(self.transformer_decoder_layer, num_layers=num_layers)
         else:
             self.transformer = nn.Transformer(
@@ -579,7 +579,7 @@ class TransformerDecoderModel(nn.Module):
             self.param_decode_linear = MLP([self.param_embedding_dim, num_params], batch_norm=False, last_activation=False)
         else:
             self.seq_decode_linear = nn.Linear(self.seq_embedding_dim, num_tokens)
-            self.param_decode_linear = nn.Linear(self.param_embedding_dim, num_params)
+            self.param_decode_linear = RegressionModel(self.param_embedding_dim, num_params)
 
         self.layer_norm = nn.LayerNorm(self.dim_model)
         self.seq_layer_norm = nn.LayerNorm(self.seq_embedding_dim)
@@ -646,24 +646,20 @@ class TransformerDecoderModel(nn.Module):
     
 
 class RegressionModel(nn.Module):
-    def __init__(self, dim_model=768, image_size=448, dropout=0.1):
-        super(RegressionModel,self).__init__()
+    def __init__(self, dim_model=768, num_params=18, hidden_dim=1024, dropout_p=0.1):
+        super(RegressionModel, self).__init__()
         
         self.activation = nn.ReLU()
-
-        #self.linear = nn.Linear(197*dim_model, 4)
-        self.linear = nn.Linear(257*dim_model, 6)
-        #self.linear = nn.Linear(dim_model, 6)
+        self.dropout1 = nn.Dropout(dropout_p)
+        self.linear1 = nn.Linear(dim_model, hidden_dim)
+        self.linear2 = nn.Linear(hidden_dim, num_params)
+    
 
     def forward(self, x):
-        if 1:
-            # Use all the decoded output
-            x = x.reshape(x.size(0), -1)
-        else:
-            # Get CLS Token
-            x = x[:, 0, :]
-        x = self.activation(x) # No activation function because the output is already nonlinearity
-        x = self.linear(x)
+        x = self.linear1(x)
+        x = self.activation(x)
+        x = self.dropout1(x)
+        x = self.linear2(x)
         
         return x
     
