@@ -708,7 +708,8 @@ class MainDataModule(pl.LightningDataModule):
                         load_depth=True,
                         side_view=False,
                         process_leaf=False,
-                        preload=False):
+                        preload=False,
+                        growth_stages=None):
         super().__init__()
         self.dataset_dir = dataset_dir
         self.train_batch_size = train_batch_size
@@ -735,6 +736,8 @@ class MainDataModule(pl.LightningDataModule):
                 # transforms.Lambda(lambda img: torch.from_numpy(np.array(img)).permute(2, 0, 1).float())
         ])
 
+        self.growth_stages = growth_stages
+
     def load_or_create_dataset(self, dataset_dir, dataset_name, plot, stages, transform, load_depth, process_leaf, side_view, preload, image_size):
         saved_dataset_name = os.path.join(dataset_dir, f"{dataset_name}.pkl")
         if os.path.exists(saved_dataset_name) and preload:
@@ -756,10 +759,12 @@ class MainDataModule(pl.LightningDataModule):
                         pickle.dump(dataset, f)
         return dataset
 
-    def setup(self, stage=None, growth_stages=None):
+    def setup(self, stage=None):
         train_ratio = 0.5
         val_ratio = 0.25
         test_ratio = 0.25
+
+        growth_stages = self.growth_stages
 
         # Get the num plots from the last xml file
         xml_files = os.listdir(os.path.join(self.dataset_dir, "xml"))

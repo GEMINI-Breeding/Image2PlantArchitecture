@@ -30,7 +30,8 @@ if __name__ == "__main__":
     datamodule = MainDataModule(dataset_dir,
                                 image_size=224,
                                 load_depth=False,
-                                train_batch_size=16, num_workers=8, process_leaf=True, preload=True, side_view=True)
+                                train_batch_size=16, num_workers=8, process_leaf=True, preload=True, side_view=True,
+                                growth_stages = ["01","02","03","04","05"])
     
     if 1:
         module = MainModule(
@@ -55,7 +56,7 @@ if __name__ == "__main__":
     # Generate today's date string in YYYYMMDD format
     today_date_str = datetime.now().strftime('%Y%m%d')
     tb_logger = TensorBoardLogger(
-        name=f'{today_date_str}_Final_for_Paper_aplha10_add_emb',
+        name=f'{today_date_str}_Final_for_Paper_day_01to05',
         save_dir='./log'
     )
 
@@ -73,7 +74,7 @@ if __name__ == "__main__":
 
     early_stop_cb = EarlyStopping(
         monitor='val/loss', # Metric to monitor
-        patience=10,
+        patience=20,
         verbose=True,
         mode='min'
     )

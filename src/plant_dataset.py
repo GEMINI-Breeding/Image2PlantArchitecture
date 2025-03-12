@@ -194,7 +194,12 @@ class PlantDataset(Dataset):
 
         # Load XML file
         # Load and parse the XML file
-        tree = ET.parse(os.path.join(self.plant_xml_dir, self.plant_xml_files[idx]))
+        try:
+            xml_file = os.path.join(self.plant_xml_dir, self.plant_xml_files[idx])
+            tree = ET.parse(xml_file)
+        except Exception as e:
+            print(f"Error Reading {xml_file}")
+            print(e)
 
         # Get the root element
         root = tree.getroot()

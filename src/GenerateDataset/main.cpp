@@ -120,7 +120,7 @@ int main(int argc, char* argv[]){
         std::cout << angle << " ";
     }
     std::cout << std::endl;
-    plantarchitecture.writePlantMeshVertices(plantID,"plantvertices.txt");
+    // plantarchitecture.writePlantMeshVertices(plantID,"plantvertices.txt");
 
     if(stats_only){
         return 0;
@@ -131,8 +131,8 @@ int main(int argc, char* argv[]){
     vis.buildContextGeometry(&context);
     vis.hideWatermark();
     vis.disableMessages();
-    vis.setLightingModel(Visualizer::LIGHTING_PHONG_SHADOWED);
-    vis.setLightDirection(make_vec3(1, 0, 1));
+    vis.setLightingModel(Visualizer::LIGHTING_PHONG);
+    vis.setLightDirection(make_vec3(0, 0, 1));
 
     // Set the camera position
     float x = 0;
