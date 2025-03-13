@@ -557,6 +557,7 @@ class TransformerDecoderModel(nn.Module):
         
         # Positional Encoding for Sequence
         self.Seq_positional_encoding = PositionalEncoding(dim_model=self.dim_model, max_len=max_seq_length, dropout_p=self.dropout_p)
+        self.depth_organ_positional_encoding = PositionalEncoding(dim_model=self.seq_embedding_dim, max_len=max_seq_length, dropout_p=self.dropout_p)
         # Positional Encoding for Image features
         self.ImgFeature_positional_encoding = PositionalEncoding(dim_model=self.dim_model, max_len=(image_size//14)**2 + 1 + 1, dropout_p=self.dropout_p) 
         self.decoder_only = decoder_only
@@ -613,7 +614,11 @@ class TransformerDecoderModel(nn.Module):
         # Scale the params to -1 to 1
         params = self.scaler.transform(params)
         depth_organ_seq = self.seq_embedding(depth_organ_seq) * math.sqrt(self.dim_model)
+        depth_organ_seq = depth_organ_seq.permute(1,0,2)
+        depth_organ_seq = self.depth_organ_positional_encoding(depth_organ_seq)
+        
         params = self.param_embedding(params) * math.sqrt(self.dim_model)
+        params = params.permute(1,0,2)
 
         if self.cat_emb:
             tgt = torch.cat((depth_organ_seq, params), dim=2)
@@ -621,11 +626,7 @@ class TransformerDecoderModel(nn.Module):
             tgt = (depth_organ_seq + params) / 2
 
         # Make sequence length the first dimension 
-        # PositionalEncoding은 시퀀스 차원에 대해 적용되므로, Positional Encoding을 적용하기 전에 반드시 시퀀스 차원이 첫 번째가 되어야 합니다.
-        tgt = tgt.permute(1,0,2)
         features = features.permute(1,0,2)
-
-        tgt = self.Seq_positional_encoding(tgt)
         features = self.ImgFeature_positional_encoding(features)
 
         if self.decoder_only:

@@ -56,7 +56,7 @@ if __name__ == "__main__":
     # Generate today's date string in YYYYMMDD format
     today_date_str = datetime.now().strftime('%Y%m%d')
     tb_logger = TensorBoardLogger(
-        name=f'{today_date_str}_Final_for_Paper_Topview_RGBOnly_FixViT',
+        name=f'{today_date_str}_Final_for_Paper_Topview_RGBOnly_FixViT_NoPosEmbonParams',
         save_dir='./log'
     )
 
