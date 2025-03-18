@@ -153,15 +153,45 @@ def ensure_positive(output_seq, x):
     return x
 
 import torch
-
-import torch
 import torch.nn as nn
 
-import torch
-import torch.nn as nn
+class SinkhornDistance(nn.Module):
+    def __init__(self, eps=0.1, max_iter=100):
+        super(SinkhornDistance, self).__init__()
+        self.eps = eps
+        self.max_iter = max_iter
 
-import torch
-import torch.nn as nn
+    def forward(self, x, y, stop_thresh: float = 1e-5):
+        # Ensure x and y are at least 2D tensors
+        if x.dim() == 1:
+            x = x.unsqueeze(1)  # Add batch dimension
+        if y.dim() == 1:
+            y = y.unsqueeze(1)  # Add batch dimension
+
+        # Cost matrix (Euclidean distance)
+        cost_matrix = torch.cdist(x, y, p=2)
+
+        # Initialize dual potentials
+        u = torch.zeros(x.size(0), device=x.device)
+        v = torch.zeros(y.size(0), device=y.device)
+
+        # Sinkhorn iterations
+        for _ in range(self.max_iter):
+            u_prev = u
+            v_prev = v      
+            u = -self.eps * torch.logsumexp((-cost_matrix + v.unsqueeze(0)) / self.eps, dim=1)
+            v = -self.eps * torch.logsumexp((-cost_matrix + u.unsqueeze(1)) / self.eps, dim=0)
+
+            max_err_u = torch.max(torch.abs(u_prev-u))
+            max_err_v = torch.max(torch.abs(v_prev-v))
+            if max_err_u < stop_thresh and max_err_v < stop_thresh:
+                break
+        # Compute optimal transport plan and distance
+        transport_plan = torch.exp((-cost_matrix + u.unsqueeze(1) + v.unsqueeze(0)) / self.eps)
+        sinkhorn_distance = torch.sum(transport_plan * cost_matrix)
+        
+        return sinkhorn_distance
+
 
 class MinMaxScalerTorch(nn.Module):
     def __init__(self, feature_range=(-1, 1)):
@@ -342,25 +372,55 @@ class TransformerDecoderLayerWithAttention(nn.TransformerDecoderLayer):
         self.self_attn_weights = None
         self.multihead_attn_weights = None
 
-    def forward(self, tgt, memory, tgt_mask=None, memory_mask=None, 
-                tgt_key_padding_mask=None, memory_key_padding_mask=None):
-        # self-attention block
-        tgt2, self_attn_weights = self.self_attn(tgt, tgt, tgt, attn_mask=tgt_mask,
-                                                 key_padding_mask=tgt_key_padding_mask)
-        self.self_attn_weights = self_attn_weights
-        tgt = tgt + self.dropout1(tgt2)
-        tgt = self.norm1(tgt)
-        # multi-head attention block
-        tgt2, multihead_attn_weights = self.multihead_attn(tgt, memory, memory, attn_mask=memory_mask,
-                                                           key_padding_mask=memory_key_padding_mask)
-        self.multihead_attn_weights = multihead_attn_weights
-        tgt = tgt + self.dropout2(tgt2)
-        tgt = self.norm2(tgt)
-        # feedforward block
-        tgt2 = self.linear2(self.dropout(F.relu(self.linear1(tgt))))
-        tgt = tgt + self.dropout3(tgt2)
-        tgt = self.norm3(tgt)
-        return tgt
+    def forward(
+        self,
+        tgt: Tensor,
+        memory: Tensor,
+        tgt_mask: Optional[Tensor] = None,
+        memory_mask: Optional[Tensor] = None,
+        tgt_key_padding_mask: Optional[Tensor] = None,
+        memory_key_padding_mask: Optional[Tensor] = None,
+        tgt_is_causal: bool = False,
+        memory_is_causal: bool = False,
+    ) -> Tensor:
+        
+        x = tgt
+        if self.norm_first:
+            # self-attention block
+            x = self.norm1(x)
+            x2, self_attn_weights = self.self_attn(x, x, x, 
+                                                    attn_mask=tgt_mask,
+                                                    key_padding_mask=tgt_key_padding_mask,
+                                                    is_causal=tgt_is_causal)
+            x = x + self.dropout1(x2)
+
+            # multi-head attention block
+            x2, multihead_attn_weights = self.multihead_attn(self.norm2(x), memory, memory, attn_mask=memory_mask,
+                                                            key_padding_mask=memory_key_padding_mask,
+                                                            is_causal=memory_is_causal)
+            x = x + self.dropout2(x2)
+
+            # feedforward block
+            x = x + self._ff_block(self.norm3(x))
+        else:   
+            # self-attention block
+            x2, self_attn_weights = self.self_attn(x, x, x, 
+                                                        attn_mask=tgt_mask,
+                                                        key_padding_mask=tgt_key_padding_mask,
+                                                        is_causal=tgt_is_causal)
+            x = self.norm1(x + self.dropout1(x2))
+
+            # multi-head attention block
+            x2, multihead_attn_weights = self.multihead_attn(x, memory, memory, attn_mask=memory_mask,
+                                                            key_padding_mask=memory_key_padding_mask,
+                                                            is_causal=memory_is_causal)
+            x = self.norm2(x + self.dropout2(x2))
+
+            # feedforward block
+            x = self.norm3(x + self._ff_block(x))
+
+
+        return x, self_attn_weights, multihead_attn_weights
 
 class TransformerDecoderWithAttention(nn.TransformerDecoder):
     def __init__(self, decoder_layer, num_layers):
@@ -369,16 +429,16 @@ class TransformerDecoderWithAttention(nn.TransformerDecoder):
     def forward(self, tgt, memory, tgt_mask=None, memory_mask=None,
                 tgt_key_padding_mask=None, memory_key_padding_mask=None):
         output = tgt
-        self_attn_weights = []
-        multihead_attn_weights = []
+        total_self_attn_weights = []
+        total_multihead_attn_weights = []
 
         for mod in self.layers:
-            output = mod(output, memory, tgt_mask=tgt_mask, memory_mask=memory_mask,
+            output, self_attn_weights, multihead_attn_weights = mod(output, memory, tgt_mask=tgt_mask, memory_mask=memory_mask,
                          tgt_key_padding_mask=tgt_key_padding_mask,
                          memory_key_padding_mask=memory_key_padding_mask)
-            self_attn_weights.append(mod.self_attn_weights)
-            multihead_attn_weights.append(mod.multihead_attn_weights)
-        return output, self_attn_weights, multihead_attn_weights
+            total_self_attn_weights.append(self_attn_weights)
+            total_multihead_attn_weights.append(multihead_attn_weights)
+        return output, total_self_attn_weights, total_multihead_attn_weights
 
 # 특정 층까지의 출력을 얻기 위한 새로운 모델 정의
 class EfficientNetExtractor(nn.Module):
@@ -417,8 +477,50 @@ class CNN_FeatureExtractor(nn.Module):
         x = self.fc(x)
         return x
     
+class ViT_Projection(nn.Module):
+    def __init__(self, in_features, out_features, add_noise=False, use_clstoken=True):
+        super().__init__()
+
+        self.temperature = torch.tensor(1.0)
+        self.gate = nn.Linear(in_features, 1) # Predicts "usefulness" score
+        self.projection = nn.Linear(in_features, out_features)
+        self.add_noise = add_noise
+        self.use_clstoken = use_clstoken
+
+        # https://github.com/DepthAnything/Depth-Anything-V2/ => dpt.py#L86
+        if use_clstoken:
+            self.readout_projects = nn.ModuleList()
+            self.readout_projects.append(
+                nn.Sequential(
+                    nn.Linear(3 * in_features, in_features),
+                    nn.GELU()))
+
+    def forward(self, x):
+        # 1. Learned scaling
+        x = x * self.temperature  
+
+        if self.use_clstoken:
+            x, cls_token, plant_info = x[:, :-2, :], x[:,-2,:], x[:,-1,:]
+            cls_token = cls_token.unsqueeze(1).expand_as(x)
+            plant_info = plant_info.unsqueeze(1).expand_as(x)
+            x = self.readout_projects[0](torch.cat((x, cls_token, plant_info), -1))
+        else:
+            pass
+        
+        # 2. Variance-based gating
+        scores = torch.sigmoid(self.gate(x))  # [B, Seq, 1]
+        x = x * scores  # 중요 특징 강조
+        
+        # 3. 노이즈 투입 (386D 차원에서)
+        x = x + torch.randn_like(x) * 0.01  # ★ 최적 위치 ★
+        
+        # 4. Projection to 768D
+        x = self.projection(x)  
+        return x
+
+    
 class ViT_FeatureExtractor(nn.Module):
-    def __init__(self, output_size=256, image_size=448, use_depth=False):
+    def __init__(self, output_size=256, image_size=448, use_depth=False, vit_model='facebook/dinov2-small'):
         super(ViT_FeatureExtractor, self).__init__()
         
         self.use_depth = use_depth
@@ -431,18 +533,26 @@ class ViT_FeatureExtractor(nn.Module):
             self.model.embeddings.patch_embeddings.projection = nn.Conv2d(4, 768, kernel_size=(16, 16), stride=(16, 16))
             self.model.embeddings.patch_embeddings.num_channels = 4
         elif 1:
-            self.model = AutoModel.from_pretrained('facebook/dinov2-small') # Use DINOv2, it will give 257x768 feature
-            self.img_proc = AutoImageProcessor.from_pretrained('facebook/dinov2-small')
+            self.model = AutoModel.from_pretrained(vit_model, output_hidden_states=True) # Use DINOv2, it will give 257x768 feature
+            self.img_proc = AutoImageProcessor.from_pretrained(vit_model)
+            self.embedding_size = self.model.config.hidden_size  # Get the embedding size from the model config
+            self.intermediate_layer_idx = {
+                    'vits': [2, 5, 8, 11],
+                    'vitb': [2, 5, 8, 11], 
+                    'vitl': [4, 11, 17, 23], 
+                    'vitg': [9, 19, 29, 39]
+                    }
             if self.use_depth:
                 self.normalize = transforms.Normalize(mean=[0.5, 0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5, 0.5])
-                self.model.embeddings.patch_embeddings.projection = nn.Conv2d(4, 768, kernel_size=(14, 14), stride=(14, 14))
+                self.model.embeddings.patch_embeddings.projection = nn.Conv2d(4, self.embedding_size, kernel_size=(14, 14), stride=(14, 14))
                 self.model.embeddings.patch_embeddings.num_channels = 4
             else:
                 self.normalize = transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
-                # Fix the weights of the Vision Transformer model
-                for param in self.model.parameters():
-                    param.requires_grad = False
-            self.embedding_size = self.model.config.hidden_size  # Get the embedding size from the model config
+                if 1:
+                    # Fix the weights of the Vision Transformer model
+                    for param in self.model.parameters():
+                        param.requires_grad = False
+                    self.model.eval() # Set Feature encoder to eval. But need to train projection and plant info embedding
         else:
             num_channels = 4 if self.use_depth else 3
             config = ViTConfig(image_size=image_size, 
@@ -454,21 +564,30 @@ class ViT_FeatureExtractor(nn.Module):
             self.normalize = transforms.Normalize(mean=mean_std, std=mean_std)
             self.model = ViTModel(config)
 
-        # Embedding for plant info [leaf_area, plant_width, plant_height]
-        self.plant_info_embedding = nn.Sequential(nn.Linear(3, 512),
-                                                  nn.BatchNorm1d(512),
-                                                  nn.ReLU(),
-                                                  nn.Linear(512, 768))
         self.output_size = output_size
+        # Embedding for plant info [leaf_area, plant_width, plant_height]
+        self.plant_info_embedding = nn.Sequential(nn.Linear(3, self.embedding_size),
+                                                  nn.GELU(),
+                                                  nn.Linear(self.embedding_size, self.output_size))
         
-        self.projection = MLP([self.embedding_size, output_size])  # Reduce feature dimension
+        if 0:
+            self.projection = MLP([self.embedding_size, output_size])  # Reduce feature dimension
+        else:
+            self.projection = ViT_Projection(self.embedding_size, output_size)
 
 
     def forward(self, x, y):
-        if 1:
+        if self.use_depth == False:
             # Use Dinov2 image processor
             x = self.img_proc(images=x, return_tensors="pt").to(x.device)
-            x = self.model(**x).last_hidden_state
+            outputs = self.model(**x)
+            if 1:
+                x = outputs.last_hidden_state
+            else:
+                # Layers
+                hidden_states = [outputs.hidden_states[idx] for idx in self.intermediate_layer_idx['vitb']]
+                #x = torch.cat(hidden_states, dim=2) 
+                x = torch.cat(hidden_states, dim=1)
         else:
             x = self.normalize(x)
             x = self.model(x).last_hidden_state
@@ -559,14 +678,18 @@ class TransformerDecoderModel(nn.Module):
         self.Seq_positional_encoding = PositionalEncoding(dim_model=self.dim_model, max_len=max_seq_length, dropout_p=self.dropout_p)
         self.depth_organ_positional_encoding = PositionalEncoding(dim_model=self.seq_embedding_dim, max_len=max_seq_length, dropout_p=self.dropout_p)
         # Positional Encoding for Image features
-        self.ImgFeature_positional_encoding = PositionalEncoding(dim_model=self.dim_model, max_len=(image_size//14)**2 + 1 + 1, dropout_p=self.dropout_p) 
+        self.ImgFeature_positional_encoding = PositionalEncoding(dim_model=self.dim_model, max_len=((image_size//14)**2 + 1)*4 + 1, dropout_p=self.dropout_p) 
         self.decoder_only = decoder_only
         if self.decoder_only:
-            # self.transformer_decoder_layer = nn.TransformerDecoderLayer(d_model=self.dim_model, nhead=num_heads)
+            #self.transformer_decoder_layer = nn.TransformerDecoderLayer(d_model=self.dim_model, nhead=num_heads)
             # self.transformer_decoder = nn.TransformerDecoder(self.transformer_decoder_layer, num_layers=num_layers)
             self.transformer_decoder_layer = TransformerDecoderLayerWithAttention(d_model=self.dim_model, 
                                                                                   nhead=num_heads, dropout=self.dropout_p)
             self.transformer_decoder = TransformerDecoderWithAttention(self.transformer_decoder_layer, num_layers=num_layers)
+
+            # self.param_decoder_layer = TransformerDecoderLayerWithAttention(d_model=self.dim_model, 
+            #                                                                       nhead=num_heads, dropout=self.dropout_p)
+            # self.transformer_param_decoder = TransformerDecoderWithAttention(self.param_decoder_layer, num_layers=num_layers)
         else:
             self.transformer = nn.Transformer(
                                             d_model=self.dim_model,
@@ -574,17 +697,16 @@ class TransformerDecoderModel(nn.Module):
                                             num_encoder_layers=num_layers,
                                             num_decoder_layers=num_layers,
                                             dropout=0.1,
+                                            batch_first=True
                                         )
         if 0:
             self.seq_decode_linear = MLP([self.seq_embedding_dim, num_tokens], batch_norm=False, last_activation=False)
             self.param_decode_linear = MLP([self.param_embedding_dim, num_params], batch_norm=False, last_activation=False)
         else:
             self.seq_decode_linear = nn.Linear(self.seq_embedding_dim, num_tokens)
-            self.param_decode_linear = RegressionModel(self.param_embedding_dim, num_params)
+            #self.param_decode_linear = RegressionModel(self.param_embedding_dim, num_params)
+            self.param_decode_linear = nn.Linear(self.param_embedding_dim, num_params)
 
-        self.layer_norm = nn.LayerNorm(self.dim_model)
-        self.seq_layer_norm = nn.LayerNorm(self.seq_embedding_dim)
-        self.param_layer_norm = nn.LayerNorm(self.param_embedding_dim)
         self.scaler = MinMaxScalerTorch()
     
     def forward(self, features, tgt_seq):
@@ -623,22 +745,27 @@ class TransformerDecoderModel(nn.Module):
         if self.cat_emb:
             tgt = torch.cat((depth_organ_seq, params), dim=2)
         else:
-            tgt = (depth_organ_seq + params) / 2
+            tgt = depth_organ_seq + params
 
         # Make sequence length the first dimension 
         features = features.permute(1,0,2)
-        features = self.ImgFeature_positional_encoding(features)
+        if 0: # Pos emb for image features are necessary or not necessary? => It's already included in ViT
+            features = self.ImgFeature_positional_encoding(features)
 
         if self.decoder_only:
-            decoded, self.self_attn_weights, self.multihead_attn_weights = self.transformer_decoder(tgt, features, tgt_mask=tgt_mask,tgt_key_padding_mask=tgt_key_padding_mask)
+            decoded, _, _ = self.transformer_decoder(tgt, features, tgt_mask=tgt_mask,tgt_key_padding_mask=tgt_key_padding_mask)
         else:
-            decoded = self.transformer(features, tgt, tgt_mask=tgt_mask, tgt_key_padding_mask=tgt_key_padding_mask, tgt_is_causal=True)
+            features = features.permute(1,0,2)
+            tgt = tgt.permute(1,0,2)
+            decoded = self.transformer(src=features, tgt=tgt, tgt_mask=tgt_mask, tgt_key_padding_mask=tgt_key_padding_mask, tgt_is_causal=True)
+            decoded = decoded.permute(1,0,2)
 
         if self.cat_emb:
             output_seq = self.seq_decode_linear(decoded[:,:,:self.seq_embedding_dim])
             output_params = self.param_decode_linear(decoded[:,:,self.seq_embedding_dim:])
         else:
             output_seq = self.seq_decode_linear(decoded)
+            # Decode again for paramters. Hope to find a more comples & relevant information from ViT
             output_params = self.param_decode_linear(decoded)
             
         # Cat the output_seq and output_params

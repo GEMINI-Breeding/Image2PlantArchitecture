@@ -25,38 +25,45 @@ if __name__ == "__main__":
     # Set the seed for reproducibility
     pl.seed_everything(42)
 
-    # Define dataset to solve
-    dataset_dir = "data/2000_Plots_20241210"
-    datamodule = MainDataModule(dataset_dir,
-                                image_size=224,
-                                load_depth=False,
-                                train_batch_size=16, num_workers=8, process_leaf=True, preload=False, side_view=False)
-                                # growth_stages = ["01","02","03","04","05"])
+    # Define configuration dictionary
+    config = {
+        "dataset_dir": "data/20250311_Sideview_40Days",
+        "image_size": 224,
+        "load_depth": False,
+        "train_batch_size": 16,
+        "num_workers": 4,
+        "process_leaf": True,
+        "preload": True,
+        "side_view": True,
+        "partial_data": 0.1,
+        #"growth_stages": ["01", "02", "03", "04", "05"],
+        "growth_stages": ["01"],
+        "num_layers": 8,
+        "num_heads": 8,
+        "seq_dim": EOS_token + 1,
+        "seq_embedding_dim": 768 // 2,
+        "param_dim": N_PARAMS,
+        "param_embedding_dim": 768 // 2,
+        "alpha": 10.0,
+        "lr": 2e-5,
+        "use_depth": False,
+        "cat_emb": True,
+        "decoder_only": True,
+        "dropout": 0.10,
+        "vit_model": "facebook/dinov2-small"
+    }
+
+    datamodule = MainDataModule(**config)
+    module = MainModule(**config)
     
-    if 1:
-        module = MainModule(
-            num_layers=6,
-            num_heads=8,
-            seq_dim=EOS_token+1,
-            seq_embedding_dim=768//2,
-            param_dim=N_PARAMS,
-            param_embedding_dim=768//2,
-            image_size=datamodule.image_size,
-            alpha=10.0,
-            lr=1e-4,
-            use_depth=False,
-            cat_emb=True,
-            dropout=0.10,
-        )
-    else:
-        module = MainModule.load_from_checkpoint("log/20250306_Final_for_Paper/version_2/checkpoints/best_epoch=07.ckpt")
+    #module = MainModule.load_from_checkpoint("log/20250306_Final_for_Paper/version_2/checkpoints/best_epoch=07.ckpt")
 
     tqdm_cb = TQDMProgressBar(refresh_rate=10)
 
     # Generate today's date string in YYYYMMDD format
     today_date_str = datetime.now().strftime('%Y%m%d')
     tb_logger = TensorBoardLogger(
-        name=f'{today_date_str}_Final_for_Paper_Topview_RGBOnly_FixViT_NoPosEmbonParams',
+        name=f'{today_date_str}_Final_for_Paper_Sideview_RGB_FixViT_SinkhornLoss_Day1',
         save_dir='./log'
     )
 
@@ -98,7 +105,7 @@ if __name__ == "__main__":
                    ],
         # callbacks=[tqdm_cb, ckpt_cb, lr_monitor],
         logger=tb_logger,
-        precision="bf16-mixed",
+        # precision="bf16-mixed",
         strategy=DDPStrategy(find_unused_parameters=True)  # Enable detection of unused parameters
     )
     trainer.fit(module, datamodule=datamodule)

@@ -6,6 +6,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import pytorch_lightning as pl
 from torch.utils.data import DataLoader
+import torch.version
 from torchvision import transforms
 from pytorch_lightning.callbacks import BatchSizeFinder, LearningRateFinder
 
@@ -20,6 +21,8 @@ sys.path.append(script_file_dir)
 from models.model import TransformerDecoderModel, RegressionModel, ViT_FeatureExtractor, CNN_FeatureExtractor
 from models.model import RegressionModel_Transformer, PositionalEncoding, VAE, MLP, SeqEmbeddingModel
 from models.model import create_organ_mask, get_tgt_mask, create_pad_mask, text_global_pool
+from models.model import SinkhornDistance
+# from sinkhorn import sinkhorn
 from src.plant_tokenizer import SOS_token, EOS_token, PAD_token, EOS_vec_padded, SOS_vec_padded
 from src.plant_tokenizer import generate_noise_plant_tokens
 from src.plant_dataset import PlantDataset
@@ -116,7 +119,10 @@ class MainModule(pl.LightningModule):
                  dropout=0.10, 
                  max_len=1024,
                  use_depth=False,
-                 cat_emb=True):
+                 cat_emb=True,
+                 decoder_only=True,
+                 vit_model="facebook/dinov2-small",
+                 **kwargs):
         super(MainModule, self).__init__()
         self.save_hyperparameters()  # 전달된 모든 인수를 저장
 
@@ -138,6 +144,10 @@ class MainModule(pl.LightningModule):
         self.num_warmup_steps = 1000
         self.num_training_steps = 10000
 
+        # Handle additional keyword arguments
+        self.extra_args = kwargs
+        
+
         self.SOS_token = SOS_token
         self.EOS_token = EOS_token
         self.PAD_token = PAD_token
@@ -145,14 +155,16 @@ class MainModule(pl.LightningModule):
         if self.use_depth:
             self.depth_est_img_proc = AutoImageProcessor.from_pretrained("depth-anything/Depth-Anything-V2-Small-hf")
             self.depth_est_model = AutoModelForDepthEstimation.from_pretrained("depth-anything/Depth-Anything-V2-Small-hf")
-            # Fix the weights 
+            # Set eval and disable gradient computation
+            self.depth_est_model.eval()
             for param in self.depth_est_model.parameters():
                 param.requires_grad = False
             self.depth_background = cv2.resize(cv2.imread(os.path.join(self.current_script_dir, "../src/assets/dirt.jpg")), (self.image_size, self.image_size))
             # Conver to RGB
             self.depth_background = cv2.cvtColor(self.depth_background, cv2.COLOR_BGR2RGB)
 
-        self.image_encoder = ViT_FeatureExtractor(output_size=seq_embedding_dim+param_embedding_dim, use_depth=self.use_depth, image_size=image_size)
+        self.image_encoder = ViT_FeatureExtractor(output_size=seq_embedding_dim+param_embedding_dim, 
+                                                  use_depth=self.use_depth, image_size=image_size, vit_model=vit_model)
 
         # Froze self.feature_extractor
         # self.image_encoder.eval()
@@ -165,14 +177,14 @@ class MainModule(pl.LightningModule):
             num_heads=self.num_heads,
             num_tokens=self.seq_dim,
             num_params=self.param_dim,
-            decoder_only=True,
+            decoder_only=decoder_only,
             use_depth=self.use_depth,
             image_size=self.image_size,
             dropout_p=self.dropout,
             max_seq_length=max_len,
             cat_emb=cat_emb
         )
-        
+
         self.multihead_attn_weights = None
         self.self_attn_weights = None
 
@@ -186,6 +198,8 @@ class MainModule(pl.LightningModule):
         self.prev_epoch = -1
         self.current_train_step = 0
         self.current_val_step = 0
+
+        self.sinkhorn_distance = SinkhornDistance() # sinkhorn  or SinkhornDistance()
 
     def forward(self, image, plant_info, tgt):
         if self.use_depth:
@@ -588,8 +602,57 @@ class MainModule(pl.LightningModule):
         mask = ~neg_mask
         masked_loss = loss_mse * mask
         return masked_loss.sum() / (mask).sum()
-        #return masked_loss.sum() / masked_loss.size(0)
 
+    def param_var_reg(self, label, values, ignore_index=PAD_token):
+
+        neg_organ_masks = create_organ_mask().to(values.device) # Negative masks
+
+        # Ensure label_mod and masks have compatible dimensions
+        neg_mask = (label == ignore_index).unsqueeze(2).expand_as(values)  # First mask is for padding
+        if 1:
+            neg_mask = neg_mask | (label == PAD_token).unsqueeze(2).expand_as(values)  
+            neg_mask = neg_mask | (label == SOS_token).unsqueeze(2).expand_as(values)  
+            neg_mask = neg_mask | (label == EOS_token).unsqueeze(2).expand_as(values)  
+
+        for i in range(6):
+            neg_mask = neg_mask | ((label % 6 == i).unsqueeze(2).expand_as(neg_mask) & neg_organ_masks[i].unsqueeze(0).unsqueeze(1).expand_as(neg_mask))
+        
+        var = torch.zeros(neg_mask.size(-1)).to(self.device)
+        total_values = dict()
+        for i in range(neg_mask.size(-1)):
+            var_mask = F.one_hot(torch.tensor(i), num_classes=neg_mask.size(-1)).unsqueeze(0).unsqueeze(1).expand_as(neg_mask)
+            var_mask = var_mask.to(self.device)
+            var_mask = var_mask.bool()
+            masked_values = values[(~neg_mask) * var_mask]
+            total_values[f"{i}"] = masked_values
+            var_i = torch.var(masked_values)
+            var[i] = var_i
+        return var, total_values
+    
+    def collect_params(self, label, values, ignore_index=PAD_token):
+
+        neg_organ_masks = create_organ_mask().to(values.device) # Negative masks
+
+        # Ensure label_mod and masks have compatible dimensions
+        neg_mask = (label == ignore_index).unsqueeze(2).expand_as(values)  # First mask is for padding
+        if 1:
+            neg_mask = neg_mask | (label == PAD_token).unsqueeze(2).expand_as(values)  
+            neg_mask = neg_mask | (label == SOS_token).unsqueeze(2).expand_as(values)  
+            neg_mask = neg_mask | (label == EOS_token).unsqueeze(2).expand_as(values)  
+
+        for i in range(6):
+            neg_mask = neg_mask | ((label % 6 == i).unsqueeze(2).expand_as(neg_mask) & neg_organ_masks[i].unsqueeze(0).unsqueeze(1).expand_as(neg_mask))
+        
+        var = torch.zeros(neg_mask.size(-1)).to(self.device)
+        total_values = dict()
+        for i in range(neg_mask.size(-1)):
+            var_mask = F.one_hot(torch.tensor(i), num_classes=neg_mask.size(-1)).unsqueeze(0).unsqueeze(1).expand_as(neg_mask)
+            var_mask = var_mask.to(self.device)
+            var_mask = var_mask.bool()
+            masked_values = values[(~neg_mask) * var_mask]
+            total_values[f"{i}"] = masked_values
+        return total_values
+    
     def add_depth_to_image(self, image, add_background=True):
     
         if add_background:
@@ -648,15 +711,32 @@ class MainModule(pl.LightningModule):
         # Scale the values before the loss calc
         values = self.sequence_decoder.scaler.transform(values)
         if 0:
-            param_loss = self.param_loss_fn(pred[:, :, self.seq_dim:], values)
+            param_mse_loss = self.param_loss_fn(pred[:, :, self.seq_dim:], values)
         else:
-            param_loss = self.param_loss_fn_bylabel(label=label, values=values, pred=pred[:, :, self.seq_dim:])
+            #param_loss = self.param_loss_fn_bylabel(label=label, values=values, pred=pred[:, :, self.seq_dim:])
+            collected_target = self.collect_params(label=label, values=values)
+            collected_pred = self.collect_params(label=label, values=pred[:, :, self.seq_dim:])
+            param_mse_loss = 0
+            param_var_reg = 0
+            sinkhorn_loss = 0
+            for i in range(len(collected_target)):
+                # Calc sum of MSE Loss
+                param_mse_loss += F.mse_loss(collected_target[f"{i}"], collected_pred[f"{i}"])
 
+                # Calc sum of Var Reg
+                param_var_reg += F.mse_loss(torch.var(collected_target[f"{i}"]), torch.var(collected_pred[f"{i}"]))
+
+                # calc sum of Sinkhorn loss
+                sinkhorn_loss += self.sinkhorn_distance(collected_target[f"{i}"].unsqueeze(1), collected_pred[f"{i}"].unsqueeze(1))
+        
         ######### Tensorboard logging
-        loss = label_loss + self.alpha * param_loss
+
+        loss = label_loss + self.alpha * param_mse_loss + 0.01 * sinkhorn_loss
 
         self.log(f'{mode}/label_loss', label_loss, batch_size=image.size(0), sync_dist=True)
-        self.log(f'{mode}/param_loss', param_loss, batch_size=image.size(0), sync_dist=True)
+        self.log(f'{mode}/param_loss', param_mse_loss, batch_size=image.size(0), sync_dist=True)
+        self.log(f'{mode}/param_var', param_var_reg, batch_size=image.size(0), sync_dist=True)
+        self.log(f'{mode}/sinkhorn_loss', sinkhorn_loss, batch_size=image.size(0), sync_dist=True)
         self.log(f'{mode}/loss', loss, batch_size=image.size(0), sync_dist=True)
 
         # Add images to tensorboard
@@ -689,7 +769,7 @@ class MainModule(pl.LightningModule):
     def on_after_backward(self):
         if self.prev_epoch != self.current_epoch:
             self.prev_epoch = self.current_epoch
-            # self.log_grads()
+            self.log_grads()
             self.current_train_step = 0
             self.current_val_step = 0
 
@@ -709,7 +789,10 @@ class MainDataModule(pl.LightningDataModule):
                         side_view=False,
                         process_leaf=False,
                         preload=False,
-                        growth_stages=None):
+                        growth_stages=None,
+                        partial_data=1.0,
+                        **kwargs):
+        
         super().__init__()
         self.dataset_dir = dataset_dir
         self.train_batch_size = train_batch_size
@@ -737,6 +820,10 @@ class MainDataModule(pl.LightningDataModule):
         ])
 
         self.growth_stages = growth_stages
+        self.partial_data = partial_data
+
+        # Handle additional keyword arguments
+        self.extra_args = kwargs
 
     def load_or_create_dataset(self, dataset_dir, dataset_name, plot, stages, transform, load_depth, process_leaf, side_view, preload, image_size):
         saved_dataset_name = os.path.join(dataset_dir, f"{dataset_name}.pkl")
@@ -760,9 +847,9 @@ class MainDataModule(pl.LightningDataModule):
         return dataset
 
     def setup(self, stage=None):
-        train_ratio = 0.5
-        val_ratio = 0.25
-        test_ratio = 0.25
+        train_ratio = 0.7 * self.partial_data
+        val_ratio = 0.15 * self.partial_data
+        test_ratio = 0.15 * self.partial_data
 
         growth_stages = self.growth_stages
 
@@ -773,7 +860,7 @@ class MainDataModule(pl.LightningDataModule):
 
         train_end = int(self.num_plots * train_ratio)
         val_end = train_end + int(self.num_plots * val_ratio)
-        test_end = self.num_plots  # Ensure total sums up to num_plots
+        test_end = min(self.num_plots, val_end + int(self.num_plots * test_ratio)) # Ensure total sums up to num_plots
 
         train_plots = [f"{plot:04d}" for plot in range(train_end)]
         val_plots = [f"{plot:04d}" for plot in range(train_end, val_end)]

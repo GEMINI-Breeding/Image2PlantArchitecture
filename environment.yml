@@ -22,3 +22,4 @@ dependencies:
     - onnx
     - onnxruntime
     - torchviz
+    - umap-learn

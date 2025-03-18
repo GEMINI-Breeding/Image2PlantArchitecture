@@ -72,6 +72,30 @@ def load_sideview_images(images_dir, image_file_name, img_size, process_leaf):
 
     return leaf_img, plant_info
 
+def load_image(images_dir, image_file_name, img_size, process_leaf):
+
+    # Load side view images and combine them into 2x2
+    # angles = [0, 90, 180, 270]
+    angles = [-1, 0, 120, 240]
+    image_name = image_file_name.split("/")[-1].split(".")[0]
+    # Make a empty image
+    total_img = np.zeros((img_size, img_size, 3), dtype=np.uint8)
+    total_plant_info = []
+
+    image = Image.open(os.path.join(images_dir, f"{image_name}.jpeg"))
+        
+    leaf_area, plant_width, plant_height, processed_img, (x,y,w,h) = process_leaf_image(np.array(image), 
+                                                                        normalize=True, debug=False, sqaure_crop=True)
+    plant_info = [leaf_area, plant_width, plant_height]
+    if process_leaf:
+        # Preprocess image
+        leaf_img = cv2.resize(processed_img, (img_size//2, img_size//2))
+    else:
+        leaf_img = cv2.resize(np.array(image), (img_size//2, img_size//2))
+
+    leaf_img = processed_img
+
+    return leaf_img, plant_info
 
 
 class PlantDataset(Dataset):
