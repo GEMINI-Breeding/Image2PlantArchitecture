@@ -133,7 +133,10 @@ class MainModule(pl.LightningModule):
                  dropout=0.10, 
                  max_len=1024,
                  use_depth=False,
-                 label_smoothing=0.0):
+                 cat_emb=True,
+                 decoder_only=True,
+                 vit_model="facebook/dinov2-small",
+                 **kwargs):
         super(MainModule, self).__init__()
         self.save_hyperparameters()  # 전달된 모든 인수를 저장
 
@@ -154,7 +157,9 @@ class MainModule(pl.LightningModule):
         self.max_len = max_len
         self.num_warmup_steps = 1000
         self.num_training_steps = 10000
-        self.label_smoothing = label_smoothing
+
+        # Handle additional keyword arguments
+        self.extra_args = kwargs
 
         if self.use_depth:
             self.depth_est_img_proc = AutoImageProcessor.from_pretrained("depth-anything/Depth-Anything-V2-Small-hf")
@@ -166,7 +171,8 @@ class MainModule(pl.LightningModule):
             # Conver to RGB
             self.depth_background = cv2.cvtColor(self.depth_background, cv2.COLOR_BGR2RGB)
 
-        self.image_encoder = ViT_FeatureExtractor(output_size=seq_embedding_dim+param_embedding_dim, use_depth=self.use_depth, image_size=image_size)
+        self.image_encoder = ViT_FeatureExtractor(output_size=seq_embedding_dim+param_embedding_dim, 
+                                                  use_depth=self.use_depth, image_size=image_size, vit_model=vit_model)
 
         # Froze self.feature_extractor
         # self.image_encoder.eval()
@@ -211,7 +217,7 @@ class MainModule(pl.LightningModule):
         params[1] = params[1].permute(1, 0, 2)    # Scaled Params
         return seq, params
 
-    def generate(self, image, plant_info, stage='val', mode='quantize'):
+    def generate(self, image, plant_info, stage='val'):
         device = image.device
         SOS_tensor = torch.tensor(SOS_vec_padded, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
         y_input = SOS_tensor
@@ -220,7 +226,7 @@ class MainModule(pl.LightningModule):
             image = self.add_depth_to_image(image)
 
         feature = self.image_encoder(image, plant_info)
-
+        quantizer = self.sequence_decoder.quantizer
 
         for i in range(self.max_len):
             # Add Masks
@@ -238,35 +244,19 @@ class MainModule(pl.LightningModule):
                 print(f"Error in {i} iteration")
                 break
             label = label_p.topk(1)[1].view(-1)[-1].item()  # num with highest probability
-            
-            if mode == 'quantize':
-                # Use quantized
-                params = params[0].topk(1)[1].squeeze(-1)
-                params = self.sequence_decoder.quantizer.inverse_transform(params)
-            elif mode == 'regression':
-                # Use scaled
-                params = params[1]
-                params = self.sequence_decoder.scaler.inverse_transform(params)
-            elif mode == 'mix':
-                quantized_params = params[0].topk(1)[1].squeeze(-1)
-                quantized_params = self.sequence_decoder.quantizer.inverse_transform(quantized_params)
 
-                scaled_params = params[1]
-                scaled_params = self.sequence_decoder.scaler.inverse_transform(scaled_params)
-
-                params = (scaled_params + quantized_params) / 2
-            else:
-                # Default -> Scaled
-                params = params[1]
-                params = self.sequence_decoder.scaler.inverse_transform(params)
-
+            params_recovered = torch.zeros([params[0].size(0),params[0].size(1),params[0].size(2)],device=self.device)
+            for i in range(params[0].size(2)):
+                recovered = quantizer.inverse_transform_i(params[0][:,:,i], i)
+                params_recovered[:, :, i] = recovered[:, :, 0]
+          
             # Stop if model predicts end of sentencplant_structure_vit_transformer_withpsudodepth_paramEste
             ## if label == EOS_token:
             if label == EOS_token or label == PAD_token:
                 break
 
             # Make next tensor using label and params
-            next_item = torch.cat((torch.tensor([[label]], dtype=torch.float32, device=device), params[-1]), dim=1).unsqueeze(0)
+            next_item = torch.cat((torch.tensor([[label]], dtype=torch.float32, device=device), params_recovered[-1]), dim=1).unsqueeze(0)
 
             # Concatenate previous input with predicted best word
             y_input = torch.cat((y_input, next_item), dim=1)
@@ -284,113 +274,6 @@ class MainModule(pl.LightningModule):
                 y_input = y_input.to(device)
 
         return y_input.squeeze(0)                    
-    # def generate(self, image, plant_info, stage='val', beam_size=3, no_repeat_ngram_size=5):
-    #     device = image.device
-    #     SOS_tensor = torch.tensor(SOS_vec_padded, dtype=torch.float32).unsqueeze(0).unsqueeze(0).to(device)
-    #     y_input = SOS_tensor
-
-    #     if self.use_depth:
-    #         image = self.add_depth_to_image(image)
-
-    #     feature = self.image_encoder(image, plant_info)
-
-    #     # Initialize beams
-    #     beams = [(y_input, 0, [])]  # (sequence, score, label_sequence)
-
-    #     for _ in range(self.max_len):
-    #         new_beams = []
-    #         for y_input, score, label_seq in beams:
-    #             tgt_mask = get_tgt_mask(y_input.size(1))
-    #             tgt_padding_mask = create_pad_mask(y_input, PAD_token)
-
-    #             pred = self._decode_sequence(feature, y_input, stage)
-    #             if pred is None:
-    #                 continue
-
-    #             label_p = pred[:, :, :self.seq_dim]
-    #             params = pred[:, :, self.seq_dim:]
-
-    #             # Unscale params
-    #             params = self.sequence_decoder.scaler.inverse_transform(params)
-
-    #             topk_probs, topk_indices = label_p[:, -1, :].topk(beam_size, dim=-1)
-    #             for i in range(beam_size):
-    #                 label = topk_indices[0, i].item()
-    #                 prob = topk_probs[0, i].item()
-
-    #                 # Stop if model predicts end of sentence
-    #                 if label == EOS_token or label == PAD_token:
-    #                     new_beams.append((y_input, score + prob, label_seq))
-    #                     continue
-
-    #                 # Make next tensor using label and params
-    #                 next_item = self._create_next_item(label, params, device)
-
-    #                 # Concatenate previous input with predicted best word
-    #                 new_y_input = torch.cat((y_input, next_item), dim=1)
-
-    #                 # Apply no_repeat_ngram_size constraint
-    #                 new_label_seq = label_seq + [label]
-    #                 if self._has_repeated_ngram(new_label_seq, no_repeat_ngram_size):
-    #                     continue
-
-    #                 # Vector cleaning
-    #                 new_y_input = self._clean_vector(new_y_input, SOS_tensor, device)
-
-    #                 new_beams.append((new_y_input, score + prob, new_label_seq))
-
-    #         # Select top beams
-    #         if not new_beams:
-    #             break
-    #         beams = sorted(new_beams, key=lambda x: x[1], reverse=True)[:beam_size]
-
-    #         # Stop if all beams are finished
-    #         if all(self._is_finished_beam(y_input) for y_input, _, _ in beams):
-    #             break
-
-    #     # Return the best beam
-    #     if not beams:
-    #         return torch.tensor([]).to(device)  # Return an empty tensor if no beams are left
-    #     best_beam = max(beams, key=lambda x: x[1])[0]
-    #     return best_beam.squeeze(0)
-
-    # def _decode_sequence(self, feature, y_input, stage):
-    #     try:
-    #         if stage == 'val':
-    #             with torch.no_grad():
-    #                 return self.sequence_decoder(feature, y_input)
-    #         else:
-    #             return self.sequence_decoder(feature, y_input)
-    #     except Exception as e:
-    #         print(e)
-    #         return None
-
-    # def _create_next_item(self, label, params, device):
-    #     label_tensor = torch.tensor([[label]], dtype=torch.float32, device=device)
-    #     next_item = torch.cat((label_tensor, params[-1]), dim=1).unsqueeze(0)
-    #     return next_item
-
-    # def _has_repeated_ngram(self, label_seq, n):
-    #     if len(label_seq) < n:
-    #         return False
-    #     ngrams = [tuple(label_seq[i:i+n]) for i in range(len(label_seq) - n + 1)]
-    #     return len(ngrams) != len(set(ngrams))
-
-    # def _is_finished_beam(self, y_input):
-    #     last_label = y_input[0, -1, 0].item()
-    #     return last_label == EOS_token or last_label == PAD_token
-
-    # def _clean_vector(self, y_input, SOS_tensor, device):
-    #     # Convert y_input to vec to clean erratic params. It will remove SOS Token
-    #     vec = token2vec(y_input.squeeze(0).tolist())
-
-    #     # Convert back to token
-    #     y_input = torch.tensor(vec2token(vec), dtype=torch.float).unsqueeze(0)
-
-    #     # Cat SOS_tensor
-    #     y_input = torch.cat((SOS_tensor, y_input), dim=1)
-
-    #     return y_input.to(device)
     
     def label_loss_fn(self, pred, label, ignore_index=None, label_smoothing=0.0):
         # Define the number of classes (0 to 26)
@@ -514,9 +397,46 @@ class MainModule(pl.LightningModule):
     
         return image
     
+    def collect_params(self, label, values, ignore_index=PAD_token):
 
+        neg_organ_masks = create_organ_mask().to(values.device) # Negative masks
+
+        # Ensure label_mod and masks have compatible dimensions
+        neg_mask = (label == ignore_index)  # First mask is for padding
+        if 1:
+            neg_mask = neg_mask | (label == PAD_token)
+            neg_mask = neg_mask | (label == SOS_token)
+            neg_mask = neg_mask | (label == EOS_token)
+
+        if len(values.shape) == 4:
+            neg_mask = neg_mask.unsqueeze(-1).unsqueeze(-1).expand_as(values)
+            for i in range(6):
+                neg_mask = neg_mask | ((label % 6 == i).unsqueeze(-1).unsqueeze(-1).expand_as(neg_mask) 
+                                       & neg_organ_masks[i].unsqueeze(0).unsqueeze(0).unsqueeze(-1).expand_as(neg_mask))
+            total_values = dict()
+            for i in range(neg_mask.size(2)): # Param dimension
+                var_mask = F.one_hot(torch.tensor(i), num_classes=neg_mask.size(2)).unsqueeze(0).unsqueeze(1).unsqueeze(-1).expand_as(neg_mask)
+                var_mask = var_mask.to(self.device)
+                var_mask = var_mask.bool()
+                masked_values = values[(~neg_mask) * var_mask].reshape(-1, values.size(-1))
+                total_values[f"{i}"] = masked_values
+        else:
+            neg_mask = neg_mask.unsqueeze(-1).expand_as(values)
+            for i in range(6):
+                neg_mask = neg_mask | ((label % 6 == i).unsqueeze(-1).expand_as(neg_mask) 
+                                       & neg_organ_masks[i].unsqueeze(0).unsqueeze(0).expand_as(neg_mask))
+            total_values = dict()
+            for i in range(neg_mask.size(2)): # Param dimension
+                var_mask = F.one_hot(torch.tensor(i), num_classes=neg_mask.size(2)).unsqueeze(0).unsqueeze(1).expand_as(neg_mask)
+                var_mask = var_mask.to(self.device)
+                var_mask = var_mask.bool()
+                masked_values = values[(~neg_mask) * var_mask]
+                total_values[f"{i}"] = masked_values
+        return total_values
 
     def compute_loss(self, batch, mode):
+        quantizer = self.sequence_decoder.quantizer
+        scaler = self.sequence_decoder.scaler
 
         # Load batch and preprocess
         image, plant_info, y, lengths = batch
@@ -524,32 +444,42 @@ class MainModule(pl.LightningModule):
         y_expected = y[:, 1:]
         label = y_expected[:, :, 0].long()
         values = y_expected[:, :, 1:]
+        values_quantized = quantizer.transform(values)
+        values_scaled = scaler.transform(values)
 
         # Decoder loss
         seq, params = self(image, plant_info, y_input)
         label_loss = self.label_loss_fn(seq.permute(0, 2, 1), label, ignore_index=PAD_token) # (N, C, L)
-        #label_loss = self.label_loss_fn(pred[:, :, :self.seq_dim].permute(0, 2, 1), label) 
-        if 0:
-            # Scale the values before the loss calc
-            values = self.sequence_decoder.quantizer.transform(values)
-            quantized_param_loss = self.param_regression_loss(pred[:, :, self.seq_dim:], values)
-        elif 0:
-            # Scale the values before the loss calc
-            values = self.sequence_decoder.quantizer.transform(values)
-            quantized_param_loss = self.param_loss_fn_bylabel(label=label, values=values, pred=pred[:, :, self.seq_dim:])
-        else:
-            values_quantized = self.sequence_decoder.quantizer.transform(values)
-            values_scaled = self.sequence_decoder.scaler.transform(values)
-            quantized_param_loss = self.param_cross_entropy(label=label, values=values_quantized, pred=params[0])
-            scaled_param_loss = self.param_regression_loss(target=values, target_scaled=values_scaled, pred=params[1],ignore_index=param_PAD_token)
+        
+        params_collected_pred_p = self.collect_params(label=label, values=params[0])
+        params_collected_target_class = self.collect_params(label=label, values=values_quantized)
+        sum_quantized_param_loss = 0
+        for i in range(len(params_collected_pred_p)):
+            sum_quantized_param_loss += F.cross_entropy(params_collected_pred_p[f"{i}"],
+                                                    params_collected_target_class[f"{i}"].long())
+        
+        params_collected_target_value = self.collect_params(label=label, values=values_scaled)
+        # Recover values using predefined centers
+        scaled_param_loss = []
+        sum_scaled_param_loss = 0
+        for i in range(len(params_collected_pred_p)):
+            params_collected_recovered = quantizer.inverse_transform_i(params_collected_pred_p[f"{i}"].unsqueeze(1), i)
+            params_collected_recovered_scaled = scaler.transform(params_collected_recovered.expand(
+                                                [params_collected_recovered.size(0), 1, values_scaled.size(-1)]))
+            params_collected_recovered_scaled = params_collected_recovered_scaled[:,:,i].squeeze()
+            # scaled_param_loss.append(F.mse_loss(params_collected_recovered_scaled, 
+            #                                params_collected_target_value[f"{i}"]))
+            
+            sum_scaled_param_loss += F.mse_loss(params_collected_recovered_scaled, 
+                                           params_collected_target_value[f"{i}"]) 
 
         
         ######### Tensorboard logging
-        loss = label_loss + quantized_param_loss + scaled_param_loss
+        loss = label_loss + sum_quantized_param_loss + sum_scaled_param_loss
 
         self.log(f'{mode}/label_loss', label_loss, batch_size=image.size(0), sync_dist=True)
-        self.log(f'{mode}/quantized_param_loss', quantized_param_loss, batch_size=image.size(0), sync_dist=True)
-        self.log(f'{mode}/scaled_param_loss', scaled_param_loss, batch_size=image.size(0), sync_dist=True)
+        self.log(f'{mode}/quantized_param_loss', sum_quantized_param_loss, batch_size=image.size(0), sync_dist=True)
+        self.log(f'{mode}/scaled_param_loss', sum_scaled_param_loss, batch_size=image.size(0), sync_dist=True)
         self.log(f'{mode}/loss', loss, batch_size=image.size(0), sync_dist=True)
 
         # Add images to tensorboard
@@ -601,7 +531,11 @@ class MainDataModule(pl.LightningDataModule):
                         load_depth=True,
                         side_view=False,
                         process_leaf=False,
-                        preload=False):
+                        preload=False,
+                        growth_stages=None,
+                        partial_data=1.0,
+                        **kwargs):
+        
         super().__init__()
         self.dataset_dir = dataset_dir
         self.train_batch_size = train_batch_size
@@ -628,6 +562,12 @@ class MainDataModule(pl.LightningDataModule):
                 # transforms.Lambda(lambda img: torch.from_numpy(np.array(img)).permute(2, 0, 1).float())
         ])
 
+        self.growth_stages = growth_stages
+        self.partial_data = partial_data
+
+        # Handle additional keyword arguments
+        self.extra_args = kwargs
+
     def load_or_create_dataset(self, dataset_dir, dataset_name, plot, stages, transform, load_depth, process_leaf, side_view, preload, image_size):
         saved_dataset_name = os.path.join(dataset_dir, f"{dataset_name}.pkl")
         if os.path.exists(saved_dataset_name) and preload:
@@ -649,11 +589,12 @@ class MainDataModule(pl.LightningDataModule):
                         pickle.dump(dataset, f)
         return dataset
 
-    def setup(self, stage=None, growth_stages=None):
+    def setup(self, stage=None):
+        train_ratio = 0.7 * self.partial_data
+        val_ratio = 0.15 * self.partial_data
+        test_ratio = 0.15 * self.partial_data
 
-        train_ratio = 0.5
-        val_ratio = 0.25
-        test_ratio = 0.25
+        growth_stages = self.growth_stages
 
         # Get the num plots from the last xml file
         xml_files = os.listdir(os.path.join(self.dataset_dir, "xml"))
@@ -662,7 +603,7 @@ class MainDataModule(pl.LightningDataModule):
 
         train_end = int(self.num_plots * train_ratio)
         val_end = train_end + int(self.num_plots * val_ratio)
-        test_end = self.num_plots  # Ensure total sums up to num_plots
+        test_end = min(self.num_plots, val_end + int(self.num_plots * test_ratio)) # Ensure total sums up to num_plots
 
         train_plots = [f"{plot:04d}" for plot in range(train_end)]
         val_plots = [f"{plot:04d}" for plot in range(train_end, val_end)]
@@ -689,8 +630,11 @@ class MainDataModule(pl.LightningDataModule):
         images, plant_info, vectors, lengths = zip(*batch)
         max_length = max(lengths)
         vec_dim = vectors[0].shape[-1]
-        vectors_padded = np.ones((len(vectors), max_length, vec_dim)) * param_PAD_token
-        vectors_padded[:,:,0] = PAD_token
+        if len(vectors[0].shape) == 1:
+            vectors_padded = np.ones((len(vectors), max_length), dtype=int) * PAD_token
+        else:
+            vectors_padded = np.zeros((len(vectors), max_length, vec_dim))
+            vectors_padded[:, :, 0] = PAD_token
 
         for i, vector in enumerate(vectors):
             end = lengths[i]
@@ -714,9 +658,9 @@ class MainDataModule(pl.LightningDataModule):
             collate_fn=self.collate_fn, num_workers=self.num_workers, pin_memory=self.pin_memory
         )
 
-    def test_dataloader(self):
+    def test_dataloader(self, shuffle=True):
         return DataLoader(
-            self.test_dataset, batch_size=self.val_batch_size, shuffle=True,
+            self.test_dataset, batch_size=self.val_batch_size, shuffle=shuffle,
             collate_fn=self.collate_fn, num_workers=self.num_workers, pin_memory=self.pin_memory
         )
     

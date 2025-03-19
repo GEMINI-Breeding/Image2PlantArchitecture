@@ -401,8 +401,49 @@ class CNN_FeatureExtractor(nn.Module):
         x = self.fc(x)
         return x
     
+class ViT_Projection(nn.Module):
+    def __init__(self, in_features, out_features, add_noise=False, use_clstoken=True):
+        super().__init__()
+
+        self.temperature = torch.tensor(1.0)
+        self.gate = nn.Linear(in_features, 1) # Predicts "usefulness" score
+        self.projection = nn.Linear(in_features, out_features)
+        self.add_noise = add_noise
+        self.use_clstoken = use_clstoken
+
+        # https://github.com/DepthAnything/Depth-Anything-V2/ => dpt.py#L86
+        if use_clstoken:
+            self.readout_projects = nn.ModuleList()
+            self.readout_projects.append(
+                nn.Sequential(
+                    nn.Linear(3 * in_features, in_features),
+                    nn.GELU()))
+
+    def forward(self, x):
+        # 1. Learned scaling
+        x = x * self.temperature  
+
+        if self.use_clstoken:
+            x, cls_token, plant_info = x[:, :-2, :], x[:,-2,:], x[:,-1,:]
+            cls_token = cls_token.unsqueeze(1).expand_as(x)
+            plant_info = plant_info.unsqueeze(1).expand_as(x)
+            x = self.readout_projects[0](torch.cat((x, cls_token, plant_info), -1))
+        else:
+            pass
+        
+        # 2. Variance-based gating
+        scores = torch.sigmoid(self.gate(x))  # [B, Seq, 1]
+        x = x * scores  # 중요 특징 강조
+        
+        # 3. 노이즈 투입 (386D 차원에서)
+        x = x + torch.randn_like(x) * 0.01  # ★ 최적 위치 ★
+        
+        # 4. Projection to 768D
+        x = self.projection(x)  
+        return x
+    
 class ViT_FeatureExtractor(nn.Module):
-    def __init__(self, output_size=256, image_size=448, use_depth=False):
+    def __init__(self, output_size=256, image_size=448, use_depth=False, vit_model='facebook/dinov2-small'):
         super(ViT_FeatureExtractor, self).__init__()
         
         self.use_depth = use_depth
@@ -415,18 +456,26 @@ class ViT_FeatureExtractor(nn.Module):
             self.model.embeddings.patch_embeddings.projection = nn.Conv2d(4, 768, kernel_size=(16, 16), stride=(16, 16))
             self.model.embeddings.patch_embeddings.num_channels = 4
         elif 1:
-            self.model = AutoModel.from_pretrained('facebook/dinov2-base') # Use DINOv2, it will give 257x768 feature
-            self.img_proc = AutoImageProcessor.from_pretrained('facebook/dinov2-base')
+            self.model = AutoModel.from_pretrained(vit_model, output_hidden_states=True) # Use DINOv2, it will give 257x768 feature
+            self.img_proc = AutoImageProcessor.from_pretrained(vit_model)
+            self.embedding_size = self.model.config.hidden_size  # Get the embedding size from the model config
+            self.intermediate_layer_idx = {
+                    'vits': [2, 5, 8, 11],
+                    'vitb': [2, 5, 8, 11], 
+                    'vitl': [4, 11, 17, 23], 
+                    'vitg': [9, 19, 29, 39]
+                    }
             if self.use_depth:
                 self.normalize = transforms.Normalize(mean=[0.5, 0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5, 0.5])
-                self.model.embeddings.patch_embeddings.projection = nn.Conv2d(4, 768, kernel_size=(14, 14), stride=(14, 14))
+                self.model.embeddings.patch_embeddings.projection = nn.Conv2d(4, self.embedding_size, kernel_size=(14, 14), stride=(14, 14))
                 self.model.embeddings.patch_embeddings.num_channels = 4
             else:
                 self.normalize = transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
-
-                # Fix the weights of the Vision Transformer model
-                for param in self.model.parameters():
-                    param.requires_grad = False
+                if 0:
+                    # Fix the weights of the Vision Transformer model
+                    for param in self.model.parameters():
+                        param.requires_grad = False
+                    self.model.eval() # Set Feature encoder to eval. But need to train projection and plant info embedding
         else:
             num_channels = 4 if self.use_depth else 3
             config = ViTConfig(image_size=image_size, 
@@ -438,24 +487,33 @@ class ViT_FeatureExtractor(nn.Module):
             self.normalize = transforms.Normalize(mean=mean_std, std=mean_std)
             self.model = ViTModel(config)
 
-        # Embedding for plant info [leaf_area, plant_width, plant_height]
-        self.plant_info_embedding = nn.Sequential(nn.Linear(3, 512),
-                                                  nn.BatchNorm1d(512),
-                                                  nn.ReLU(),
-                                                  nn.Linear(512, 768))
         self.output_size = output_size
+        # Embedding for plant info [leaf_area, plant_width, plant_height]
+        self.plant_info_embedding = nn.Sequential(nn.Linear(3, self.embedding_size),
+                                                  nn.GELU(),
+                                                  nn.Linear(self.embedding_size, self.output_size))
         
-        self.projection = MLP([768, output_size])  # Reduce feature dimension
+        if 0:
+            self.projection = MLP([self.embedding_size, output_size])  # Reduce feature dimension
+        else:
+            self.projection = ViT_Projection(self.embedding_size, output_size)
 
 
     def forward(self, x, y):
-        if self.use_depth:
-            x = self.normalize(x)
-            x = self.model(x).last_hidden_state
-        else:
+        if self.use_depth == False:
             # Use Dinov2 image processor
             x = self.img_proc(images=x, return_tensors="pt").to(x.device)
-            x = self.model(**x).last_hidden_state
+            outputs = self.model(**x)
+            if 1:
+                x = outputs.last_hidden_state
+            else:
+                # Layers
+                hidden_states = [outputs.hidden_states[idx] for idx in self.intermediate_layer_idx['vitb']]
+                #x = torch.cat(hidden_states, dim=2) 
+                x = torch.cat(hidden_states, dim=1)
+        else:
+            x = self.normalize(x)
+            x = self.model(x).last_hidden_state
         x = self.projection(x)
         y = self.plant_info_embedding(y).unsqueeze(1)
         x = torch.cat((x, y), dim=1)
@@ -529,6 +587,7 @@ class TransformerDecoderModel(nn.Module):
 
         self.scaler = MinMaxScalerTorch()
         self.quantizer = ParamQuantizer()
+
         self.n_clusters = self.quantizer.n_clusters
 
         self.seq_embedding = nn.Embedding(num_tokens, self.seq_embedding_dim)
@@ -607,14 +666,17 @@ class TransformerDecoderModel(nn.Module):
         #     params = self.quantized_param_embedding(params_quantized) * math.sqrt(self.dim_model)
         # else:
         
-        if 0:
+        if 1:
             params_scaled = self.scaler.transform(params)
             params = self.scaled_param_embedding(params_scaled) * math.sqrt(self.dim_model)
+            # What if params are just noise?
+            params = torch.rand_like(params)
         else:
             params_quantized = self.quantizer.transform(params)
             params = self.quantized_param_embedding(params_quantized) * math.sqrt(self.dim_model)
 
-        tgt = torch.cat((depth_organ_seq, params), dim=2)
+        #tgt = torch.cat((depth_organ_seq, params), dim=2)
+        tgt = torch.cat((depth_organ_seq, depth_organ_seq), dim=2)
 
         # Make sequence length the first dimension 
         # PositionalEncoding은 시퀀스 차원에 대해 적용되므로, Positional Encoding을 적용하기 전에 반드시 시퀀스 차원이 첫 번째가 되어야 합니다.
@@ -622,7 +684,6 @@ class TransformerDecoderModel(nn.Module):
         features = features.permute(1,0,2)
 
         tgt = self.Seq_positional_encoding(tgt)
-        features = self.ImgFeature_positional_encoding(features)
 
         if self.decoder_only:
             decoded, self.self_attn_weights, self.multihead_attn_weights = self.transformer_decoder(tgt, features, tgt_mask=tgt_mask,tgt_key_padding_mask=tgt_key_padding_mask)

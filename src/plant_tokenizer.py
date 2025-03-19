@@ -12,6 +12,7 @@ from src.plant_architecture_utils import coordinates_to_angle, angle_to_coordina
 from sklearn.cluster import MiniBatchKMeans, KMeans
 
 import torch
+import torch.nn.functional as F
 from typing import List, Union
 import pandas as pd
 
@@ -46,7 +47,7 @@ import pandas as pd
 SOS_token = 4*6
 PAD_token = 4*6 + 1
 EOS_token = 4*6 + 2
-param_PAD_token = 1000
+param_PAD_token = 0
 
 N_PARAMS = 18
 
@@ -298,7 +299,7 @@ class ParamQuantizer():
         #     [-10.0,-10.0,-10.0,-10.0,-10.0,-10.0,-10.0,-10.0,-10.0,-10.0,-10.0,-10.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0],
         #     [-15.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0],
         # ]
-        self.predetermined_centers_list = [
+        self.predetermined_centers = [
             np.concatenate(([param_PAD_token], [6.93226e-06,0.386781,0.7133594,1.0810634,1.6211038,2.1414325,2.4519074,2.9079437,3.49299,3.8894534,4.219082,4.574864,4.899048,5.22245,5.5751567,5.905716,6.34532,6.8743825,7.295387,7.8326015,8.586025,40.002014,41.000435,41.940247,42.549313,43.20221,43.773666,44.760212,45.518074,46.4799,47.43116,48.192684,48.696842,49.286198,49.711136,50.45977,51.03875,51.65863,52.126453,52.58214,53.32088,53.893303,54.59984,55.4335,56.17005,56.70539,57.388515,58.0778,58.796394,59.59727])),
             np.concatenate(([param_PAD_token], [-18.173923,-15.185963,-12.25758,-8.910324,-5.743651,-2.9374907,0.0007278533,4.003294,7.1140304,10.910384,13.948828,16.393656,18.951162,25.0858,34.9159,45.6503,56.1027,65.047966,76.66715,84.66755,89.21005,98.0912,105.927,113.50433,123.387,131.274,145.44826,155.4245,163.6165,171.8085,180.1705,192.7135,200.7276,213.2775,219.549,224.1775,230.585,239.8445,250.5655,260.104,267.77924,283.6735,292.0355,304.2375,312.5995,323.052,329.907,336.0965,345.66666,354.0685])),
             np.concatenate(([param_PAD_token], [0.00010758468,11.804394,19.041433,25.678,31.9672,38.2565,49.25955,57.170334,61.0503,68.64825,76.2462,84.11263,90.00039,97.4686,105.329,109.522,115.397,122.733,127.7725,134.4125,142.0105,148.3,153.69633,161.399,177.84334,184.9805,190.21933,195.9835,202.273,211.1795,221.643,228.12433,234.761,241.05,246.552,252.053,264.64368,269.573,279.6335,285.3295,292.339,299.216,304.851,314.412,320.03333,332.185,337.994,343.4955,348.997,355.2865])),
@@ -318,14 +319,17 @@ class ParamQuantizer():
             np.concatenate(([param_PAD_token, -10, 10], np.zeros(48))),
             np.concatenate(([param_PAD_token, -15, 15], np.zeros(48)))
         ]
-        self.n_clusters = len(self.predetermined_centers_list[0])
+        self.n_clusters = len(self.predetermined_centers[0])
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.predetermined_centers_list = [torch.tensor(centers, dtype=torch.float32,device=self.device).reshape(-1, 1) for centers in self.predetermined_centers_list]
+        self.predetermined_centers = [torch.tensor(centers, dtype=torch.float32,device=self.device).unsqueeze(-1) for centers in self.predetermined_centers]
+        
+        self.predetermined_centers = torch.stack(self.predetermined_centers)
+        self.predetermined_centers.requires_grad = False
 
     def fit(self, data: np.ndarray):
         # 각 변수에 대해 KMeans를 통해 클러스터 중심을 학습
-        self.predetermined_centers_list = []
+        self.predetermined_centers = []
         for i in range(data.shape[1]):
             reshaped_data = data[:, i].reshape(-1, 1)
             kmeans = KMeans(n_clusters=self.n_clusters, random_state=self.random_state)
@@ -333,13 +337,13 @@ class ParamQuantizer():
             self.kmeans_list.append(kmeans)
             centers = kmeans.cluster_centers_.flatten()
             centers.sort()
-            self.predetermined_centers_list.append(torch.tensor(centers, dtype=torch.float32).reshape(-1, 1))
+            self.predetermined_centers.append(torch.tensor(centers, dtype=torch.float32).reshape(-1, 1))
 
     def transform(self, x: np.ndarray) -> np.ndarray:
         quantized = torch.zeros_like(x)
         for i in range(x.shape[-1]):
             x_col = x[:, :, i].reshape(-1, 1)
-            distances = torch.cdist(x_col, self.predetermined_centers_list[i])
+            distances = torch.cdist(x_col, self.predetermined_centers[i,:])
             quantized[:, :, i] = torch.argmin(distances, dim=1).reshape(quantized[:, :, i].shape)
         return quantized
 
@@ -347,10 +351,14 @@ class ParamQuantizer():
         recovered = torch.zeros_like(x)
         for i in range(x.shape[-1]):
             x_col = x[:, :, i].reshape(-1, 1)
-            recovered[:, :, i] = self.predetermined_centers_list[i][x_col].reshape(recovered[:, :, i].shape)
+            recovered[:, :, i] = self.predetermined_centers[i,:][x_col].reshape(recovered[:, :, i].shape)
         return recovered
-
-
+    
+    def inverse_transform_i(self, x, i):
+        x = F.softmax(x, dim=-1)
+        recovered = torch.bmm(x, self.predetermined_centers[i,:].unsqueeze(0).expand([x.size(0), x.size(2), 1]))
+        return recovered
+    
 if __name__ == "__main__":
 
 
