@@ -63,7 +63,7 @@ NUM_PSTR_TOKEN = N_DEPTH * N_ORGAN
 SOS_TOKEN = NUM_PSTR_TOKEN + len(predetermined_centers) + 0
 PAD_TOKEN = NUM_PSTR_TOKEN + len(predetermined_centers) + 1
 EOS_TOKEN = NUM_PSTR_TOKEN + len(predetermined_centers) + 2
-NUM_TOTAL_TOKENS = EOS_TOKEN + 1
+VOCAB_SIZE = EOS_TOKEN + 1
 
 def vec2token(vec: List[np.ndarray]) -> np.ndarray:
     """

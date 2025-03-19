@@ -325,8 +325,8 @@ class ViT_FeatureExtractor(nn.Module):
                 self.model.embeddings.patch_embeddings.projection = nn.Conv2d(4, self.embedding_size, kernel_size=(14, 14), stride=(14, 14))
                 self.model.embeddings.patch_embeddings.num_channels = 4
             else:
-                self.normalize = transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
-                if 0:
+                self.normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+                if 1:
                     # Fix the weights of the Vision Transformer model
                     for param in self.model.parameters():
                         param.requires_grad = False
@@ -351,11 +351,11 @@ class ViT_FeatureExtractor(nn.Module):
         if 0:
             self.projection = MLP([self.embedding_size, output_size])  # Reduce feature dimension
         else:
-            self.projection = ViT_Projection(self.embedding_size, output_size)
+            self.projection = ViT_Projection(self.embedding_size, output_size, use_clstoken=False)
 
 
     def forward(self, x, y):
-        if self.use_depth == False:
+        if self.use_depth == False and False:
             # Use Dinov2 image processor
             x = self.img_proc(images=x, return_tensors="pt").to(x.device)
             outputs = self.model(**x)
@@ -366,7 +366,9 @@ class ViT_FeatureExtractor(nn.Module):
                 hidden_states = [outputs.hidden_states[idx] for idx in self.intermediate_layer_idx['vitb']]
                 #x = torch.cat(hidden_states, dim=2) 
                 x = torch.cat(hidden_states, dim=1)
-        else:
+        else:    
+            if x.dtype == torch.uint8:   
+                x = x.to(torch.float)
             x = self.normalize(x)
             x = self.model(x).last_hidden_state
         x = self.projection(x)
@@ -428,11 +430,11 @@ class PositionalEncoding(nn.Module):
         token_embedding = self.dropout(token_embedding)
         return token_embedding
 
-class TransformerDecoderModel(nn.Module):
+class SequenceDecoderModel(nn.Module):
     def __init__(self, dim_model, 
                  num_layers, num_heads, num_tokens, 
                  max_seq_length=4096, use_depth=True, decoder_only=False, image_size=448, dropout=0.1):
-        super(TransformerDecoderModel, self).__init__()
+        super(SequenceDecoderModel, self).__init__()
 
         self.dim_model = dim_model
         self.dropout = dropout
@@ -460,6 +462,7 @@ class TransformerDecoderModel(nn.Module):
                                             num_encoder_layers=num_layers,
                                             num_decoder_layers=num_layers,
                                             dropout=0.1,
+                                            batch_first=True
                                         )
 
         self.seq_decode_linear = nn.Linear(self.dim_model, num_tokens)
@@ -493,7 +496,12 @@ class TransformerDecoderModel(nn.Module):
         if self.decoder_only:
             decoded, self.self_attn_weights, self.multihead_attn_weights = self.transformer_decoder(tgt, features, tgt_mask=tgt_mask,tgt_key_padding_mask=tgt_key_padding_mask)
         else:
-            decoded = self.transformer(features, tgt, tgt_mask=tgt_mask, tgt_key_padding_mask=tgt_key_padding_mask, tgt_is_causal=True)
+            tgt = tgt.permute(1,0,2)
+            features = features.permute(1,0,2)
+            decoded = self.transformer(features, tgt, tgt_mask=tgt_mask, tgt_key_padding_mask=tgt_key_padding_mask, 
+                                       tgt_is_causal=True)
+            tgt = tgt.permute(1,0,2)
+            features = features.permute(1,0,2)
         output_seq = self.seq_decode_linear(decoded)
 
         return output_seq

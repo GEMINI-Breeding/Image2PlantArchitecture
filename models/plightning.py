@@ -18,7 +18,7 @@ project_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),"../")
 sys.path.append(project_dir)
 
 # 모듈 임포트
-from models.model import TransformerDecoderModel, RegressionModel, ViT_FeatureExtractor, CNN_FeatureExtractor
+from models.model import SequenceDecoderModel, RegressionModel, ViT_FeatureExtractor, CNN_FeatureExtractor
 from models.model import RegressionModel_Transformer, PositionalEncoding, VAE, MLP, SeqEmbeddingModel
 from models.model import create_organ_mask, get_tgt_mask, create_pad_mask, text_global_pool
 from models.model import PlantArchitectureTransformer
@@ -171,7 +171,7 @@ class MainModule(pl.LightningModule):
         self.image_encoder = ViT_FeatureExtractor(output_size=dim_model, 
                                                   use_depth=self.use_depth, image_size=image_size, vit_model=vit_model)
         
-        self.sequence_decoder = TransformerDecoderModel(
+        self.sequence_decoder = SequenceDecoderModel(
             dim_model=self.dim_model,
             num_layers=self.num_layers,
             num_heads=self.num_heads,
@@ -206,7 +206,7 @@ class MainModule(pl.LightningModule):
 
     def generate(self, image, plant_info, stage='val'):
         device = image.device
-        y_input = torch.tensor(SOS_TOKEN, dtype=torch.long, device=device)
+        y_input = torch.tensor([[SOS_TOKEN]], dtype=torch.long, device=device)
         if self.use_depth:
             image = self.add_depth_to_image(image)
         feature = self.image_encoder(image, plant_info)
@@ -336,7 +336,7 @@ class MainModule(pl.LightningModule):
             self.current_val_step = 0
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=1e-5)
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
         scheduler = get_cosine_schedule_with_warmup(
             optimizer, 
             num_warmup_steps=self.num_warmup_steps, 

@@ -187,23 +187,21 @@ class PlantDataset(Dataset):
                 # Add depth channel
                 leaf_img = np.concatenate((leaf_img, depth[:, :, np.newaxis]), axis=2)
 
-    
 
         # Load XML file
         # Load and parse the XML file
         try:
             xml_path = os.path.join(self.plant_xml_dir, self.plant_xml_files[idx])
             tree = ET.parse(xml_path)
+            # Get the root element
+            root = tree.getroot()
+
+            root = linked_to_recursive(root)
+            plant_array = []
+            xml2vec(root[0], plant_array) # Assume single plant
         except Exception as e:
             print(e)
             print(xml_path)
-        # Get the root element
-        root = tree.getroot()
-
-        root = linked_to_recursive(root)
-        plant_array = []
-        xml2vec(root[0], plant_array) # Assume single plant
-
 
         return leaf_img, plant_info, plant_array
     

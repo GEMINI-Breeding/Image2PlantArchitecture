@@ -11,7 +11,7 @@ import platform
 script_file_path = os.path.abspath(__file__)
 sys.path.append(os.path.dirname(os.path.dirname(script_file_path)))
 from models.plightning import MainModule, MainDataModule
-from plant_tokenizer import NUM_TOTAL_TOKENS
+from plant_tokenizer import VOCAB_SIZE
 import joblib
 
 torch.autograd.set_detect_anomaly(True)
@@ -28,24 +28,24 @@ if __name__ == "__main__":
     # Define configuration dictionary
     config = {
         "dataset_dir": "data/20250311_Sideview_40Days",
-        "image_size": 224,
+        "image_size": 448,
         "load_depth": False,
         "train_batch_size": 16,
-        "num_workers": 0,
+        "num_workers": 8,
         "process_leaf": True,
-        "preload": False,
+        "preload": True,
         "side_view": False,
-        "partial_data": 0.1,
+        "partial_data": 1.0,
         #"growth_stages": ["01", "02", "03", "04", "05"],
         "growth_stages": ["01"],
-        "num_layers": 8,
+        "num_layers": 12,
         "num_heads": 8,
-        "num_tokens": NUM_TOTAL_TOKENS,
+        "num_tokens": VOCAB_SIZE,
         "dim_model": 768,
         "alpha": 1.0,
-        "lr": 2e-5,
+        "lr": 1e-4,
         "use_depth": False,
-        "decoder_only": True,
+        "decoder_only": False,
         "dropout": 0.10,
         "vit_model": "facebook/dinov2-base"
     }
@@ -60,7 +60,7 @@ if __name__ == "__main__":
     # Generate today's date string in YYYYMMDD format
     today_date_str = datetime.now().strftime('%Y%m%d')
     tb_logger = TensorBoardLogger(
-        name=f'{today_date_str}_Quantize_Small_Day1',
+        name=f'{today_date_str}_Quantize_Small_FullTransformer_448_Day1',
         save_dir='./log'
     )
 
@@ -102,8 +102,8 @@ if __name__ == "__main__":
                    ],
         # callbacks=[tqdm_cb, ckpt_cb, lr_monitor],
         logger=tb_logger,
-        # precision="bf16-mixed",
-        strategy=DDPStrategy(find_unused_parameters=True)  # Enable detection of unused parameters
+        precision="bf16-mixed",
+        # strategy=DDPStrategy(find_unused_parameters=True)  # Enable detection of unused parameters
     )
     trainer.fit(module, datamodule=datamodule)
 

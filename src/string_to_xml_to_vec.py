@@ -356,8 +356,9 @@ def vec2element(root, plant_array, depth=0, debug=False):
             if organ_name == 'Internode':
                 current_phytomer = ET.SubElement(current_shoot, "phytomer")
                 current_internode = ET.SubElement(current_phytomer, "internode")
-                add_trait_subelement(current_internode,"internode_length",f"{(params[0]):.6g}")
-                add_trait_subelement(current_internode,"internode_radius",f"{(params[1]):.6g}")
+                add_trait_subelement(current_internode,"internode_length",
+                                     f"{max(params[0], 0.0002):.6g}")
+                add_trait_subelement(current_internode,"internode_radius",f"{max(params[1],0.0005):.6g}")
                 add_trait_subelement(current_internode,"internode_pitch",f"{(params[2]):.6g}")
                 add_trait_subelement(current_internode,"internode_phyllotactic_angle",f"{(params[3]):.6g}")
                 plant_array = plant_array[1:]
@@ -371,8 +372,8 @@ def vec2element(root, plant_array, depth=0, debug=False):
             params = line[2:]
             if organ_name == 'Petiole':
                 current_petiole = ET.SubElement(current_internode, "petiole")
-                add_trait_subelement(current_petiole,"petiole_length",f"{(params[0]):.6g}")
-                add_trait_subelement(current_petiole,"petiole_radius",f"{(params[1]):.6g}")
+                add_trait_subelement(current_petiole,"petiole_length",f"{max(params[0],1e-7):.6g}")
+                add_trait_subelement(current_petiole,"petiole_radius",f"{max(params[1],4e-06):.6g}")
                 add_trait_subelement(current_petiole,"petiole_pitch",f"{(params[2]):.6g}")
                 add_trait_subelement(current_petiole,"petiole_curvature",f"{(params[3]):.6g}")
                 add_trait_subelement(current_petiole,"leaflet_scale",f"{(params[4]):.6g}")
@@ -388,7 +389,7 @@ def vec2element(root, plant_array, depth=0, debug=False):
             params = line[2:]
             if "Leaf" in organ_name:
                 current_leaf = ET.SubElement(current_petiole, "leaf")
-                add_trait_subelement(current_leaf,"leaf_scale",f"{(params[0]):.6g}")
+                add_trait_subelement(current_leaf,"leaf_scale",f"{max(params[0], 0.0002):.6g}")
                 add_trait_subelement(current_leaf,"leaf_pitch",f"{(params[1]):.6g}")
                 add_trait_subelement(current_leaf,"leaf_yaw",f"{(params[2]):.6g}")
                 add_trait_subelement(current_leaf,"leaf_roll",f"{(params[3]):.6g}")
