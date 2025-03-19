@@ -20,153 +20,9 @@ import os, sys
 script_file_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.join(script_file_dir,"../"))
 
-from src.plant_tokenizer import SOS_token, PAD_token, EOS_token, ParamQuantizer, N_PARAMS
-
-# def ensure_positive(output_seq, x):
-#     """
-#     Ensures that specific elements in tensor `x` are positive based on the predicted labels.
-
-#     Args:
-#         output_seq (Tensor): Logits with shape (seq_len, batch_size, num_classes).
-#         x (Tensor): Tensor to be modified, with shape (seq_len, batch_size, dim).
-
-#     Returns:
-#         Tensor: Modified tensor `x` with certain elements exponentiated to ensure positivity.
-#     """
-#     softplus = nn.Softplus()
-
-#     # Get the predicted labels by taking the index with the highest logit value
-#     predicted_label = output_seq.argmax(dim=-1)  # Shape: (seq_len, batch_size)
-
-#     # Define special tokens
-#     special_tokens = torch.tensor([SOS_token, PAD_token, EOS_token], device=predicted_label.device)
-
-#     # Create a mask for non-special tokens
-#     is_special = (predicted_label.unsqueeze(-1) == special_tokens).any(dim=-1)  # Shape: (seq_len, batch_size)
-#     non_special_mask = ~is_special
-
-#     # Compute organ_type from predicted labels
-#     organ_type = predicted_label % 6  # Shape: (seq_len, batch_size)
-
-#     # Create masks for different organ types
-#     shoot_mask = (organ_type == 0) & non_special_mask
-#     internode_mask = (organ_type == 1)  & non_special_mask
-#     petiole_mask = (organ_type == 2) & non_special_mask
-#     leaf_mask = ((organ_type >= 3) & (organ_type <= 5)) & non_special_mask
-
-#     # Flatten the tensors to 2D for efficient indexing
-#     seq_len, batch_size, dim = x.shape
-
-#     x_flat = x.reshape(-1, dim)  # Use reshape instead of view
-
-#     # Flatten masks, Shape: (seq_len * batch_size)
-#     shoot_mask = shoot_mask.flatten()
-#     internode_mask = internode_mask.flatten()
-#     petiole_mask = petiole_mask.flatten()
-#     leaf_mask_flat = leaf_mask.flatten()
-#     non_special_mask = non_special_mask.flatten()
-#     is_special = is_special.flatten()
-    
-#     orig_type = x_flat[internode_mask, 0].dtype
-#     if is_special.any():
-#         # Shoot params
-#         x_flat[is_special, 0:5] = 0 
-        
-#         # Internode params
-#         x_flat[is_special, 5:9] = 0
-
-#         # Petiole params
-#         x_flat[is_special, 9:14] = 0
-
-#         # Leaf params
-#         x_flat[is_special, 14:18] = 0
-
-#     # Apply exponential function to specific features based on organ type
-#     if shoot_mask.any():
-#         x_flat[shoot_mask, 3] = softplus(x_flat[shoot_mask, 3]).to(dtype=orig_type) # plant_age
-
-#         # Internode params
-#         x_flat[shoot_mask, 5:9] = 0
-
-#         # Petiole params
-#         x_flat[shoot_mask, 9:14] = 0
-
-#         # Leaf params
-#         x_flat[shoot_mask, 14:18] = 0
-#         pass
-
-#     if internode_mask.any():
-#         # Shoot params
-#         x_flat[internode_mask, 0:5] = 0 
-        
-#         # Internode params
-#         x_flat[internode_mask, 5] = softplus(x_flat[internode_mask, 5]).to(dtype=orig_type)
-#         x_flat[internode_mask, 6] = softplus(x_flat[internode_mask, 6]).to(dtype=orig_type)
-
-#         # Petiole params
-#         x_flat[internode_mask, 9:14] = 0
-
-#         # Leaf params
-#         x_flat[internode_mask, 14:18] = 0
-
-    
-#     if petiole_mask.any():
-
-#         # Shoot params
-#         x_flat[petiole_mask, 0:5] = 0 
-        
-#         # Internode params
-#         x_flat[petiole_mask, 5:9] = 0
-
-#         # Petiole params
-#         x_flat[petiole_mask, 0] = softplus(x_flat[petiole_mask, 0]).to(dtype=orig_type)
-#         x_flat[petiole_mask, 1] = softplus(x_flat[petiole_mask, 1]).to(dtype=orig_type)
-
-#         # Leaf params
-#         x_flat[petiole_mask, 14:18] = 0
-
-#     if leaf_mask_flat.any():
-#         # Shoot params
-#         x_flat[leaf_mask_flat, 0:5] = 0 
-        
-#         # Internode params
-#         x_flat[leaf_mask_flat, 5:9] = 0
-
-#         # Petiole params
-#         x_flat[leaf_mask_flat, 9:14] = 0
-
-#         # Leaf params
-#         x_flat[leaf_mask_flat, 0] = softplus(x_flat[leaf_mask_flat, 0]).to(dtype=orig_type)
+from src.plant_tokenizer import SOS_TOKEN, PAD_TOKEN, EOS_TOKEN
 
 
-#     # Reshape x back to its original shape
-#     x = x_flat.reshape(seq_len, batch_size, dim)
-
-#     return x
-
-def ensure_positive(output_seq, x):
-    softplus = nn.Softplus()
-
-    # Apply positive forcing
-    x[:,:,3]  = softplus(x[:,:,3]) # plant_age
-    x[:,:,5]  = softplus(x[:,:,5]) # internode_length
-    x[:,:,6]  = softplus(x[:,:,6]) # internode_radius
-    x[:,:,9]  = softplus(x[:,:,9]) # petiole_length
-    x[:,:,10] = softplus(x[:,:,10]) # petiole_radius
-    x[:,:,13] = softplus(x[:,:,13]) # leaflet_scale
-
-    return x
-
-import torch
-
-import torch
-import torch.nn as nn
-
-import torch
-import torch.nn as nn
-
-import torch
-import torch.nn as nn
 
 class MinMaxScalerTorch(nn.Module):
     def __init__(self, feature_range=(-1, 1)):
@@ -245,9 +101,8 @@ def get_tgt_mask(size) -> torch.tensor:
             mask.bool()
     return mask
 
-def create_pad_mask(matrix: torch.tensor, pad_token: int) -> torch.tensor:
+def create_pad_mask(seq: torch.tensor, pad_token: int) -> torch.tensor:
     # Create (batch_size, seq_len) tensor
-    seq = matrix[:, :, 0]
     mask = (seq == pad_token)
 
     # Change type
@@ -574,35 +429,23 @@ class PositionalEncoding(nn.Module):
         return token_embedding
 
 class TransformerDecoderModel(nn.Module):
-    def __init__(self, seq_embedding_dim, param_embedding_dim, 
-                 num_layers, num_heads, num_tokens, num_params, 
-                 max_seq_length=2048, use_depth=True, decoder_only=False, image_size=448, dropout=0.1):
+    def __init__(self, dim_model, 
+                 num_layers, num_heads, num_tokens, 
+                 max_seq_length=4096, use_depth=True, decoder_only=False, image_size=448, dropout=0.1):
         super(TransformerDecoderModel, self).__init__()
 
-        self.dim_model = seq_embedding_dim + param_embedding_dim
+        self.dim_model = dim_model
         self.dropout = dropout
 
-        self.seq_embedding_dim = seq_embedding_dim
-        self.param_embedding_dim = param_embedding_dim
+        self.seq_embedding = nn.Embedding(num_tokens, self.dim_model)
 
-        self.scaler = MinMaxScalerTorch()
-        self.quantizer = ParamQuantizer()
-
-        self.n_clusters = self.quantizer.n_clusters
-
-        self.seq_embedding = nn.Embedding(num_tokens, self.seq_embedding_dim)
-        #self.param_embedding = MLP([num_params, self.param_embedding_dim], batch_norm=False, last_activation=False)
-        self.quantized_param_embedding = MLP([num_params, num_params*self.n_clusters, self.param_embedding_dim], batch_norm=False, last_activation=False)
-        self.scaled_param_embedding = MLP([num_params, num_params*self.n_clusters, self.param_embedding_dim], batch_norm=False, last_activation=False)
-  
         self.activation = nn.ReLU()
         self.self_attn_weights = None
         self.multihead_attn_weights = None
         
         # Positional Encoding for Sequence
         self.Seq_positional_encoding = PositionalEncoding(dim_model=self.dim_model, max_len=max_seq_length, dropout_p=self.dropout)
-        # Positional Encoding for Image features
-        self.ImgFeature_positional_encoding = PositionalEncoding(dim_model=self.dim_model, max_len=(image_size//14)**2 + 1 + 1, dropout_p=self.dropout) 
+
         self.decoder_only = decoder_only
         if self.decoder_only:
             # self.transformer_decoder_layer = nn.TransformerDecoderLayer(d_model=self.dim_model, nhead=num_heads)
@@ -619,20 +462,8 @@ class TransformerDecoderModel(nn.Module):
                                             dropout=0.1,
                                         )
 
-        if 0:
-            self.seq_decode_linear = MLP([self.seq_embedding_dim, num_tokens], batch_norm=False, last_activation=False)
-            self.quantized_param_decode_linear = MLP([self.param_embedding_dim, num_params], batch_norm=False, last_activation=False)
-        else:
-            self.seq_decode_linear = nn.Linear(self.seq_embedding_dim, num_tokens)
-            self.quantized_param_decode_linear = nn.Linear(self.param_embedding_dim, 
-                                                 num_params*self.n_clusters)
-            self.scaled_param_decode_linear = nn.Linear(self.param_embedding_dim, 
-                                                 num_params)
-
-        self.layer_norm = nn.LayerNorm(self.dim_model)
-        self.seq_layer_norm = nn.LayerNorm(self.seq_embedding_dim)
-        self.param_layer_norm = nn.LayerNorm(self.param_embedding_dim)
-    
+        self.seq_decode_linear = nn.Linear(self.dim_model, num_tokens)
+           
     def forward(self, features, tgt_seq):
         # features = self.cnn(images)
         # Check dimensions
@@ -642,7 +473,7 @@ class TransformerDecoderModel(nn.Module):
             pass
 
         tgt_mask = get_tgt_mask(tgt_seq.size(1))
-        tgt_key_padding_mask = create_pad_mask(tgt_seq, PAD_token)
+        tgt_key_padding_mask = create_pad_mask(tgt_seq, PAD_TOKEN)
 
         device = tgt_seq.device
         if tgt_mask is not None:
@@ -650,55 +481,22 @@ class TransformerDecoderModel(nn.Module):
         if tgt_key_padding_mask is not None:
             tgt_key_padding_mask = tgt_key_padding_mask.to(device)
 
-        # Categorical sequence to embedding
-        if len(tgt_seq.shape) == 2:
-            tgt_seq = tgt_seq.unsqueeze(1)
-        depth_organ_seq = tgt_seq[:, :, 0]
-        # Conver to torch.long
-        depth_organ_seq = depth_organ_seq.long()
-        params = tgt_seq[:, :, 1:]
-
-        depth_organ_seq = self.seq_embedding(depth_organ_seq) * math.sqrt(self.dim_model)
+        # Convert to torch.long
+        tgt_seq = tgt_seq.long()
+        tgt = self.seq_embedding(tgt_seq) * math.sqrt(self.dim_model)
         
-        # Decide whether to use quantized or scaled embeddings with 0.5 probability
-        # if torch.rand(1).item() < 0.5:
-        #     params_quantized = self.quantizer.transform(params)
-        #     params = self.quantized_param_embedding(params_quantized) * math.sqrt(self.dim_model)
-        # else:
-        
-        if 1:
-            params_scaled = self.scaler.transform(params)
-            params = self.scaled_param_embedding(params_scaled) * math.sqrt(self.dim_model)
-            # What if params are just noise?
-            params = torch.rand_like(params)
-        else:
-            params_quantized = self.quantizer.transform(params)
-            params = self.quantized_param_embedding(params_quantized) * math.sqrt(self.dim_model)
-
-        #tgt = torch.cat((depth_organ_seq, params), dim=2)
-        tgt = torch.cat((depth_organ_seq, depth_organ_seq), dim=2)
-
         # Make sequence length the first dimension 
-        # PositionalEncoding은 시퀀스 차원에 대해 적용되므로, Positional Encoding을 적용하기 전에 반드시 시퀀스 차원이 첫 번째가 되어야 합니다.
         tgt = tgt.permute(1,0,2)
         features = features.permute(1,0,2)
 
         tgt = self.Seq_positional_encoding(tgt)
-
         if self.decoder_only:
             decoded, self.self_attn_weights, self.multihead_attn_weights = self.transformer_decoder(tgt, features, tgt_mask=tgt_mask,tgt_key_padding_mask=tgt_key_padding_mask)
         else:
             decoded = self.transformer(features, tgt, tgt_mask=tgt_mask, tgt_key_padding_mask=tgt_key_padding_mask, tgt_is_causal=True)
+        output_seq = self.seq_decode_linear(decoded)
 
-        output_seq = self.seq_decode_linear(decoded[:,:,:self.seq_embedding_dim])
-        output_quantized_params = self.quantized_param_decode_linear(decoded[:,:,self.seq_embedding_dim:])
-        output_quantized_params = output_quantized_params.view(*output_seq.shape[:2], N_PARAMS, self.n_clusters)
-
-        output_scaled_params = self.scaled_param_decode_linear(decoded[:,:,self.seq_embedding_dim:])
-
-        # # Cat the output_seq and output_params
-        # output_seq = torch.cat((output_seq, output_params), dim=2)
-        return output_seq, [output_quantized_params, output_scaled_params]
+        return output_seq
     
 
 class RegressionModel(nn.Module):

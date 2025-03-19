@@ -22,8 +22,8 @@ from models.model import TransformerDecoderModel, RegressionModel, ViT_FeatureEx
 from models.model import RegressionModel_Transformer, PositionalEncoding, VAE, MLP, SeqEmbeddingModel
 from models.model import create_organ_mask, get_tgt_mask, create_pad_mask, text_global_pool
 from models.model import PlantArchitectureTransformer
-from src.plant_tokenizer import SOS_token, EOS_token, PAD_token, param_PAD_token, EOS_vec_padded, SOS_vec_padded
-from src.plant_tokenizer import generate_noise_plant_tokens, N_PARAMS
+from src.plant_tokenizer import SOS_TOKEN, EOS_TOKEN, PAD_TOKEN
+from src.plant_tokenizer import generate_noise_plant_tokens
 from src.plant_dataset import PlantDataset
 from src.plantstring2model import plantstring2model
 from src.plant_tokenizer import token2vec, vec2token
@@ -127,13 +127,12 @@ def make_negative_seqs(seqs, shuffle=True, noise_level=0.2):
 
 class MainModule(pl.LightningModule):
     def __init__(self, num_layers=6, num_heads=8, 
-                 seq_dim=23, seq_embedding_dim=768//2, 
-                 param_dim=22, param_embedding_dim=768//2, 
+                 num_tokens=EOS_TOKEN,
+                 dim_model=768,
                  image_size=224, alpha=1.0, lr=1e-5, 
                  dropout=0.10, 
                  max_len=1024,
                  use_depth=False,
-                 cat_emb=True,
                  decoder_only=True,
                  vit_model="facebook/dinov2-small",
                  **kwargs):
@@ -145,10 +144,8 @@ class MainModule(pl.LightningModule):
         self.current_script_dir = os.path.dirname(os.path.abspath(__file__))
         self.num_layers = num_layers
         self.num_heads = num_heads
-        self.seq_dim = seq_dim
-        self.seq_embedding_dim = seq_embedding_dim
-        self.param_dim = param_dim
-        self.param_embedding_dim = param_embedding_dim
+        self.num_tokens = num_tokens
+        self.dim_model = dim_model
         self.image_size = image_size
         self.alpha = alpha
         self.lr = lr
@@ -171,21 +168,15 @@ class MainModule(pl.LightningModule):
             # Conver to RGB
             self.depth_background = cv2.cvtColor(self.depth_background, cv2.COLOR_BGR2RGB)
 
-        self.image_encoder = ViT_FeatureExtractor(output_size=seq_embedding_dim+param_embedding_dim, 
+        self.image_encoder = ViT_FeatureExtractor(output_size=dim_model, 
                                                   use_depth=self.use_depth, image_size=image_size, vit_model=vit_model)
-
-        # Froze self.feature_extractor
-        # self.image_encoder.eval()
         
         self.sequence_decoder = TransformerDecoderModel(
-        #self.sequence_decoder = MultiModalModel(
-            seq_embedding_dim=self.seq_embedding_dim,
-            param_embedding_dim=self.param_embedding_dim,
+            dim_model=self.dim_model,
             num_layers=self.num_layers,
             num_heads=self.num_heads,
-            num_tokens=self.seq_dim,
-            num_params=self.param_dim,
-            decoder_only=True,
+            num_tokens=self.num_tokens,
+            decoder_only=decoder_only,
             use_depth=self.use_depth,
             image_size=self.image_size,
             dropout=self.dropout,
@@ -201,77 +192,46 @@ class MainModule(pl.LightningModule):
                                                         program_name="PlantString2Model",
                                                         display=":11.0", 
                                                         height=1.0,background_path=os.path.join(self.current_script_dir,"../src/assets/black.png"))
-    
         self.prev_epoch = -1
         self.current_train_step = 0
         self.current_val_step = 0
-        self.gaussian_smooth_loss = GaussianWeightedCrossEntropyLoss(num_classes=self.sequence_decoder.quantizer.n_clusters)
 
     def forward(self, image, plant_info, tgt):
         if self.use_depth:
             image = self.add_depth_to_image(image)
         features = self.image_encoder(image, plant_info)
-        seq, params = self.sequence_decoder(features, tgt)
-        seq = seq.permute(1, 0, 2)
-        params[0] = params[0].permute(1, 0, 2, 3) # Quantized Params
-        params[1] = params[1].permute(1, 0, 2)    # Scaled Params
-        return seq, params
+        out = self.sequence_decoder(features, tgt)
+        out = out.permute(1, 0, 2)
+        return out
 
     def generate(self, image, plant_info, stage='val'):
         device = image.device
-        SOS_tensor = torch.tensor(SOS_vec_padded, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
-        y_input = SOS_tensor
-        y_input = y_input.to(device)
+        y_input = torch.tensor(SOS_TOKEN, dtype=torch.long, device=device)
         if self.use_depth:
             image = self.add_depth_to_image(image)
-
         feature = self.image_encoder(image, plant_info)
-        quantizer = self.sequence_decoder.quantizer
-
         for i in range(self.max_len):
-            # Add Masks
-            tgt_mask = get_tgt_mask(y_input.size(1))
-            tgt_padding_mask = create_pad_mask(y_input, PAD_token)
-
             try:
                 if stage == 'val':
                     with torch.no_grad():
-                       label_p, params  = self.sequence_decoder(feature, y_input)
+                       label_p  = self.sequence_decoder(feature, y_input)
                 else:
-                    label_p, params = self.sequence_decoder(feature, y_input)
+                    label_p = self.sequence_decoder(feature, y_input)
             except Exception as e:
                 print(e)
                 print(f"Error in {i} iteration")
                 break
             label = label_p.topk(1)[1].view(-1)[-1].item()  # num with highest probability
 
-            params_recovered = torch.zeros([params[0].size(0),params[0].size(1),params[0].size(2)],device=self.device)
-            for i in range(params[0].size(2)):
-                recovered = quantizer.inverse_transform_i(params[0][:,:,i], i)
-                params_recovered[:, :, i] = recovered[:, :, 0]
-          
-            # Stop if model predicts end of sentencplant_structure_vit_transformer_withpsudodepth_paramEste
-            ## if label == EOS_token:
-            if label == EOS_token or label == PAD_token:
+            # Stop if model predicts end of sentence
+            if label == EOS_TOKEN or label == PAD_TOKEN:
                 break
 
             # Make next tensor using label and params
-            next_item = torch.cat((torch.tensor([[label]], dtype=torch.float32, device=device), params_recovered[-1]), dim=1).unsqueeze(0)
+            next_item = torch.tensor([[label]], dtype=torch.long, device=device)
 
             # Concatenate previous input with predicted best word
             y_input = torch.cat((y_input, next_item), dim=1)
-
-            # Vector cleaning
-            if 1:
-                # Convert y_input to vec to clean erratic params. It will remove SOS Token
-                vec = token2vec(y_input.squeeze(0).tolist())
-                # Convert back to token
-                tokens = vec2token(vec)
-                y_input = torch.tensor(tokens, dtype=torch.float).unsqueeze(0)
-
-                # Cat SOS_tensor
-                y_input = torch.cat((SOS_tensor, y_input), dim=1)
-                y_input = y_input.to(device)
 
         return y_input.squeeze(0)                    
     
@@ -282,81 +242,7 @@ class MainModule(pl.LightningModule):
         else:
             loss = F.cross_entropy(pred, label, ignore_index=ignore_index)
         return loss 
-     
-    def param_regression_loss(self, pred, target, target_scaled, ignore_index=PAD_token):
-        # Create neg mask
-        neg_mask = (target == ignore_index)
-        # Create masks
-        mask = ~neg_mask
-        loss_mse = F.smooth_l1_loss(pred, target_scaled, reduction='none') # mse_loss or smooth_l1_loss
-        masked_loss = loss_mse * mask
-        return masked_loss.sum() / (mask).sum()
-
-    def param_loss_fn_bylabel(self, label, values, pred, ignore_index=PAD_token):
-        # label: (batch_size, seq_len)
-        # pred: (batch_size, seq_len, param_dim)
-        # Masked values are not included in the loss
-
-        # Create masks
-        neg_organ_masks = create_organ_mask().to(pred.device) # Negative masks
-
-        # Ensure label_mod and masks have compatible dimensions
-        label_mod = label % 6
-        neg_mask = (values == ignore_index)  # First mask is for padding
-        neg_mask = neg_mask.permute(0, 2, 1)  # (N, C, L)
-        for i in range(6):
-            neg_mask = neg_mask | ((label_mod == i).unsqueeze(1).expand_as(neg_mask) & neg_organ_masks[i].unsqueeze(0).unsqueeze(2).expand_as(neg_mask))
-        neg_mask = neg_mask.permute(0, 2, 1)  # (N, C, L)
-        # Compute loss
-        loss_mse = F.smooth_l1_loss(pred, values, reduction='none') # mse_loss or smooth_l1_loss
-        # Create masks by negating the neg_mask
-        mask = ~neg_mask
-        masked_loss = loss_mse * mask
-        return masked_loss.sum() / (mask).sum()
-        #return masked_loss.sum() / masked_loss.size(0)
-    
-    
-    def param_cross_entropy(self, label, values, pred, ignore_index=PAD_token, label_smoothing=0.0):
-        # label: (batch_size, seq_len)
-        # pred: (batch_size, seq_len, param_dim)
-        # Masked values are not included in the loss
-        if 0:
-            # Create masks
-            neg_organ_masks = create_organ_mask().to(pred.device) # Negative masks
-
-            # Ensure label_mod and masks have compatible dimensions
-            label_mod = label % 6
-            values = values.long()
-            neg_mask = (label == ignore_index).expand(values.shape)  # First mask is for padding
-            neg_mask = neg_mask.permute(0, 2, 1)  # (N, C, L)
-            for i in range(6):
-                neg_mask = neg_mask | ((label_mod == i).unsqueeze(1).expand_as(neg_mask) & neg_organ_masks[i].unsqueeze(0).unsqueeze(2).expand_as(neg_mask))
-            neg_mask = neg_mask.permute(0, 2, 1)  # (N, C, L)
-            # Compute loss
-            pred = pred.reshape(-1, pred.size(-1))  # [8*100*18, 63]
-            values = values.reshape(-1)  # [8*100*18]
-            loss = F.cross_entropy(pred, values, reduction='none')
-            mask = ~neg_mask
-            masked_loss = loss * mask
-            return masked_loss.sum() / (mask).sum()
-        else:
-            values = values.long()
-            pred = pred.reshape(-1, pred.size(-1))  # [8*100*18, 63]
-            if 1:
-                loss = F.cross_entropy(pred, values.reshape(-1), reduction='none', ignore_index=0)
-            else:
-                loss = self.gaussian_smooth_loss(pred, values.reshape(-1))
-            loss = loss.reshape(values.shape)
-            mask = (label == PAD_token) | (label == SOS_token) | (label == EOS_token)
-            mask = ~mask
-            # Expand mask to match the shape of loss
-            mask = mask.unsqueeze(-1).expand_as(loss)  # [8, 100, 1] -> [8, 100, 18]
-            masked_loss = loss * mask
-            return masked_loss.sum() / (mask).sum()
         
-            #return masked_loss.sum() / masked_loss.size(0) / N_PARAMS
-        
-
     def add_depth_to_image(self, image, add_background=True):
     
         if add_background:
@@ -394,92 +280,25 @@ class MainModule(pl.LightningModule):
         # cat depth to image
         image = torch.cat((image, depth), dim=1)
 
-    
         return image
     
-    def collect_params(self, label, values, ignore_index=PAD_token):
-
-        neg_organ_masks = create_organ_mask().to(values.device) # Negative masks
-
-        # Ensure label_mod and masks have compatible dimensions
-        neg_mask = (label == ignore_index)  # First mask is for padding
-        if 1:
-            neg_mask = neg_mask | (label == PAD_token)
-            neg_mask = neg_mask | (label == SOS_token)
-            neg_mask = neg_mask | (label == EOS_token)
-
-        if len(values.shape) == 4:
-            neg_mask = neg_mask.unsqueeze(-1).unsqueeze(-1).expand_as(values)
-            for i in range(6):
-                neg_mask = neg_mask | ((label % 6 == i).unsqueeze(-1).unsqueeze(-1).expand_as(neg_mask) 
-                                       & neg_organ_masks[i].unsqueeze(0).unsqueeze(0).unsqueeze(-1).expand_as(neg_mask))
-            total_values = dict()
-            for i in range(neg_mask.size(2)): # Param dimension
-                var_mask = F.one_hot(torch.tensor(i), num_classes=neg_mask.size(2)).unsqueeze(0).unsqueeze(1).unsqueeze(-1).expand_as(neg_mask)
-                var_mask = var_mask.to(self.device)
-                var_mask = var_mask.bool()
-                masked_values = values[(~neg_mask) * var_mask].reshape(-1, values.size(-1))
-                total_values[f"{i}"] = masked_values
-        else:
-            neg_mask = neg_mask.unsqueeze(-1).expand_as(values)
-            for i in range(6):
-                neg_mask = neg_mask | ((label % 6 == i).unsqueeze(-1).expand_as(neg_mask) 
-                                       & neg_organ_masks[i].unsqueeze(0).unsqueeze(0).expand_as(neg_mask))
-            total_values = dict()
-            for i in range(neg_mask.size(2)): # Param dimension
-                var_mask = F.one_hot(torch.tensor(i), num_classes=neg_mask.size(2)).unsqueeze(0).unsqueeze(1).expand_as(neg_mask)
-                var_mask = var_mask.to(self.device)
-                var_mask = var_mask.bool()
-                masked_values = values[(~neg_mask) * var_mask]
-                total_values[f"{i}"] = masked_values
-        return total_values
-
     def compute_loss(self, batch, mode):
-        quantizer = self.sequence_decoder.quantizer
-        scaler = self.sequence_decoder.scaler
 
         # Load batch and preprocess
         image, plant_info, y, lengths = batch
         y_input = y[:, :-1]
         y_expected = y[:, 1:]
-        label = y_expected[:, :, 0].long()
-        values = y_expected[:, :, 1:]
-        values_quantized = quantizer.transform(values)
-        values_scaled = scaler.transform(values)
+        label = y_expected.long()
 
         # Decoder loss
-        seq, params = self(image, plant_info, y_input)
-        label_loss = self.label_loss_fn(seq.permute(0, 2, 1), label, ignore_index=PAD_token) # (N, C, L)
-        
-        params_collected_pred_p = self.collect_params(label=label, values=params[0])
-        params_collected_target_class = self.collect_params(label=label, values=values_quantized)
-        sum_quantized_param_loss = 0
-        for i in range(len(params_collected_pred_p)):
-            sum_quantized_param_loss += F.cross_entropy(params_collected_pred_p[f"{i}"],
-                                                    params_collected_target_class[f"{i}"].long())
-        
-        params_collected_target_value = self.collect_params(label=label, values=values_scaled)
-        # Recover values using predefined centers
-        scaled_param_loss = []
-        sum_scaled_param_loss = 0
-        for i in range(len(params_collected_pred_p)):
-            params_collected_recovered = quantizer.inverse_transform_i(params_collected_pred_p[f"{i}"].unsqueeze(1), i)
-            params_collected_recovered_scaled = scaler.transform(params_collected_recovered.expand(
-                                                [params_collected_recovered.size(0), 1, values_scaled.size(-1)]))
-            params_collected_recovered_scaled = params_collected_recovered_scaled[:,:,i].squeeze()
-            # scaled_param_loss.append(F.mse_loss(params_collected_recovered_scaled, 
-            #                                params_collected_target_value[f"{i}"]))
-            
-            sum_scaled_param_loss += F.mse_loss(params_collected_recovered_scaled, 
-                                           params_collected_target_value[f"{i}"]) 
+        y_out = self(image, plant_info, y_input)
 
-        
-        ######### Tensorboard logging
-        loss = label_loss + sum_quantized_param_loss + sum_scaled_param_loss
+        # Reshape y_out and label for CrossEntropyLoss
+        y_out = y_out.reshape(-1, y_out.size(-1))  # (N * L, C)
+        label = label.reshape(-1)  # (N * L,)
 
-        self.log(f'{mode}/label_loss', label_loss, batch_size=image.size(0), sync_dist=True)
-        self.log(f'{mode}/quantized_param_loss', sum_quantized_param_loss, batch_size=image.size(0), sync_dist=True)
-        self.log(f'{mode}/scaled_param_loss', sum_scaled_param_loss, batch_size=image.size(0), sync_dist=True)
+        # Apply CrossEntropyLoss
+        loss = F.cross_entropy(y_out, label, ignore_index=PAD_TOKEN)
         self.log(f'{mode}/loss', loss, batch_size=image.size(0), sync_dist=True)
 
         # Add images to tensorboard
@@ -627,24 +446,17 @@ class MainDataModule(pl.LightningDataModule):
 
         
     def collate_fn(self, batch):
-        images, plant_info, vectors, lengths = zip(*batch)
+        images, plant_info, out, lengths = zip(*batch)
         max_length = max(lengths)
-        vec_dim = vectors[0].shape[-1]
-        if len(vectors[0].shape) == 1:
-            vectors_padded = np.ones((len(vectors), max_length), dtype=int) * PAD_token
-        else:
-            vectors_padded = np.zeros((len(vectors), max_length, vec_dim))
-            vectors_padded[:, :, 0] = PAD_token
-
-        for i, vector in enumerate(vectors):
-            end = lengths[i]
-            vectors_padded[i, :end] = vector
-
+        out_padded = np.ones([len(lengths), max_length]) * PAD_TOKEN
+        for i, seq in enumerate(out):
+            out_padded[i,:len(seq)] = seq
         images = torch.stack(images)
-        vectors_padded = torch.tensor(vectors_padded, dtype=torch.float32)
         plant_info = np.array(plant_info)
         plant_info = torch.tensor(plant_info, dtype=torch.float32)
-        return images, plant_info, vectors_padded, lengths
+
+        out_tensor = torch.tensor(out_padded, dtype=torch.long)
+        return images, plant_info, out_tensor, lengths
 
     def train_dataloader(self):
         return DataLoader(
@@ -668,7 +480,6 @@ class MainDataModule(pl.LightningDataModule):
 import unittest
 import torch
 from models.plightning import MainModule
-from src.plant_tokenizer import SOS_vec_padded
 
 class TestMainModule(unittest.TestCase):
     def setUp(self):
@@ -716,7 +527,7 @@ if __name__ == '__main__':
 
     from models.plightning import MainModule, MainDataModule
     from models.model import get_tgt_mask
-    from src.plant_tokenizer import SOS_vec_padded, SOS_token, EOS_token, token2vec
+    from src.plant_tokenizer import SOS_TOKEN, EOS_TOKEN, token2vec
     from src.string_to_xml_to_vec import vec2xml, pretty_print_xml, recursive_to_linked
     from src.plant_dataset import load_sideview_images
     from src.image_process import process_leaf_image

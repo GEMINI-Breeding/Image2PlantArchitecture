@@ -11,7 +11,7 @@ import platform
 script_file_path = os.path.abspath(__file__)
 sys.path.append(os.path.dirname(os.path.dirname(script_file_path)))
 from models.plightning import MainModule, MainDataModule
-from plant_tokenizer import EOS_token, N_PARAMS
+from plant_tokenizer import NUM_TOTAL_TOKENS
 import joblib
 
 torch.autograd.set_detect_anomaly(True)
@@ -31,23 +31,20 @@ if __name__ == "__main__":
         "image_size": 224,
         "load_depth": False,
         "train_batch_size": 16,
-        "num_workers": 4,
+        "num_workers": 0,
         "process_leaf": True,
-        "preload": True,
+        "preload": False,
         "side_view": False,
         "partial_data": 0.1,
         #"growth_stages": ["01", "02", "03", "04", "05"],
         "growth_stages": ["01"],
         "num_layers": 8,
         "num_heads": 8,
-        "seq_dim": EOS_token + 1,
-        "seq_embedding_dim": 768 // 2,
-        "param_dim": N_PARAMS,
-        "param_embedding_dim": 768 // 2,
+        "num_tokens": NUM_TOTAL_TOKENS,
+        "dim_model": 768,
         "alpha": 1.0,
         "lr": 2e-5,
         "use_depth": False,
-        "cat_emb": True,
         "decoder_only": True,
         "dropout": 0.10,
         "vit_model": "facebook/dinov2-base"
@@ -63,7 +60,7 @@ if __name__ == "__main__":
     # Generate today's date string in YYYYMMDD format
     today_date_str = datetime.now().strftime('%Y%m%d')
     tb_logger = TensorBoardLogger(
-        name=f'{today_date_str}_NoParamEmbedding_NoViT',
+        name=f'{today_date_str}_Quantize_Small_Day1',
         save_dir='./log'
     )
 
