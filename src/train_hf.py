@@ -1,6 +1,7 @@
 import torch
 from torch.utils.data import Dataset
 from transformers import Trainer, TrainingArguments, ViTImageProcessor, BertTokenizer, VisionEncoderDecoderModel
+from transformers import AutoProcessor, AutoModelForCausalLM
 
 import torch
 from torch.utils.data import Dataset
@@ -180,7 +181,8 @@ class PlantDataset(Dataset):
             # Tokenize the plant structure
             out = vec2token(vec)
             # Add SOS and EOS tokens
-            out = np.concatenate(([SOS_TOKEN], out, [EOS_TOKEN]))
+            #out = np.concatenate(([SOS_TOKEN], out, [EOS_TOKEN]))
+            out = np.concatenate((out, [EOS_TOKEN])) # Trainer will add SOS_TOKEN
             out_len = len(out)
         else:
             out = None
@@ -192,7 +194,7 @@ class PlantDataset(Dataset):
         image = image.permute(2, 0, 1)     
 
         if self.image_processor:
-            image = self.image_processor(image, return_tensors="pt").pixel_values[0]
+            image = self.image_processor(image,return_tensors="pt").pixel_values[0]
         return {"pixel_values": image, "labels": out}
 
 
@@ -201,26 +203,33 @@ image_processor = ViTImageProcessor.from_pretrained("google/vit-base-patch16-224
 model = VisionEncoderDecoderModel.from_encoder_decoder_pretrained(
     "google/vit-base-patch16-224-in21k", "google-bert/bert-base-uncased"
 )
+# model = VisionEncoderDecoderModel.from_pretrained("log/20250320_Quantized_dataset/results")
+
 model.config.decoder_start_token_id = SOS_TOKEN
+model.config.bos_token_id = SOS_TOKEN
 model.config.pad_token_id = PAD_TOKEN
+model.config.eos_token_id = EOS_TOKEN
 model.config.vocab_size = VOCAB_SIZE
 
 # Dataset 인스턴스 생성
 growth_stages = ["01"]
-dataset = PlantDataset(root_dir="data/2000_Plots_20241210", stages=growth_stages, 
+dataset = PlantDataset(root_dir="data/2000_Plots_20241210_Quantized", stages=growth_stages, 
                        process_leaf=True,
                        preload=False, image_processor=image_processor)
 
 # 훈련 인자 설정
-exp_name = "vit-base-patch16-224-in21k"
+# Generate today's date string in YYYYMMDD format
+from datetime import datetime
+today_date_str = datetime.now().strftime('%Y%m%d')
+exp_name = f"{today_date_str}_Quantized_dataset_100epoch"
 training_args = TrainingArguments(
     output_dir=f'./log/{exp_name}/results',          # 모델 출력 디렉토리
-    num_train_epochs=3,                 # 훈련 에포크 수
-    per_device_train_batch_size=4,      # 훈련 배치 사이즈
-    per_device_eval_batch_size=4,       # 평가 배치 사이즈
-    warmup_steps=500,                   # 학습률 스케줄러를 위한 웜업 스텝 수
-    weight_decay=0.01,                  # 가중치 감쇠
-    logging_dir=f'./log/{exp_name}',        # 로그 디렉토리
+    num_train_epochs=100,                             # 훈련 에포크 수
+    per_device_train_batch_size=4,                   # 훈련 배치 사이즈
+    per_device_eval_batch_size=4,                    # 평가 배치 사이즈
+    warmup_steps=500,                                # 학습률 스케줄러를 위한 웜업 스텝 수
+    weight_decay=0.01,                               # 가중치 감쇠
+    logging_dir=f'./log/{exp_name}',                 # 로그 디렉토리
     logging_steps=10,
     gradient_accumulation_steps=4,
     gradient_checkpointing=True,
@@ -232,15 +241,8 @@ trainer = Trainer(
     model=model,
     args=training_args,
     train_dataset=dataset,
-    eval_dataset=dataset,  # 평가 데이터셋 (여기서는 동일한 데이터셋 사용)
+    eval_dataset=dataset,                       # 평가 데이터셋 (여기서는 동일한 데이터셋 사용)
 )
 
-# 모델 학습
-trainer.train()
-
-# 모델 저장
-trainer.save_model("./log/{exp_name}/results")
-
-
-# # inference (generation)
-# generated_ids = model.generate(pixel_values)
+trainer.train()                                 # 모델 학습
+trainer.save_model(f"./log/{exp_name}/results") # 모델 저장

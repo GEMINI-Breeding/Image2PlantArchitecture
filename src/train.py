@@ -27,10 +27,10 @@ if __name__ == "__main__":
 
     # Define configuration dictionary
     config = {
-        "dataset_dir": "data/20250311_Sideview_40Days",
+        "dataset_dir": "data/2000_Plots_20241210_Quantized",
         "image_size": 448,
         "load_depth": False,
-        "train_batch_size": 16,
+        "train_batch_size": 8,
         "num_workers": 8,
         "process_leaf": True,
         "preload": True,

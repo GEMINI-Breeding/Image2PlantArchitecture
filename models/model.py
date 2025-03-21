@@ -474,15 +474,8 @@ class SequenceDecoderModel(nn.Module):
             features = features.unsqueeze(1) 
         else:
             pass
-
-        tgt_mask = get_tgt_mask(tgt_seq.size(1))
-        tgt_key_padding_mask = create_pad_mask(tgt_seq, PAD_TOKEN)
-
         device = tgt_seq.device
-        if tgt_mask is not None:
-            tgt_mask = tgt_mask.to(device)
-        if tgt_key_padding_mask is not None:
-            tgt_key_padding_mask = tgt_key_padding_mask.to(device)
+
 
         # Convert to torch.long
         tgt_seq = tgt_seq.long()
@@ -494,14 +487,29 @@ class SequenceDecoderModel(nn.Module):
 
         tgt = self.Seq_positional_encoding(tgt)
         if self.decoder_only:
+            tgt_mask = get_tgt_mask(tgt_seq.size(1)).to(device)
+            tgt_key_padding_mask = create_pad_mask(tgt_seq, PAD_TOKEN).to(device)
             decoded, self.self_attn_weights, self.multihead_attn_weights = self.transformer_decoder(tgt, features, tgt_mask=tgt_mask,tgt_key_padding_mask=tgt_key_padding_mask)
         else:
+            tgt = torch.cat((features, tgt), dim=0)
+            tgt_mask = get_tgt_mask(tgt.size(0)).to(device)
+            # Make Transformer can see entire ViT features 
+            tgt_mask[:features.size(0),:features.size(0)] = 0
+            dummy_seq = torch.zeros([tgt_seq.size(0), features.size(0)]).to(device)
+            tgt_seq_with_dummy = torch.cat((dummy_seq, tgt_seq), dim=1)
+            tgt_key_padding_mask = create_pad_mask(tgt_seq_with_dummy, PAD_TOKEN).to(device)
+
+            # Make batch first
             tgt = tgt.permute(1,0,2)
             features = features.permute(1,0,2)
-            decoded = self.transformer(features, tgt, tgt_mask=tgt_mask, tgt_key_padding_mask=tgt_key_padding_mask, 
+            decoded = self.transformer(tgt, tgt, 
+                                       # src_mask=tgt_mask, # src_mask is optiional
+                                       src_key_padding_mask=tgt_key_padding_mask,
+                                       tgt_mask=tgt_mask, tgt_key_padding_mask=tgt_key_padding_mask, 
                                        tgt_is_causal=True)
-            tgt = tgt.permute(1,0,2)
-            features = features.permute(1,0,2)
+            decoded = decoded[:,features.size(1):]
+            # Make Seqence First
+            decoded = decoded.permute(1,0,2)
         output_seq = self.seq_decode_linear(decoded)
 
         return output_seq
