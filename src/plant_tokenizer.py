@@ -59,11 +59,12 @@ predetermined_centers = np.unique(np.concatenate([
 # 4*6 + 3 => Max nested depth is 3
 N_DEPTH = 4
 N_ORGAN = 6
-NUM_PSTR_TOKEN = N_DEPTH * N_ORGAN
-SOS_TOKEN = NUM_PSTR_TOKEN + len(predetermined_centers) + 0
-PAD_TOKEN = NUM_PSTR_TOKEN + len(predetermined_centers) + 1
-EOS_TOKEN = NUM_PSTR_TOKEN + len(predetermined_centers) + 2
-VOCAB_SIZE = EOS_TOKEN + 1
+NUM_PA_TOKEN = N_DEPTH * N_ORGAN
+SOS_TOKEN =  NUM_PA_TOKEN + len(predetermined_centers) + 0 # Start of string
+META_TOKEN = NUM_PA_TOKEN + len(predetermined_centers) + 1 # Attached to the start and end of metadata (plant info)
+PAD_TOKEN =  NUM_PA_TOKEN + len(predetermined_centers) + 2 # PAD
+EOS_TOKEN =  NUM_PA_TOKEN + len(predetermined_centers) + 3 # End of string
+VOCAB_SIZE = EOS_TOKEN + 4
 
 def vec2token(vec: List[np.ndarray]) -> np.ndarray:
     """
@@ -84,7 +85,7 @@ def vec2token(vec: List[np.ndarray]) -> np.ndarray:
         distances = cdist(params, predetermined_centers)  # Compute pairwise distances
         quantized_index = np.argmin(distances, axis=1)    # Find the closest center
         for i in range(len(quantized_index)):
-            tokens.append(NUM_PSTR_TOKEN + quantized_index[i])
+            tokens.append(NUM_PA_TOKEN + quantized_index[i])
 
     return np.array(tokens)
 
@@ -97,16 +98,18 @@ def token2vec(tokens: np.ndarray) -> List[np.ndarray]:
             pass
         elif token == EOS_TOKEN or token == PAD_TOKEN:
             break
+        elif token == META_TOKEN:
+            pass
         else:
             # Check if structure token
-            if token < NUM_PSTR_TOKEN:
+            if token < NUM_PA_TOKEN:
                 depth = token // 6
                 organ = token % 6
                 if vec_line:
                     vec.append(vec_line)
                 vec_line = [depth,organ]
             else:
-                value = predetermined_centers[token - NUM_PSTR_TOKEN][0]
+                value = predetermined_centers[token - NUM_PA_TOKEN][0]
                 vec_line.append(value)
     # Add last params (unclosed)
     vec.append(vec_line)

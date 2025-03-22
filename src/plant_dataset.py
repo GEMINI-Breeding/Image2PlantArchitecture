@@ -13,7 +13,7 @@ import sys
 script_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(script_dir)
 from image_process import process_leaf_image
-from plant_tokenizer import SOS_TOKEN, EOS_TOKEN, PAD_TOKEN
+from plant_tokenizer import SOS_TOKEN, EOS_TOKEN, PAD_TOKEN, META_TOKEN
 from string_to_xml_to_vec import string2vec, vec2string, vec2xml, pretty_print_xml, xml2vec, linked_to_recursive
 import xml.etree.ElementTree as ET
 from plant_tokenizer import vec2token as vec2token
@@ -77,7 +77,7 @@ def load_sideview_images(images_dir, image_file_name, img_size, process_leaf):
 class PlantDataset(Dataset):
     def __init__(self, root_dir, plot=None, stages=None, transform=None, 
                  image_size=224, load_depth=False, preload=True, side_view=False,
-                 process_leaf=False):
+                 process_leaf=False, image_processor=None, add_sos_token=True):
 
         self.root_dir = root_dir
         self.load_depth = load_depth          
@@ -101,6 +101,7 @@ class PlantDataset(Dataset):
         self.plant_xml_files.sort()
 
         self.img_size = image_size
+        self.image_processor = image_processor
         # Filter with statges
         # Regular expression to extract plot and day numbers
         pattern = r"cowpea_(\d+)_day_(\d+)"
@@ -121,7 +122,7 @@ class PlantDataset(Dataset):
         self.process_leaf = process_leaf
         self.side_view = side_view
         self.plant_string_raw = ""
-        
+        self.add_sos_token = add_sos_token
         print(f"Total {len(self.image_files)} images and plant strings loaded")
         
         # self.param_scaler = joblib.load(os.path.join(self.current_script_dir,'scaler.pkl'))
@@ -224,22 +225,31 @@ class PlantDataset(Dataset):
             if isinstance(image, Image.Image):
                 image = np.array(image)
 
-        if vec:
-            # Tokenize the plant structure
-            out = vec2token(vec)
-            # Add SOS and EOS tokens
-            out = np.concatenate(([SOS_TOKEN], out, [EOS_TOKEN]))
-            out_len = len(out)
-        else:
-            out = None
-            out_len = 0
 
-        # Conver to tensor
+        # Tokenize the plant structure
+        out = vec2token(vec)
+
+        # Make a dummy vector for plant_info
+        plant_info_vec = np.concatenate(([0,0], plant_info))
+        # Tokenize plant info
+        plant_info_token = vec2token([plant_info_vec])
+        plant_info_token = np.concatenate(([META_TOKEN], plant_info_token[1:].astype('int64'), [META_TOKEN]))
+        out = np.concatenate((plant_info_token, out)) # Trainer will add special tokens
+
+        if self.add_sos_token:
+            # Add SOS and EOS tokens
+            out = np.concatenate(([SOS_TOKEN], out))
+
+        out = np.concatenate((out, [EOS_TOKEN]))
+
+        # Convert to tensor
         image = torch.tensor(image)
         # Permute the image tensor
-        image = image.permute(2, 0, 1)
+        image = image.permute(2, 0, 1)     
 
-        return image, plant_info, out, out_len
+        if self.image_processor:
+            image = self.image_processor(image, return_tensors="pt").pixel_values[0]
+        return {"pixel_values": image, "labels": out, "plant_info": plant_info_token}
 
 
 
