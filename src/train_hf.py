@@ -2,6 +2,7 @@ import torch
 from torch.utils.data import Dataset
 from transformers import Trainer, TrainingArguments, ViTImageProcessor, BertTokenizer, VisionEncoderDecoderModel
 from transformers import AutoProcessor, AutoModelForCausalLM
+from torch.utils.data import random_split
 
 import torch
 from torch.utils.data import Dataset
@@ -211,11 +212,23 @@ model.config.pad_token_id = PAD_TOKEN
 model.config.eos_token_id = EOS_TOKEN
 model.config.vocab_size = VOCAB_SIZE
 
+# Set a random seed for reproducibility
+seed = 42
+torch.manual_seed(seed)
+
 # Dataset 인스턴스 생성
 growth_stages = ["01"]
 dataset = PlantDataset(root_dir="data/2000_Plots_20241210_Quantized", stages=growth_stages, 
                        process_leaf=True,
                        preload=False, image_processor=image_processor)
+
+# Split the dataset into Train, Validation, and Test sets
+train_size = int(0.8 * len(dataset))  # 80% for training
+val_size = int(0.1 * len(dataset))    # 10% for validation
+test_size = len(dataset) - train_size - val_size  # Remaining 10% for testing
+
+# Use random_split with the seed set above
+train_dataset, val_dataset, test_dataset = random_split(dataset, [train_size, val_size, test_size])
 
 # 훈련 인자 설정
 # Generate today's date string in YYYYMMDD format
@@ -224,7 +237,7 @@ today_date_str = datetime.now().strftime('%Y%m%d')
 exp_name = f"{today_date_str}_Quantized_dataset_100epoch"
 training_args = TrainingArguments(
     output_dir=f'./log/{exp_name}/results',          # 모델 출력 디렉토리
-    num_train_epochs=100,                             # 훈련 에포크 수
+    num_train_epochs=100,                            # 훈련 에포크 수
     per_device_train_batch_size=4,                   # 훈련 배치 사이즈
     per_device_eval_batch_size=4,                    # 평가 배치 사이즈
     warmup_steps=500,                                # 학습률 스케줄러를 위한 웜업 스텝 수
