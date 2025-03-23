@@ -19,13 +19,18 @@ from utils import model_summary
 # 1. 디코더 설정 정의
 if 1:
     decoder_checkpoint = "google-bert/bert-base-uncased"
-else:
+    decoder_config = AutoConfig.from_pretrained(decoder_checkpoint)
+    decoder_config.max_position_embeddings = 4096  # 최대 시퀀스 길이 설정
+    decoder_config.vocab_size = VOCAB_SIZE  # 토크나이저의 vocab 크기와 일치시킴
+    decoder_config.add_cross_attention=True
+    decoder_config.is_decoder=True
+elif 0:
     decoder_checkpoint = "gpt2"
-decoder_config = AutoConfig.from_pretrained(decoder_checkpoint)
-decoder_config.max_position_embeddings = 2500  # 최대 시퀀스 길이 설정
-decoder_config.vocab_size = VOCAB_SIZE  # 토크나이저의 vocab 크기와 일치시킴
-decoder_config.add_cross_attention=True
-decoder_config.is_decoder=True
+    decoder_config = AutoConfig.from_pretrained(decoder_checkpoint)
+    decoder_config.max_position_embeddings = 2500  # 최대 시퀀스 길이 설정
+    decoder_config.vocab_size = VOCAB_SIZE  # 토크나이저의 vocab 크기와 일치시킴
+    decoder_config.add_cross_attention=True
+    decoder_config.is_decoder=True
 
 if 1:
     image_size = 448
@@ -46,6 +51,7 @@ model = VisionEncoderDecoderModel.from_encoder_decoder_pretrained(
     encoder_config=encoder_config,
     decoder_ignore_mismatched_sizes=True,
 )
+# model = VisionEncoderDecoderModel(encoder=encoder, decoder=decoder)
 
 # Freeze the encoder parameters
 model.encoder.eval()
@@ -83,7 +89,7 @@ torch.manual_seed(seed)
 
 # Dataset 인스턴스 생성
 growth_stages = None # ["01"]
-dataset = PlantDataset(root_dir="data/2000_Plots_20241210_Quantized", stages=growth_stages, 
+dataset = PlantDataset(root_dir="data/20250311_Sideview_40Days", stages=growth_stages, 
                        process_leaf=True, image_size=image_size,
                        preload=False, image_processor=image_processor, add_sos_token=False)
 
@@ -99,13 +105,13 @@ train_dataset, val_dataset, test_dataset = random_split(dataset, [train_size, va
 # Generate today's date string in YYYYMMDD format
 from datetime import datetime
 today_date_str = datetime.now().strftime('%Y%m%d')
-exp_name = f"{today_date_str}_debug"
+exp_name = f"{today_date_str}_DinoV2_448_Bert_BetterQuantize"
 training_args = TrainingArguments(
     output_dir=f'./log/{exp_name}/results',          # 모델 출력 디렉토리
     num_train_epochs=10,                             # 훈련 에포크 수
     per_device_train_batch_size=8,                   # 훈련 배치 사이즈
     per_device_eval_batch_size=8,                    # 평가 배치 사이즈
-    warmup_steps=1250,                               # 학습률 스케줄러를 위한 웜업 스텝 수
+    warmup_steps=12500,                               # 학습률 스케줄러를 위한 웜업 스텝 수
     weight_decay=0.01,                               # 가중치 감쇠
     logging_dir=f'./log/{exp_name}',                 # 로그 디렉토리
     logging_steps=10,
