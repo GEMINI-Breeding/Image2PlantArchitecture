@@ -446,17 +446,19 @@ class MainDataModule(pl.LightningDataModule):
 
         
     def collate_fn(self, batch):
-        images, plant_info, out, lengths = zip(*batch)
-        max_length = max(lengths)
-        out_padded = np.ones([len(lengths), max_length]) * PAD_TOKEN
+        images, plant_info, out = batch
+        images = batch['pixel_values']
+        plant_info = [0,0,0]
+        out = batch['labels']
+        max_length = max(len(out))
+        out_padded = np.ones([len(out), max_length]) * PAD_TOKEN
         for i, seq in enumerate(out):
             out_padded[i,:len(seq)] = seq
         images = torch.stack(images)
         plant_info = np.array(plant_info)
         plant_info = torch.tensor(plant_info, dtype=torch.float32)
-
         out_tensor = torch.tensor(out_padded, dtype=torch.long)
-        return images, plant_info, out_tensor, lengths
+        return images, plant_info, out_tensor
 
     def train_dataloader(self):
         return DataLoader(

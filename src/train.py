@@ -60,7 +60,7 @@ if __name__ == "__main__":
     # Generate today's date string in YYYYMMDD format
     today_date_str = datetime.now().strftime('%Y%m%d')
     tb_logger = TensorBoardLogger(
-        name=f'{today_date_str}_Quantize_Small_FullTransformer_448_Day1',
+        name=f'{today_date_str}_Debug',
         save_dir='./log'
     )
 
@@ -105,6 +105,10 @@ if __name__ == "__main__":
         precision="bf16-mixed",
         # strategy=DDPStrategy(find_unused_parameters=True)  # Enable detection of unused parameters
     )
+    #.env/lib/python3.8/site-packages/pytorch_lightning/utilities/model_summary/model_summary.py
+    # from pytorch_lightning.utilities.model_summary import ModelSummary
+    # model_summary = ModelSummary(module, max_depth=1)
+    # print(model_summary)
     trainer.fit(module, datamodule=datamodule)
 
     # To check the training progress,
