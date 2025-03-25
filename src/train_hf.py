@@ -143,7 +143,8 @@ side_view_str = "Sideview" if args.side_view else "TopView"
 if args.exp_name:
     exp_name = args.exp_name
 else:
-    exp_name = f"{today_date_str}_{encoder_name}_{args.image_size}_{side_view_str}_{decoder_name}"
+    #exp_name = f"{today_date_str}_{encoder_name}_{args.image_size}_{side_view_str}_{decoder_name}"
+    exp_name = "debug"
 
 # Determine output directory
 if args.log_dir:

@@ -130,11 +130,16 @@ def token2vec(tokens: np.ndarray) -> List[np.ndarray]:
                 depth = token // 6
                 organ = token % 6
                 if vec_line:
+                    min_length = 2 + 5
+                    if len(vec_line) < min_length:
+                        vec_line.extend([0.0] * (min_length - len(vec_line)))
                     vec.append(vec_line)
                 vec_line = [depth,organ]
-            else:
+            elif vec_line:
                 value = predetermined_centers[token - NUM_PA_TOKEN][0]
                 vec_line.append(value)
+            else:
+                print("Depth & Organ is not defined")
     # Add last params (unclosed)
     vec.append(vec_line)
 

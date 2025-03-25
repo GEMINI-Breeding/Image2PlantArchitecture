@@ -4,7 +4,7 @@ from tqdm import tqdm
 import evaluate
 from transformers import AutoImageProcessor
 from torch.utils.data import random_split
-
+from plant_dataset import PlantDataset
 
 
 def calc_metric(model, dataset_path):

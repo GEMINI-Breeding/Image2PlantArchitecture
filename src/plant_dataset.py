@@ -76,8 +76,8 @@ def load_sideview_images(images_dir, image_file_name, img_size, process_leaf):
 
 class PlantDataset(Dataset):
     def __init__(self, root_dir, plot=None, stages=None, transform=None, 
-                 image_size=224, load_depth=False, preload=True, side_view=False,
-                 process_leaf=False, image_processor=None, add_sos_token=True):
+                 image_size=224, load_depth=False, preload=False, side_view=False,
+                 process_leaf=True, image_processor=None, add_sos_token=False):
 
         self.root_dir = root_dir
         self.load_depth = load_depth          
@@ -257,12 +257,19 @@ class PlantDataset(Dataset):
         # Tokenize plant info
         plant_info_token = vec2token([plant_info_vec])
         plant_info_token = np.concatenate(([META_TOKEN], plant_info_token[1:].astype('int64'), [META_TOKEN]))
-        out = np.concatenate((plant_info_token, out)) # Trainer will add special tokens
-
         if self.add_sos_token:
-            # Add SOS and EOS tokens
-            out = np.concatenate(([SOS_TOKEN], out))
+            # Add SOS
+            # But Trainer will add special tokens. See 594-597 in the forward method: VisionEncoderDecoderModel
+            """
+                    if (labels is not None) and (decoder_input_ids is None and decoder_inputs_embeds is None):
+            decoder_input_ids = shift_tokens_right(
+                labels, self.config.pad_token_id, self.config.decoder_start_token_id
+            )
+            """
+            plant_info_token = np.concatenate(([SOS_TOKEN], plant_info_token))
 
+        # Add EOS token
+        out = np.concatenate((plant_info_token, out)) 
         out = np.concatenate((out, [EOS_TOKEN]))
 
         # Convert to tensor

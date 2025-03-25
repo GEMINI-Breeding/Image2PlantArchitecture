@@ -338,7 +338,8 @@ def vec2element(root, plant_array, depth=0, debug=False):
                 global shoot_id
                 current_shoot.set("ID", f"{shoot_id}")
                 shoot_id += 1
-                shoot_type = list(shoottype2num.keys())[list(shoottype2num.values()).index(line[6])]
+                shoot_type_value = 1 if abs(line[6] - 1) < abs(line[6] - 3) else 3
+                shoot_type = list(shoottype2num.keys())[list(shoottype2num.values()).index(shoot_type_value)]
                 add_trait_subelement(current_shoot,"shoot_type_label",f" {shoot_type} ")
                 add_trait_subelement(current_shoot,"parent_shoot_ID",f" TBD ")
                 add_trait_subelement(current_shoot,"parent_node_index",f" TBD ")
