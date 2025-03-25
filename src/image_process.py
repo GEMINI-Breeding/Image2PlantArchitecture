@@ -77,9 +77,15 @@ def process_leaf_image(leaf_img, normalize=True, debug=False, sqaure_crop=False,
     # Calc leaf area in pixels / total area
     leaf_area = np.sum(ExG > 0) / (w*h)
     # print(leaf_area)
-
-    plant_width = w
-    plant_height = h
+    if 0:
+        plant_width = w
+        plant_height = h
+    else:
+        # Normalize with image scale, to have a physical dimension lenght
+        # Temporalrliy devide by 1200
+        scale_factor = 1200
+        plant_width = w / scale_factor
+        plant_height = h / scale_factor
     # Crop the leaf image
     if sqaure_crop:
         # Calc Center

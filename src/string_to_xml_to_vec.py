@@ -241,7 +241,7 @@ def xml2vec(root, plant_array, depth=0, plant_age=0, leaf_count=0):
             elif 'pitch' in subelem.tag:
                 line[4] = float(subelem.text)
             elif 'curvature' in subelem.tag:
-                line[5] = float(subelem.text)
+                line[5] = -float(subelem.text)
             elif 'leaflet_scale' in subelem.tag:
                 line[6] = float(subelem.text)
                 # Append the line to the plant_array
@@ -375,7 +375,7 @@ def vec2element(root, plant_array, depth=0, debug=False):
                 add_trait_subelement(current_petiole,"petiole_length",f"{max(params[0],1e-7):.6g}")
                 add_trait_subelement(current_petiole,"petiole_radius",f"{max(params[1],4e-06):.6g}")
                 add_trait_subelement(current_petiole,"petiole_pitch",f"{(params[2]):.6g}")
-                add_trait_subelement(current_petiole,"petiole_curvature",f"{(params[3]):.6g}")
+                add_trait_subelement(current_petiole,"petiole_curvature",f"{(-params[3]):.6g}")
                 add_trait_subelement(current_petiole,"leaflet_scale",f"{(params[4]):.6g}")
                 plant_array = plant_array[1:]
                 last_elem = 'Petiole'

@@ -38,19 +38,43 @@ import pandas as pd
 # 3,2               | 20
 # 3,3               | 21
 # 3,4               | 22
-# 3,5               | 23
-
+# 3,5    
 # And then, paramter quantization comes,
-predetermined_centers = np.unique(np.concatenate([
-            np.array([0, 10, -10, 15, -15, 20, 40, 90]),  # Some special angles
-            np.linspace(-360, 360, 18+1),  # angles
-            np.array([0.9, 1.0]),  # Some special float values
-            np.array([1,  3]),  # Some special integer values
-            np.linspace(0, 1.0, 11),
-            np.linspace(0, 0.1, 11),
-            np.linspace(0, 0.01, 11),  # float values for lengths
-            np.linspace(0, 0.001, 11)  # float values for lengths
-        ])).reshape(-1, 1)
+if 1:
+    # 662
+    predetermined_centers = np.unique(np.concatenate([
+
+        # Group 2: Negative and positive floating-point values
+        np.linspace(-50, 360, 411), 
+
+        # Group 4: Very small floating-point values
+        np.linspace(0, 0.03, 50),
+
+        # Group 6: Negative and positive small floating-point values
+        np.linspace(0, 0.005, 50),  
+
+        np.linspace(0, 0.10, 51),
+
+        np.linspace(0, 1.0, 11),
+
+        np.linspace(0, 0.10, 51),
+
+        # Group 11: Small positive floating-point values
+        np.linspace(0, 0.12, 121),  
+
+    ])).reshape(-1, 1)
+else:
+    # 66
+    predetermined_centers = np.unique(np.concatenate([
+                np.array([0, 10, -10, 15, -15, 20, 40, 90]),  # Some special angles
+                np.linspace(-360, 360, 18+1),  # angles
+                np.array([0.9, 1.0]),  # Some special float values
+                np.array([1,  3]),  # Some special integer values
+                np.linspace(0, 1.0, 11),
+                np.linspace(0, 0.1, 11),
+                np.linspace(0, 0.01, 11),  # float values for lengths
+                np.linspace(0, 0.001, 11)  # float values for lengths
+            ])).reshape(-1, 1)
 # SOS               | 23 + len(predetermined_centers) + 1 # Start of sentence
 # PAD               | 23 + len(predetermined_centers) # Padding
 # EOS               | 23 + len(predetermined_centers) # End of sentence

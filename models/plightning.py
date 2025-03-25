@@ -446,11 +446,11 @@ class MainDataModule(pl.LightningDataModule):
 
         
     def collate_fn(self, batch):
-        images, plant_info, out = batch
-        images = batch['pixel_values']
-        plant_info = [0,0,0]
-        out = batch['labels']
-        max_length = max(len(out))
+        images = [f['pixel_values'] for f in batch]
+        plant_info = [f['plant_info'] for f in batch]
+        out = [f['labels'] for f in batch]
+        lens = [len(f['labels']) for f in batch]
+        max_length = max(lens)
         out_padded = np.ones([len(out), max_length]) * PAD_TOKEN
         for i, seq in enumerate(out):
             out_padded[i,:len(seq)] = seq

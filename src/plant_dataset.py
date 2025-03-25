@@ -128,17 +128,40 @@ class PlantDataset(Dataset):
         # self.param_scaler = joblib.load(os.path.join(self.current_script_dir,'scaler.pkl'))
 
         if self.preload:
-            # Pre-load data
-            self.images = []
-            self.vec = []
-            self.plant_infos = []
-            print("Pre-loading data")
-            for i in tqdm(range(len(self.image_files))):
-                image, plant_info, vec = self.getitem(i)
-                if image is not None:
-                    self.images.append(image)
-                    self.vec.append(vec)
-                    self.plant_infos.append(plant_info)
+            # Paths to save preloaded data
+            preload_dir = os.path.join(self.root_dir, "preloaded_data")
+            os.makedirs(preload_dir, exist_ok=True)
+
+            # Use different filenames based on the `side_view` option
+            suffix = "_sideview" if self.side_view else ""
+            images_path = os.path.join(preload_dir, f"images{suffix}.pkl")
+            vec_path = os.path.join(preload_dir, f"vec{suffix}.pkl")
+            plant_infos_path = os.path.join(preload_dir, f"plant_infos{suffix}.pkl")
+
+            # Check if preloaded data exists
+            if os.path.exists(images_path) and os.path.exists(vec_path) and os.path.exists(plant_infos_path):
+                print(f"Loading preloaded data (side_view={self.side_view})...")
+                self.images = joblib.load(images_path)
+                self.vec = joblib.load(vec_path)
+                self.plant_infos = joblib.load(plant_infos_path)
+            else:
+                # Pre-load data
+                self.images = []
+                self.vec = []
+                self.plant_infos = []
+                print(f"Pre-loading data (side_view={self.side_view})...")
+                for i in tqdm(range(len(self.image_files))):
+                    image, plant_info, vec = self.getitem(i)
+                    if image is not None:
+                        self.images.append(image)
+                        self.vec.append(vec)
+                        self.plant_infos.append(plant_info)
+
+                # Save preloaded data for future use
+                print(f"Saving preloaded data (side_view={self.side_view})...")
+                joblib.dump(self.images, images_path)
+                joblib.dump(self.vec, vec_path)
+                joblib.dump(self.plant_infos, plant_infos_path)
 
     def __len__(self):
         return len(self.image_files)
