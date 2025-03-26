@@ -23,6 +23,7 @@ from plant_dataset import PlantDataset, load_sideview_images
 from string_to_xml_to_vec import vec2xml, recursive_to_linked, pretty_print_xml
 from plant_tokenizer import token2vec
 from image_process import process_leaf_image
+import shutil
 
 class ImageSimilarityRewardModel:
     """Computes rewards based on similarity between original and rendered images"""
@@ -49,107 +50,136 @@ class ImageSimilarityRewardModel:
     # Renderer for converting generated sequences back to images
     # This could be a separate model or a rule-based system
     def renderer(self, generated_sequences,
-                 output_path='temp', filename='rendered', 
-                 program_path="src/GenerateDataset/build",
-                 side_view=False, image_size=224,
-                 image_processor=None,
-                 rotation=True, debug=False):
+                output_path='temp', filename='rendered', 
+                program_path="src/GenerateDataset/build",
+                side_view=False, image_size=224,
+                debug=False):
         """
-        Render a batch of sequences to images
+        Render a batch of sequences to images - optimized for speed
+        """
+        # Initialize cache if not already present
+        if not hasattr(self, '_render_cache'):
+            self._render_cache = {}
         
-        Args:
-            generated_sequences: Tensor of shape [batch_size, seq_len] containing token sequences
-            output_path: Base directory for outputs
-            filename: Base filename for outputs
-            program_path: Path to renderer program
-            side_view: Whether to render side view
-            image_size: Size of output images
-            rotation: Whether to apply rotation
-            debug: Whether to print debug info
-            
-        Returns:
-            Tensor of shape [batch_size, 3, image_size, image_size] containing rendered images
-        """
         # Create output directory if it doesn't exist
         os.makedirs(output_path, exist_ok=True)
         
         batch_size = generated_sequences.size(0) if torch.is_tensor(generated_sequences) else len(generated_sequences)
-        rendered_images = []
+        rendered_images = [None] * batch_size
+        render_jobs = []
         
+        # Step 1: Check cache and identify which sequences need rendering
         for batch_idx in range(batch_size):
-            # Create unique output subdirectory for each batch item
-            batch_output_path = f"{output_path}/batch_{batch_idx}"
-            batch_output_path = os.path.abspath(batch_output_path)
-            os.makedirs(batch_output_path, exist_ok=True)
-            
-            # Get current sequence
             sequence = generated_sequences[batch_idx] if torch.is_tensor(generated_sequences) else generated_sequences[batch_idx]
+            # Create a hashable key for the cache (tuple of tokens)
+            seq_key = tuple(sequence.cpu().numpy().tolist())
             
-            # Generate unique filename for this batch item
-            batch_filename = f"{filename}_{batch_idx}.xml"
-            
-            # Save to XML
-            plant_vec = token2vec(sequence[5:])
-            plant_xml = vec2xml(plant_vec)
-            plant_xml_file_name = f"{batch_output_path}/{batch_filename}"
-            plant_xml = recursive_to_linked(plant_xml)
-            plant_xml_str = pretty_print_xml(plant_xml)
-            with open(plant_xml_file_name, "w") as f:
-                f.write(plant_xml_str)
-
-            # Render jpeg
-            image_name = plant_xml_file_name.split("/")[-1].split(".")[0]
-            os.environ["DISPLAY"] = ":11.0"
-            command = f"cd {program_path} && ./main -h 1.0 -o {batch_output_path} -name {image_name} -tile none -f {os.path.join(batch_output_path, batch_filename)}"
-            if rotation:
-                command += " -r"
-            result = subprocess.run(command, shell=True, capture_output=True, text=True)
-            if debug:
-                print(f"Batch {batch_idx}:")
-                print(result.stdout)
-                print(result.stderr)
-
-            # Load generated image
-            try:
-                if side_view:
-                    img, _ = load_sideview_images(batch_output_path, batch_filename.replace("xml","jpeg"), image_size, True)
-                else:
-                    img = cv2.imread(plant_xml_file_name.replace("xml","jpeg"))
-                    if img is None:
-                        print(f"Warning: Failed to load image at {plant_xml_file_name.replace('xml','jpeg')}")
-                        # Create a blank image as fallback
-                        img = np.zeros((image_size, image_size, 3), dtype=np.uint8)
-                    else:
-                        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                        leaf_area, plant_width, plant_height, leaf_img, _ = process_leaf_image(img, sqaure_crop=True)
-                        img = cv2.resize(leaf_img, (image_size, image_size))
-                
-                # Convert to tensor format if needed
-                if isinstance(img, np.ndarray):
-                    img = torch.from_numpy(img.transpose(2, 0, 1)).float() / 255.0  # Convert to [C, H, W] format
-                
-                rendered_images.append(img)
-            except Exception as e:
-                print(f"Error processing image for batch {batch_idx}: {e}")
-                # Create a blank image as fallback
-                blank_img = torch.zeros((3, image_size, image_size), dtype=torch.float32)
-                rendered_images.append(blank_img)
+            # Use cached render if available
+            if seq_key in self._render_cache:
+                rendered_images[batch_idx] = self._render_cache[seq_key]
+            else:
+                # Queue for rendering
+                batch_output_path = f"{output_path}/batch_{batch_idx}"
+                batch_output_path = os.path.abspath(batch_output_path)
+                batch_filename = f"{filename}_{batch_idx}.xml"
+                render_jobs.append((batch_idx, sequence, batch_output_path, batch_filename, seq_key))
         
-        # if self.image_processor:
-        #     rendered_images = self.image_processor(rendered_images, return_tensors="pt").pixel_values[0]
-        #     if len(rendered_images.shape) == 3:
-        #         rendered_images = rendered_images.unsqueeze(0)
-        #     return rendered_images
+        # Step 2: Process rendering jobs in parallel
+        if render_jobs:
+            import concurrent.futures
+            
+            # Create output directories for all jobs upfront to avoid race conditions
+            for _, _, batch_output_path, _, _ in render_jobs:
+                os.makedirs(batch_output_path, exist_ok=True)
+            
+            # Define the worker function for a single rendering job
+            def process_render_job(job):
+                batch_idx, sequence, batch_output_path, batch_filename, seq_key = job
+                
+                # Skip if already rendered in another thread
+                if seq_key in self._render_cache:
+                    return batch_idx, self._render_cache[seq_key]
+                
+                # Save to XML
+                try:
+                    # Skip tokens 0-4 which might be special tokens
+                    plant_vec = token2vec(sequence[5:])
+                    plant_xml = vec2xml(plant_vec)
+                    plant_xml_file_name = f"{batch_output_path}/{batch_filename}"
+                    plant_xml = recursive_to_linked(plant_xml)
+                    plant_xml_str = pretty_print_xml(plant_xml)
+                    with open(plant_xml_file_name, "w") as f:
+                        f.write(plant_xml_str)
+                    
+                    # Render jpeg - use environment variable once for all renders
+                    image_name = batch_filename.split(".")[0]
+                    os.environ["DISPLAY"] = ":11.0"
+                    command = f"cd {program_path} && ./main -h 1.0 -o {batch_output_path} -name {image_name} -tile none -f {os.path.join(batch_output_path, batch_filename)}"
+                    if side_view:
+                        command += " -r"
+                    
+                    result = subprocess.run(command, shell=True, capture_output=True, text=True)
+                    # if debug:
+                    #     print(result.stdout)
+                    #     print(result.stderr)
+                    # Process image
+                    if side_view:
+                        img, _ = load_sideview_images(batch_output_path, batch_filename.replace("xml","jpeg"), image_size, True)
+                    else:
+                        img_path = plant_xml_file_name.replace("xml","jpeg")
+                        img = cv2.imread(img_path)
+                        if img is None:
+                            if debug:
+                                print(f"Warning: Failed to load image at {img_path}")
+                            img = np.zeros((image_size, image_size, 3), dtype=np.uint8)
+                        else:
+                            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                            # Fast mode: skip complex image processing if not needed
+                            leaf_area, plant_width, plant_height, leaf_img, _ = process_leaf_image(
+                                img, sqaure_crop=True
+                            )
+                            img = cv2.resize(leaf_img, (image_size, image_size))
+                    
+                    # Convert to tensor
+                    if isinstance(img, np.ndarray):
+                        img = torch.from_numpy(img.transpose(2, 0, 1)).float() / 255.0
+                    
+                    # Cache the result
+                    self._render_cache[seq_key] = img
+                    return batch_idx, img, None
+                    
+                except Exception as e:
+                    if debug:
+                        print(f"Error processing image for batch {batch_idx}: {e}")
+                    blank_img = torch.zeros((3, image_size, image_size), dtype=torch.float32)
+                    return batch_idx, blank_img, e
+            
+            # Execute jobs with thread pool (I/O bound operations benefit from threads)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=min(batch_size, 8)) as executor:
+                # Submit all jobs
+                future_to_job = {executor.submit(process_render_job, job): job for job in render_jobs}
+                
+                # Process results as they complete
+                for future in concurrent.futures.as_completed(future_to_job):
+                    batch_idx, img, e = future.result()
+                    rendered_images[batch_idx] = img
+        
+        # Ensure all images are processed (use those from cache)
+        for batch_idx in range(batch_size):
+            if rendered_images[batch_idx] is None:
+                # This should not happen if the code is correct, but as a fallback
+                blank_img = torch.zeros((3, image_size, image_size), dtype=torch.float32)
+                rendered_images[batch_idx] = blank_img
+        
+        # Periodic cache cleanup to prevent memory issues
+        if len(self._render_cache) > 1000:  # Adjust threshold as needed
+            # Keep the 500 most recent entries
+            cache_keys = list(self._render_cache.keys())
+            for key in cache_keys[:-500]:
+                del self._render_cache[key]
         
         # Stack all images into a single tensor
-        if torch.is_tensor(rendered_images[0]):
-            return torch.stack(rendered_images)
-        else:
-            # Convert to tensor if not already
-            tensor_images = [torch.from_numpy(img.transpose(2, 0, 1)).float() / 255.0 
-                            if isinstance(img, np.ndarray) else img 
-                            for img in rendered_images]
-            return torch.stack(tensor_images)
+        return torch.stack(rendered_images)
     
     def compute_reward(self, original_images, generated_sequences, side_view=False, image_size=224, debug=False):
         """
@@ -166,6 +196,8 @@ class ImageSimilarityRewardModel:
         """
         # Ensure output path exists
         temp_dir = "temp_render"
+        # Delete the previous folder
+        # shutil.rmtree(temp_dir)
         os.makedirs(temp_dir, exist_ok=True)
         
         # Render the generated sequences to images
@@ -200,11 +232,17 @@ class ImageSimilarityRewardModel:
                 normalized_images.append(normalized_img)
             
             original_images = torch.stack(normalized_images)
-            if debug:
+            if True:
                 # Save original images too
                 for idx, img in enumerate(original_images):
                     img_np = (img.permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
                     debug_path = os.path.join(temp_dir, f"batch_{idx}/original_image_{idx}.jpeg")
+                    img_np = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR) # Convert RGB to BGR before saving
+                    cv2.imwrite(debug_path, img_np)
+
+                    debug_path = os.path.join(temp_dir, f"batch_{idx}/rendered_image_{idx}.jpeg")
+                    img_np = (rendered_images[idx].permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
+                    img_np= cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR) # Convert RGB to BGR before saving
                     cv2.imwrite(debug_path, img_np)
 
             # Get image embeddings from CLIP
@@ -307,33 +345,50 @@ class PlantRLTrainer:
         self.value_head = torch.nn.Linear(hidden_size, 1).to(device)
         self.value_optimizer = Adam(self.value_head.parameters(), lr=1e-4)
         
-    def generate_sequences(self, pixel_values, plant_info, max_length=2500, num_return_sequences=1):
+    def generate_sequences(self, batch, max_length=2500, num_return_sequences=1):
         """Generate sequences from the model for given images"""
         self.model.eval()
+        pixel_values = batch["pixel_values"].to(self.device)
+        plant_info = batch["plant_info"].to(self.device)
+        labels = batch["labels"].to(self.device)
         with torch.no_grad():
-            # encoder_outputs = self.model.encoder(pixel_values)
-            # outputs = self.model.generate(
-            #     encoder_outputs=encoder_outputs,
-            #     max_length=max_length,
-            #     do_sample=True,
-            #     temperature=1.0,
-            #     num_return_sequences=num_return_sequences,
-            #     bos_token_id=self.model.config.bos_token_id,
-            #     eos_token_id=self.model.config.eos_token_id,
-            #     pad_token_id=self.model.config.pad_token_id
-            # )
+            if 0:
+                # encoder_outputs = self.model.encoder(pixel_values)
+                # outputs = self.model.generate(
+                #     encoder_outputs=encoder_outputs,
+                #     max_length=max_length,
+                #     do_sample=True,
+                #     temperature=1.0,
+                #     num_return_sequences=num_return_sequences,
+                #     bos_token_id=self.model.config.bos_token_id,
+                #     eos_token_id=self.model.config.eos_token_id,
+                #     pad_token_id=self.model.config.pad_token_id
+                # )
 
-            # pixel_values = test_dataset[i]["pixel_values"].unsqueeze(0).to(model.device)
-            # plant_info = test_dataset[i]["plant_info"]
-            # plant_info = torch.tensor(plant_info, dtype=torch.long).to(model.device)  # Ensure plant_info is a tens
-            outputs = model.generate(pixel_values,
-                                    decoder_start_token_id=SOS_TOKEN,
-                                    decoder_input_ids=plant_info,
-                                    eos_token_id=EOS_TOKEN,
-                                    max_length=max_length,
-                                    use_cache=True
-                                    )
-            
+                # pixel_values = test_dataset[i]["pixel_values"].unsqueeze(0).to(model.device)
+                # plant_info = test_dataset[i]["plant_info"]
+                # plant_info = torch.tensor(plant_info, dtype=torch.long).to(model.device)  # Ensure plant_info is a tens
+                outputs = model.generate(pixel_values,
+                                        decoder_start_token_id=SOS_TOKEN,
+                                        decoder_input_ids=plant_info,
+                                        eos_token_id=EOS_TOKEN,
+                                        max_length=max_length,
+                                        use_cache=True,
+                                        )
+                
+            else:
+                # Forward pass
+                outputs = model(pixel_values=pixel_values, labels=labels)
+                logits = outputs.logits
+
+                # Get predictions
+                outputs = torch.argmax(logits, dim=-1)
+
+                sos_tokens = torch.full((outputs.size(0), 1), SOS_TOKEN, 
+                                   dtype=outputs.dtype, 
+                                   device=outputs.device)
+                outputs = torch.cat([sos_tokens, outputs], dim=1)
+                
         return outputs
     
     def train_value_head(self, dataloader, epochs=3):
@@ -349,12 +404,14 @@ class PlantRLTrainer:
             for batch in tqdm(dataloader, desc=f"Training value head epoch {epoch+1}/{epochs}"):
                 pixel_values = batch["pixel_values"].to(self.device)
                 plant_info = batch["plant_info"].to(self.device)
+                labels = batch["plant_info"].to(self.device)
                 # Generate sequences
-                generated_sequences = self.generate_sequences(pixel_values, plant_info)
+                generated_sequences = self.generate_sequences(batch)
                 
                 # Compute rewards using the reward model
                 rewards = self.reward_model.compute_reward(pixel_values, generated_sequences, 
-                                                           image_size=pixel_values.size(-1),debug=False)
+                                                           image_size=pixel_values.size(-1),
+                                                           debug=False)
                 
                 # Get encoder-decoder outputs for value prediction
                 with torch.no_grad():
@@ -421,7 +478,7 @@ class PlantRLTrainer:
                         and model.decoder.config.cross_attention_hidden_size is None
                     ):
                         encoder_hidden_states = self.model.enc_to_dec_proj(encoder_hidden_states)
-                    generated_sequences = self.generate_sequences(pixel_values, plant_info)
+                    generated_sequences = self.generate_sequences(batch)
                     # generated_sequences starts from <SOS>
                 # Compute rewards
                 rewards = self.reward_model.compute_reward(pixel_values, generated_sequences)
@@ -584,7 +641,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Fine-tune with image similarity RL')
     parser.add_argument('--model_path', type=str, default='log/20250325/dinov2-small_448_TopView-bert-base-uncased/results', help='Path to pretrained model')
     parser.add_argument('--dataset_path', type=str, default='data/2000_Plots_20241210_BetterQuantized', help='Path to dataset')
-    parser.add_argument('--plot', type=str, default=None, help='Plots')
+    parser.add_argument('--plot', type=str, default=[f"{i:04d}" for i in range(100)], help='Plots')
     parser.add_argument('--image_size', type=int, default=448, help='Image size')
     parser.add_argument('--side_view', type=str, default='False', help='Use side view')
     parser.add_argument('--batch_size', type=int, default=1, help='Batch size')
@@ -642,7 +699,7 @@ if __name__ == "__main__":
         process_leaf=True,
         add_sos_token=False,
         plot=args.plot,
-        stages=["00"]
+        # stages=["00"]
     )
     # Split the dataset into Train, Validation, and Test sets
     train_size = int(0.8 * len(plant_architecture_dataset))  # 80% for training
