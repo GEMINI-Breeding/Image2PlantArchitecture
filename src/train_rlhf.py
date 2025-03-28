@@ -29,23 +29,17 @@ class ImageSimilarityRewardModel:
     """Computes rewards based on similarity between original and rendered images"""
     def __init__(
         self, 
-        similarity_model_name="openai/clip-vit-base-patch32",
+        encoder,
         device="cuda" if torch.cuda.is_available() else "cpu",
-        renderer=None,
         image_processor=None
     ):
         # Load a pretrained vision model for computing image similarity
         self.device = device
-        if "openai/clip" in similarity_model_name:
-            self.feature_extractor = CLIPModel.from_pretrained(similarity_model_name).to(device)
-            self.image_processor = CLIPProcessor.from_pretrained(similarity_model_name)
-        else:
-            self.feature_extractor = AutoModel.from_pretrained(similarity_model_name).to(device)
-            self.image_processor = AutoImageProcessor.from_pretrained(similarity_model_name)
-        # self.image_processor = image_processor
+        self.feature_extractor = encoder
+        self.image_processor = image_processor
+
         # Set model to evaluation mode
         self.feature_extractor.eval()
-        self.similarity_model_name = similarity_model_name
     
     # Renderer for converting generated sequences back to images
     # This could be a separate model or a rule-based system
@@ -250,12 +244,8 @@ class ImageSimilarityRewardModel:
             rendered_inputs = self.image_processor(images=rendered_images, return_tensors="pt").to(self.device)
 
             # Use this to get all token features:
-            if "clip" in self.similarity_model_name:
-                original_outputs = self.feature_extractor.vision_model(**original_inputs)
-                rendered_outputs = self.feature_extractor.vision_model(**rendered_inputs)
-            else:
-                original_outputs = self.feature_extractor(**original_inputs)
-                rendered_outputs = self.feature_extractor(**rendered_inputs)
+            original_outputs = self.feature_extractor(**original_inputs)
+            rendered_outputs = self.feature_extractor(**rendered_inputs)
 
             # Get the full sequence of embeddings (all tokens, not just CLS)
             original_embeddings = original_outputs.last_hidden_state  # Shape: [batch_size, sequence_length, hidden_size]
@@ -368,7 +358,7 @@ class PlantRLTrainer:
                 # pixel_values = test_dataset[i]["pixel_values"].unsqueeze(0).to(model.device)
                 # plant_info = test_dataset[i]["plant_info"]
                 # plant_info = torch.tensor(plant_info, dtype=torch.long).to(model.device)  # Ensure plant_info is a tens
-                outputs = model.generate(pixel_values,
+                outputs = self.model.generate(pixel_values,
                                         decoder_start_token_id=SOS_TOKEN,
                                         decoder_input_ids=plant_info,
                                         eos_token_id=EOS_TOKEN,
@@ -378,7 +368,7 @@ class PlantRLTrainer:
                 
             else:
                 # Forward pass
-                outputs = model(pixel_values=pixel_values, labels=labels)
+                outputs = self.model(pixel_values=pixel_values, labels=labels)
                 logits = outputs.logits
 
                 # Get predictions
@@ -404,7 +394,7 @@ class PlantRLTrainer:
             for batch in tqdm(dataloader, desc=f"Training value head epoch {epoch+1}/{epochs}"):
                 pixel_values = batch["pixel_values"].to(self.device)
                 plant_info = batch["plant_info"].to(self.device)
-                labels = batch["plant_info"].to(self.device)
+                labels = batch["labels"].to(self.device)
                 # Generate sequences
                 generated_sequences = self.generate_sequences(batch)
                 
@@ -417,12 +407,12 @@ class PlantRLTrainer:
                 with torch.no_grad():
                     encoder_outputs = self.model.encoder(pixel_values)
                     encoder_hidden_states = encoder_outputs.last_hidden_state
-                            # optionally project encoder_hidden_states
+                    # optionally project encoder_hidden_states
                     if (
-                        model.encoder.config.hidden_size != model.decoder.config.hidden_size
-                        and model.decoder.config.cross_attention_hidden_size is None
+                        self.model.encoder.config.hidden_size != self.model.decoder.config.hidden_size
+                        and self.model.decoder.config.cross_attention_hidden_size is None
                     ):
-                        encoder_hidden_states = model.enc_to_dec_proj(encoder_hidden_states)
+                        encoder_hidden_states = self.model.enc_to_dec_proj(encoder_hidden_states)
                     decoder_outputs = self.model.decoder(
                         input_ids=generated_sequences,
                         encoder_hidden_states=encoder_hidden_states,
@@ -469,21 +459,23 @@ class PlantRLTrainer:
             for batch in tqdm(dataloader, desc=f"RL epoch {epoch+1}/{epochs}"):
                 pixel_values = batch["pixel_values"].to(self.device)
                 plant_info = batch["plant_info"].to(self.device)
+
                 # Generate sequences from current policy
                 with torch.no_grad():
-                    encoder_outputs = self.model.encoder(pixel_values)
-                    encoder_hidden_states = encoder_outputs.last_hidden_state
-                    if (
-                        model.encoder.config.hidden_size != model.decoder.config.hidden_size
-                        and model.decoder.config.cross_attention_hidden_size is None
-                    ):
-                        encoder_hidden_states = self.model.enc_to_dec_proj(encoder_hidden_states)
-                    generated_sequences = self.generate_sequences(batch)
-                    # generated_sequences starts from <SOS>
+                    generated_sequences = self.generate_sequences(batch) # generated_sequences starts from <SOS>
+
                 # Compute rewards
                 rewards = self.reward_model.compute_reward(pixel_values, generated_sequences)
                 rewards_history.extend(rewards.cpu().numpy().tolist())
-                
+
+                # Get encoder output from current model 
+                with torch.no_grad():
+                    encoder_outputs = self.model.encoder(pixel_values)
+                    encoder_hidden_states = encoder_outputs.last_hidden_state
+                    if (self.model.encoder.config.hidden_size != self.model.decoder.config.hidden_size
+                        and self.model.decoder.config.cross_attention_hidden_size is None):
+                        encoder_hidden_states = self.model.enc_to_dec_proj(encoder_hidden_states)
+
                 # Get policy outputs from current model
                 policy_outputs = self.model.decoder(
                     input_ids=generated_sequences,
@@ -492,25 +484,25 @@ class PlantRLTrainer:
                 )
                 logits = policy_outputs.logits[:, :-1] # Generated from decode, following SOS
                 
-                # Get policy outputs from reference model (for KL penalty)
+                # Reference 모델 출력 계산 - 여전히 no_grad 컨텍스트 유지
                 with torch.no_grad():
                     ref_outputs = self.ref_model.decoder(
                         input_ids=generated_sequences,
                         encoder_hidden_states=encoder_hidden_states,
                         output_hidden_states=True
                     )
-                    ref_logits = ref_outputs.logits[:, :-1] # Generated from decode,  following SOS
-                    
-                    # Predict values
-                    last_hidden_states = policy_outputs.hidden_states[-1][:, -1, :]
-                    values = self.value_head(last_hidden_states).squeeze(-1)
+                    ref_logits = ref_outputs.logits[:, :-1]
+
+                # Value Head 예측 - no_grad 컨텍스트 밖으로 이동
+                last_hidden_states = policy_outputs.hidden_states[-1][:, -1, :]
+                values = self.value_head(last_hidden_states).squeeze(-1)
                 
                 # Compute log probs
                 log_probs = F.log_softmax(logits, dim=-1)
                 ref_log_probs = F.log_softmax(ref_logits, dim=-1)
                 
                 # Extract only the log probs for chosen tokens
-                token_indices = generated_sequences[:, 1:].unsqueeze(-1)
+                token_indices = generated_sequences[:, 1:].unsqueeze(-1) # generated_sequences starts from <SOS>
                 chosen_log_probs = torch.gather(
                     log_probs, 
                     2, 
@@ -526,7 +518,7 @@ class PlantRLTrainer:
                 # Create masks for sequence padding
                 mask = (generated_sequences[:, 1:] != self.model.config.pad_token_id).float()
                 
-                # Calculate advantages
+                # Advantage 계산 - 여기서 detach를 통해 policy 업데이트에만 영향
                 advantages = rewards.unsqueeze(-1).expand_as(chosen_log_probs) - values.detach().unsqueeze(-1).expand_as(chosen_log_probs)
                 
                 # Compute PPO policy loss
@@ -546,16 +538,21 @@ class PlantRLTrainer:
                 entropy = -(F.softmax(logits, dim=-1) * F.log_softmax(logits, dim=-1)).sum(-1)
                 entropy = (entropy * mask).sum() / mask.sum().clamp(min=1e-5) * self.entropy_coef
                 
-                # Total loss
-                loss = pg_loss + value_loss - entropy + kl
-                
-                # Backward pass
+                # 분리된 손실 계산
+                policy_loss = pg_loss + kl - entropy  # Policy 관련 손실만
+                value_loss = F.mse_loss(values, rewards)  # Value 관련 손실만
+
+                # 분리된 최적화 단계
+                # Policy 최적화
                 self.optimizer.zero_grad()
-                self.value_optimizer.zero_grad()
-                loss.backward()
+                policy_loss.backward(retain_graph=True)  # 연산 그래프 유지
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
-                torch.nn.utils.clip_grad_norm_(self.value_head.parameters(), self.max_grad_norm)
                 self.optimizer.step()
+
+                # Value 최적화
+                self.value_optimizer.zero_grad()
+                value_loss.backward()  
+                torch.nn.utils.clip_grad_norm_(self.value_head.parameters(), self.max_grad_norm)
                 self.value_optimizer.step()
                 
                 if self.scheduler:
@@ -600,7 +597,6 @@ def run_rl_pipeline(
     learning_rate=1e-5,
     rl_epochs=4,
     log_dir="./log/sim_rl",
-    use_clip=True,
     image_processor=None,
 ):
     """Full RL pipeline using image similarity rewards"""
@@ -615,8 +611,8 @@ def run_rl_pipeline(
     # Note: In a real implementation, you would need a proper renderer
     # that converts plant architecture sequences back to images
     reward_model = ImageSimilarityRewardModel(
-        similarity_model_name="facebook/dinov2-small" if use_clip else None,
-        image_processor = image_processor
+        encoder=ref_model.encoder,
+        image_processor=image_processor
     )
     
     # Initialize RL trainer
@@ -647,12 +643,10 @@ if __name__ == "__main__":
     parser.add_argument('--batch_size', type=int, default=1, help='Batch size')
     parser.add_argument('--rl_epochs', type=int, default=4, help='Number of RL training epochs')
     parser.add_argument('--log_dir', type=str, default='./log/sim_rl', help='Log directory')
-    parser.add_argument('--use_clip', type=str, default='True', help='Use CLIP for similarity')
     args = parser.parse_args()
 
     # Convert string arguments to boolean
     args.side_view = args.side_view.lower() == 'true'
-    args.use_clip = args.use_clip.lower() == 'true'
 
     # Load the pretrained model
     print(f"Loading pretrained model from {args.model_path}")
@@ -749,7 +743,6 @@ if __name__ == "__main__":
         dataloader=dataloader,
         rl_epochs=args.rl_epochs,
         log_dir=rl_log_dir,
-        use_clip=args.use_clip,
         image_processor=image_processor
     )
 

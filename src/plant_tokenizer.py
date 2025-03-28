@@ -40,34 +40,21 @@ import pandas as pd
 # 3,4               | 22
 # 3,5    
 # And then, paramter quantization comes,
-if 1:
-    # 662
+if 0:
+    # 704 - 24 - 4 = 676
     predetermined_centers = np.unique(np.concatenate([
-
-        # Group 2: Negative and positive floating-point values
         np.linspace(-50, 360, 411), 
-
-        # Group 4: Very small floating-point values
-        np.linspace(0, 0.03, 50),
-
-        # Group 6: Negative and positive small floating-point values
-        np.linspace(0, 0.005, 50),  
-
-        np.linspace(0, 0.10, 51),
-
         np.linspace(0, 1.0, 11),
-
-        np.linspace(0, 0.10, 51),
-
-        # Group 11: Small positive floating-point values
+        np.linspace(0, 0.03, 51),
         np.linspace(0, 0.12, 121),  
-
+        np.linspace(0, 0.005, 51),  
+        np.linspace(0, 0.002, 51),
     ])).reshape(-1, 1)
 else:
-    # 66
+    # 199
     predetermined_centers = np.unique(np.concatenate([
                 np.array([0, 10, -10, 15, -15, 20, 40, 90]),  # Some special angles
-                np.linspace(-360, 360, 18+1),  # angles
+                np.linspace(-40, 360, 160+1),  # angles
                 np.array([0.9, 1.0]),  # Some special float values
                 np.array([1,  3]),  # Some special integer values
                 np.linspace(0, 1.0, 11),
@@ -75,20 +62,21 @@ else:
                 np.linspace(0, 0.01, 11),  # float values for lengths
                 np.linspace(0, 0.001, 11)  # float values for lengths
             ])).reshape(-1, 1)
-# SOS               | 23 + len(predetermined_centers) + 1 # Start of sentence
-# PAD               | 23 + len(predetermined_centers) # Padding
-# EOS               | 23 + len(predetermined_centers) # End of sentence
-
+    print(f"Quantize Paramter in {len(predetermined_centers)} levels")
 
 # 4*6 + 3 => Max nested depth is 3
 N_DEPTH = 4
 N_ORGAN = 6
 NUM_PA_TOKEN = N_DEPTH * N_ORGAN
+
+# SOS               | 23 + len(predetermined_centers) + 1 # Start of sentence
+# PAD               | 23 + len(predetermined_centers) # Padding
+# EOS               | 23 + len(predetermined_centers) # End of sentence
 SOS_TOKEN =  NUM_PA_TOKEN + len(predetermined_centers) + 0 # Start of string
 META_TOKEN = NUM_PA_TOKEN + len(predetermined_centers) + 1 # Attached to the start and end of metadata (plant info)
 PAD_TOKEN =  NUM_PA_TOKEN + len(predetermined_centers) + 2 # PAD
 EOS_TOKEN =  NUM_PA_TOKEN + len(predetermined_centers) + 3 # End of string
-VOCAB_SIZE = EOS_TOKEN + 4
+VOCAB_SIZE = NUM_PA_TOKEN + len(predetermined_centers) + 4 # NUM_PA_TOKEN, quantize token and special tokens
 
 def vec2token(vec: List[np.ndarray]) -> np.ndarray:
     """

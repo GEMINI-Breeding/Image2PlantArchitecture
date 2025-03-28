@@ -77,8 +77,13 @@ def load_sideview_images(images_dir, image_file_name, img_size, process_leaf):
 class PlantDataset(Dataset):
     def __init__(self, root_dir, plot=None, stages=None, transform=None, 
                  image_size=224, load_depth=False, preload=False, side_view=False,
-                 process_leaf=True, image_processor=None, add_sos_token=False):
-
+                 process_leaf=True, image_processor=None, add_sos_token=False,
+                 sort_by='name', sort_order='ascending'):
+        """
+        Parameters:
+            sort_by (str): Sorting criteria - 'name', 'date', 'plot', 'stage'
+            sort_order (str): 'ascending' or 'descending'
+        """
         self.root_dir = root_dir
         self.load_depth = load_depth          
         # images_path
@@ -92,6 +97,10 @@ class PlantDataset(Dataset):
         self.plant_xml_files = os.listdir(self.plant_xml_dir)
         # Get list of images
         self.image_files = [x.replace('.xml', '.jpeg') for x in self.plant_xml_files]
+        
+        # Apply custom sorting
+        self._sort_files(sort_by, sort_order)
+        
         if load_depth:
             self.depth_images = os.listdir(self.depth_image_dir)
             self.depth_images.sort()
@@ -281,6 +290,57 @@ class PlantDataset(Dataset):
             image = self.image_processor(image, return_tensors="pt").pixel_values[0]
         return {"pixel_values": image, "labels": out, "plant_info": plant_info_token}
 
+    def _sort_files(self, sort_by='name', sort_order='ascending'):
+        """
+        Sort the dataset files according to specified criteria.
+        
+        Args:
+            sort_by: Sorting criteria - 'name', 'date', 'plot', 'stage'
+            sort_order: 'ascending' or 'descending'
+        """
+        reverse = sort_order.lower() == 'descending'
+        
+        if sort_by == 'name':
+            # Default alphabetical sort
+            self.image_files.sort(reverse=reverse)
+            self.plant_xml_files.sort(reverse=reverse)
+            
+        elif sort_by == 'date':
+            # Sort by file modification time
+            self.image_files.sort(key=lambda x: os.path.getmtime(os.path.join(self.image_dir, x)), 
+                                  reverse=reverse)
+            self.plant_xml_files.sort(key=lambda x: os.path.getmtime(os.path.join(self.plant_xml_dir, x)), 
+                                      reverse=reverse)
+                                      
+        elif sort_by == 'plot':
+            # Extract plot number and sort
+            pattern = r"cowpea_(\d+)_day_(\d+)"
+            self.image_files.sort(key=lambda x: int(re.match(pattern, x).group(1)), 
+                                  reverse=reverse)
+            self.plant_xml_files.sort(key=lambda x: int(re.match(pattern, x).group(1)), 
+                                      reverse=reverse)
+                                      
+        elif sort_by == 'stage':
+            # Extract day/stage number and sort
+            pattern = r"cowpea_(\d+)_day_(\d+)"
+            self.image_files.sort(key=lambda x: int(re.match(pattern, x).group(2)), 
+                                  reverse=reverse)
+            self.plant_xml_files.sort(key=lambda x: int(re.match(pattern, x).group(2)), 
+                                      reverse=reverse)
+                                      
+        # Ensure depth images are also sorted if needed
+        if self.load_depth:
+            if sort_by == 'name':
+                self.depth_images.sort(reverse=reverse)
+            elif sort_by == 'date':
+                self.depth_images.sort(key=lambda x: os.path.getmtime(os.path.join(self.depth_image_dir, x)), 
+                                     reverse=reverse)
+            elif sort_by == 'plot':
+                self.depth_images.sort(key=lambda x: int(re.match(pattern, x).group(1)), 
+                                     reverse=reverse)
+            elif sort_by == 'stage':
+                self.depth_images.sort(key=lambda x: int(re.match(pattern, x).group(2)), 
+                                     reverse=reverse)
 
 
 if __name__ == "__main__":
