@@ -330,6 +330,7 @@ if __name__ == "__main__":
         val_size = int(0.01 * len(plant_architecture_dataset))    # 10% for validation
         test_size = len(plant_architecture_dataset) - train_size - val_size  # Remaining 10% for testing
     print(f"train_size:{train_size}, val_size:{val_size}")
+    
     # Use random_split with the seed set above
     train_dataset, val_dataset, test_dataset = random_split(plant_architecture_dataset, [train_size, val_size, test_size])
 
