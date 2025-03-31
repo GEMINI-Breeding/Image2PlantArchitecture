@@ -64,12 +64,12 @@ class ImageSimilarityRewardModel:
     # Renderer for converting generated sequences back to images
     # This could be a separate model or a rule-based system
     def renderer(self, generated_sequences,
-                output_path='temp', filename='rendered', 
-                program_path="src/GenerateDataset/build",
-                side_view=False, image_size=224,
-                debug=False):
+                 output_path='temp', filename='rendered', 
+                 program_path="src/GenerateDataset/build",
+                 side_view=False, image_size=224,
+                 debug=False):
         """
-        Render a batch of sequences to images - optimized for speed
+        Render a batch of sequences to images - single-threaded version
         """
         # Initialize cache if not already present
         if not hasattr(self, '_render_cache'):
@@ -79,112 +79,86 @@ class ImageSimilarityRewardModel:
         os.makedirs(output_path, exist_ok=True)
         
         batch_size = generated_sequences.size(0) if torch.is_tensor(generated_sequences) else len(generated_sequences)
-        rendered_images = [None] * batch_size
-        render_jobs = []
+        rendered_images = []
         
-        # Step 1: Check cache and identify which sequences need rendering
+        # Process each sequence one by one
         for batch_idx in range(batch_size):
             sequence = generated_sequences[batch_idx] if torch.is_tensor(generated_sequences) else generated_sequences[batch_idx]
-            # Create a hashable key for the cache (tuple of tokens)
+            # Create a hashable key for the cache
             seq_key = tuple(sequence.cpu().numpy().tolist())
             
             # Use cached render if available
             if seq_key in self._render_cache:
-                rendered_images[batch_idx] = self._render_cache[seq_key]
-            else:
-                # Queue for rendering
-                batch_output_path = f"{output_path}/batch_{batch_idx}"
-                batch_output_path = os.path.abspath(batch_output_path)
-                batch_filename = f"{filename}_{batch_idx}.xml"
-                render_jobs.append((batch_idx, sequence, batch_output_path, batch_filename, seq_key))
-        
-        # Step 2: Process rendering jobs in parallel
-        if render_jobs:
-            import concurrent.futures
+                rendered_images.append(self._render_cache[seq_key])
+                continue
             
-            # Create output directories for all jobs upfront to avoid race conditions
-            for _, _, batch_output_path, _, _ in render_jobs:
-                os.makedirs(batch_output_path, exist_ok=True)
+            # Setup paths for rendering
+            batch_output_path = f"{output_path}/batch_{batch_idx}"
+            batch_output_path = os.path.abspath(batch_output_path)
+            batch_filename = f"{filename}_{batch_idx}.xml"
+            os.makedirs(batch_output_path, exist_ok=True)
             
-            # Define the worker function for a single rendering job
-            def process_render_job(job):
-                batch_idx, sequence, batch_output_path, batch_filename, seq_key = job
+            try:
+                # Skip tokens 0-4 which might be special tokens
+                plant_vec = token2vec(sequence[5:])
+                plant_xml = vec2xml(plant_vec)
+                plant_xml_file_name = f"{batch_output_path}/{batch_filename}"
+                plant_xml = recursive_to_linked(plant_xml)
+                plant_xml_str = pretty_print_xml(plant_xml)
+                with open(plant_xml_file_name, "w") as f:
+                    f.write(plant_xml_str)
                 
-                # Skip if already rendered in another thread
-                if seq_key in self._render_cache:
-                    return batch_idx, self._render_cache[seq_key]
+                # Render jpeg - use environment variable
+                image_name = batch_filename.split(".")[0]
+                os.environ["DISPLAY"] = ":11.0"
+                command = f"cd {program_path} && ./main -h 1.0 -o {batch_output_path} -name {image_name} -tile none -f {os.path.join(batch_output_path, batch_filename)}"
+                if side_view:
+                    command += " -r"
                 
-                # Save to XML
                 try:
-                    # Skip tokens 0-4 which might be special tokens
-                    plant_vec = token2vec(sequence[5:])
-                    plant_xml = vec2xml(plant_vec)
-                    plant_xml_file_name = f"{batch_output_path}/{batch_filename}"
-                    plant_xml = recursive_to_linked(plant_xml)
-                    plant_xml_str = pretty_print_xml(plant_xml)
-                    with open(plant_xml_file_name, "w") as f:
-                        f.write(plant_xml_str)
-                    
-                    # Render jpeg - use environment variable once for all renders
-                    image_name = batch_filename.split(".")[0]
-                    os.environ["DISPLAY"] = ":11.0"
-                    command = f"cd {program_path} && ./main -h 1.0 -o {batch_output_path} -name {image_name} -tile none -f {os.path.join(batch_output_path, batch_filename)}"
-                    if side_view:
-                        command += " -r"
-                    
-                    result = subprocess.run(command, shell=True, capture_output=True, text=True)
-                    # if debug:
-                    #     print(result.stdout)
-                    #     print(result.stderr)
-                    # Process image
-                    if side_view:
-                        img, _ = load_sideview_images(batch_output_path, batch_filename.replace("xml","jpeg"), image_size, True)
-                    else:
-                        img_path = plant_xml_file_name.replace("xml","jpeg")
-                        img = cv2.imread(img_path)
-                        if img is None:
-                            if debug:
-                                print(f"Warning: Failed to load image at {img_path}")
-                            img = np.zeros((image_size, image_size, 3), dtype=np.uint8)
-                        else:
-                            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                            # Fast mode: skip complex image processing if not needed
-                            leaf_area, plant_width, plant_height, leaf_img, _ = process_leaf_image(
-                                img, sqaure_crop=True
-                            )
-                            img = cv2.resize(leaf_img, (image_size, image_size))
-                    
-                    # Convert to tensor
-                    if isinstance(img, np.ndarray):
-                        img = self.image_processor(images=img, return_tensors="pt").pixel_values[0].to(self.device)
-                        # img = torch.from_numpy(img.transpose(2, 0, 1)).float() / 255.0
-                    
-                    # Cache the result
-                    self._render_cache[seq_key] = img
-                    return batch_idx, img, None
-                    
-                except Exception as e:
+                    result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=60)
                     if debug:
-                        print(f"Error processing image for batch {batch_idx}: {e}")
-                    blank_img = torch.zeros((3, image_size, image_size), dtype=torch.float32)
-                    return batch_idx, blank_img, e
-            
-            # Execute jobs with thread pool (I/O bound operations benefit from threads)
-            with concurrent.futures.ThreadPoolExecutor(max_workers=min(batch_size, 8)) as executor:
-                # Submit all jobs
-                future_to_job = {executor.submit(process_render_job, job): job for job in render_jobs}
+                        print(f"Command output: {result.stdout}")
+                        print(f"Command errors: {result.stderr}")
+                except subprocess.TimeoutExpired:
+                    if debug:
+                        print(f"Warning: Rendering process timed out for batch {batch_idx}")
+                    img = torch.zeros((3, image_size, image_size), dtype=torch.float32, device=self.device)
+                    rendered_images.append(img)
+                    self._render_cache[seq_key] = img
+                    continue
                 
-                # Process results as they complete
-                for future in concurrent.futures.as_completed(future_to_job):
-                    batch_idx, img, e = future.result()
-                    rendered_images[batch_idx] = img
-        
-        # Ensure all images are processed (use those from cache)
-        for batch_idx in range(batch_size):
-            if rendered_images[batch_idx] is None:
-                # This should not happen if the code is correct, but as a fallback
-                blank_img = torch.zeros((3, image_size, image_size), dtype=torch.float32)
-                rendered_images[batch_idx] = blank_img
+                # Process image
+                if side_view:
+                    img, _ = load_sideview_images(batch_output_path, batch_filename.replace("xml","jpeg"), image_size, True)
+                else:
+                    img_path = plant_xml_file_name.replace("xml","jpeg")
+                    img = cv2.imread(img_path)
+                    if img is None:
+                        if debug:
+                            print(f"Warning: Failed to load image at {img_path}")
+                        img = np.zeros((image_size, image_size, 3), dtype=np.uint8)
+                    else:
+                        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                        leaf_area, plant_width, plant_height, leaf_img, _ = process_leaf_image(
+                            img, sqaure_crop=True
+                        )
+                        img = cv2.resize(leaf_img, (image_size, image_size))
+                
+                # Convert to tensor
+                if isinstance(img, np.ndarray):
+                    img = self.image_processor(images=img, return_tensors="pt").pixel_values[0].to(self.device)
+                
+                # Cache the result
+                self._render_cache[seq_key] = img
+                rendered_images.append(img)
+                    
+            except Exception as e:
+                if debug:
+                    print(f"Error processing image for batch {batch_idx}: {e}")
+                img = torch.zeros((3, image_size, image_size), dtype=torch.float32, device=self.device)
+                rendered_images.append(img)
+                self._render_cache[seq_key] = img
         
         # Periodic cache cleanup to prevent memory issues
         if len(self._render_cache) > 1000:  # Adjust threshold as needed
@@ -480,7 +454,7 @@ class PlantRLTrainer:
         return value_losses
     
     def rl_step(self, dataloader, epochs=4, train_value_head_first=True):
-        """Run PPO-like training with image similarity rewards"""
+        """Run standard PPO training with image similarity rewards"""
         if train_value_head_first:
             self.train_value_head(dataloader)
         
@@ -497,18 +471,28 @@ class PlantRLTrainer:
             entropies = []
             rewards_history = []
             
-            for batch in tqdm(dataloader, desc=f"RL epoch {epoch+1}/{epochs}"):
+            # 1. COLLECT EXPERIENCES (ROLLOUT PHASE)
+            all_states = []
+            all_actions = []
+            all_logprobs = []
+            all_rewards = []
+            all_values = []
+            all_masks = []
+            all_advantages = []
+            
+            print("Collecting experiences...")
+            for batch in tqdm(dataloader, desc=f"RL rollout {epoch+1}/{epochs}"):
                 pixel_values = batch["pixel_values"].to(self.device)
                 labels = batch["labels"].to(self.device)
 
-                # Check if labels already start with SOS token
+                # Ensure labels start with SOS token
                 if not torch.all(labels[:, 0] == SOS_TOKEN):
                     sos_tokens = torch.full((labels.size(0), 1), SOS_TOKEN, 
                                        dtype=labels.dtype, 
                                        device=labels.device)
                     labels = torch.cat([sos_tokens, labels], dim=1)
 
-                # Get encoder output from current model 
+                # Get encoder outputs
                 with torch.no_grad():
                     encoder_outputs = self.model.encoder(pixel_values)
                     encoder_hidden_states = encoder_outputs.last_hidden_state
@@ -516,95 +500,134 @@ class PlantRLTrainer:
                         and self.model.decoder.config.cross_attention_hidden_size is None):
                         encoder_hidden_states = self.model.enc_to_dec_proj(encoder_hidden_states)
 
-                # Get policy outputs from current model
-                policy_outputs = self.model.decoder(
-                    input_ids=labels[:,:-1], # Remove EOS, # Decode labels to match with generated seuqences probs
-                    encoder_hidden_states=encoder_hidden_states,
-                    output_hidden_states=True
-                )
-                logits = policy_outputs.logits # Generated from decode, following SOS
-                generated_sequences = torch.argmax(logits, dim=-1) # Start with META token
-
-                # Value Head 예측 - no_grad 컨텍스트 밖으로 이동
-                last_hidden_states = text_global_pool(policy_outputs.hidden_states[-1], generated_sequences)
-                values = self.value_head(last_hidden_states).squeeze(-1)
-
-                # Compute rewards
-                rewards = self.reward_model.compute_reward(pixel_values, generated_sequences, self.side_view)
-                rewards_history.extend(rewards.cpu().numpy().tolist())
-
-                # Reference 모델 출력 계산 - 여전히 no_grad 컨텍스트 유지
+                # Generate sequences with the current policy (sampling, not argmax)
                 with torch.no_grad():
-                    ref_outputs = self.ref_model.decoder(
-                        input_ids=labels[:,:-1], # Remove EOS,
+                    policy_outputs = self.model.decoder(
+                        input_ids=labels[:,:-1],
                         encoder_hidden_states=encoder_hidden_states,
                         output_hidden_states=True
                     )
-                    ref_logits = ref_outputs.logits
-
-                # Compute log probs
-                log_probs = F.log_softmax(logits, dim=-1)
-                ref_log_probs = F.log_softmax(ref_logits, dim=-1)
+                    logits = policy_outputs.logits
+                    
+                    # Sample from the distribution instead of argmax
+                    probs = F.softmax(logits, dim=-1)
+                    dist = torch.distributions.Categorical(probs)
+                    actions = dist.sample()
+                    log_probs = dist.log_prob(actions)
+                    
+                    # Get value predictions
+                    last_hidden_states = text_global_pool(policy_outputs.hidden_states[-1], actions)
+                    values = self.value_head(last_hidden_states).squeeze(-1)
                 
-                # Extract only the log probs for chosen tokens
-                token_indices = generated_sequences.unsqueeze(-1)
-                chosen_log_probs = torch.gather(
-                    log_probs, 
-                    2, 
-                    token_indices
-                ).squeeze(-1)
+                # Compute rewards for these actions
+                rewards = self.reward_model.compute_reward(pixel_values, actions, self.side_view)
+                rewards_history.extend(rewards.cpu().numpy().tolist())
                 
-                ref_chosen_log_probs = torch.gather(
-                    ref_log_probs, 
-                    2, 
-                    token_indices
-                ).squeeze(-1)
+                # Create masks for padding
+                masks = (actions != self.model.config.pad_token_id).float()
                 
-                # Create masks for sequence padding
-                mask = (generated_sequences != self.model.config.pad_token_id).float()
+                # Store experience
+                all_states.append((pixel_values, encoder_hidden_states, labels[:,:-1]))
+                all_actions.append(actions)
+                all_logprobs.append(log_probs)
+                all_rewards.append(rewards)
+                all_values.append(values)
+                all_masks.append(masks)
+            
+            # 2. COMPUTE ADVANTAGES AND RETURNS
+            print("Computing advantages...")
+            with torch.no_grad():
+                # Simple advantage calculation (can be replaced with GAE)
+                for i in range(len(all_rewards)):
+                    advantages = all_rewards[i].unsqueeze(-1).expand_as(all_logprobs[i]) - all_values[i].unsqueeze(-1).expand_as(all_logprobs[i])
+                    all_advantages.append(advantages)
+            
+            # 3. OPTIMIZE POLICY WITH MULTIPLE PASSES
+            # Number of optimization epochs (standard PPO does multiple passes)
+            n_opt_epochs = 4
+            
+            print("Optimizing policy...")
+            for _ in range(n_opt_epochs):
+                # Shuffle the experience indices
+                indices = torch.randperm(len(all_states))
                 
-                # Advantage 계산 - 여기서 detach를 통해 policy 업데이트에만 영향
-                advantages = rewards.unsqueeze(-1).expand_as(chosen_log_probs) - values.detach().unsqueeze(-1).expand_as(chosen_log_probs)
-                
-                # Compute PPO policy loss
-                ratio = torch.exp(chosen_log_probs - ref_chosen_log_probs.detach())
-                pg_loss1 = -advantages * ratio * mask
-                pg_loss2 = -advantages * torch.clamp(ratio, 1.0 - self.clip_range, 1.0 + self.clip_range) * mask
-                pg_loss = torch.max(pg_loss1, pg_loss2).sum() / mask.sum().clamp(min=1e-5)
-                
-                # KL divergence
-                kl = (ref_log_probs.detach() - log_probs) * F.softmax(ref_logits.detach(), dim=-1)
-                kl = (kl.sum(-1) * mask).sum() / mask.sum().clamp(min=1e-5) * self.kl_coef
-                
-                # Entropy bonus
-                entropy = -(F.softmax(logits, dim=-1) * F.log_softmax(logits, dim=-1)).sum(-1)
-                entropy = (entropy * mask).sum() / mask.sum().clamp(min=1e-5) * self.entropy_coef
-                
-                # 분리된 손실 계산
-                policy_loss = pg_loss + kl - entropy  # Policy 관련 손실만
-                value_loss = F.mse_loss(values, rewards)  # Value 관련 손실만
-
-                # 분리된 최적화 단계
-                # Policy 최적화
-                self.optimizer.zero_grad()
-                policy_loss.backward(retain_graph=True)  # 연산 그래프 유지
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
-                self.optimizer.step()
-
-                # Value 최적화
-                self.value_optimizer.zero_grad()
-                value_loss.backward()  
-                torch.nn.utils.clip_grad_norm_(self.value_head.parameters(), self.max_grad_norm)
-                self.value_optimizer.step()
-                
-                if self.scheduler:
-                    self.scheduler.step()
-                
-                # Log metrics
-                policy_losses.append(pg_loss.item())
-                value_losses.append(value_loss.item())
-                kl_divergences.append(kl.item())
-                entropies.append(entropy.item())
+                # Process all collected experiences in mini-batches
+                for idx in indices:
+                    pixel_values, encoder_hidden_states, input_ids = all_states[idx]
+                    actions = all_actions[idx]
+                    old_log_probs = all_logprobs[idx]
+                    rewards = all_rewards[idx]
+                    advantages = all_advantages[idx]
+                    masks = all_masks[idx]
+                    
+                    # Get current policy outputs
+                    policy_outputs = self.model.decoder(
+                        input_ids=input_ids,
+                        encoder_hidden_states=encoder_hidden_states,
+                        output_hidden_states=True
+                    )
+                    logits = policy_outputs.logits
+                    
+                    # Get log probs of actions under current policy
+                    probs = F.softmax(logits, dim=-1)
+                    dist = torch.distributions.Categorical(probs)
+                    new_log_probs = dist.log_prob(actions)
+                    
+                    # Get logits from reference model (frozen version)
+                    with torch.no_grad():
+                        ref_outputs = self.ref_model.decoder(
+                            input_ids=input_ids,
+                            encoder_hidden_states=encoder_hidden_states,
+                            output_hidden_states=True
+                        )
+                        ref_logits = ref_outputs.logits
+                        ref_probs = F.softmax(ref_logits, dim=-1)
+                        ref_dist = torch.distributions.Categorical(ref_probs)
+                    
+                    # Calculate KL divergence between current and reference policy
+                    kl = torch.distributions.kl_divergence(dist, ref_dist) * masks
+                    kl = kl.sum() / masks.sum().clamp(min=1e-8)
+                    
+                    # Calculate entropy
+                    entropy = dist.entropy() * masks
+                    entropy = entropy.sum() / masks.sum().clamp(min=1e-8)
+                    
+                    # Calculate surrogate objectives
+                    ratio = torch.exp(new_log_probs - old_log_probs.detach())
+                    surr1 = -advantages * ratio * masks
+                    surr2 = -advantages * torch.clamp(ratio, 1.0 - self.clip_range, 1.0 + self.clip_range) * masks
+                    pg_loss = torch.max(surr1, surr2).sum() / masks.sum().clamp(min=1e-8)
+                    
+                    # Combined policy loss with KL penalty and entropy bonus
+                    policy_loss = pg_loss + self.kl_coef * kl - self.entropy_coef * entropy
+                    
+                    # Optimize policy network
+                    self.optimizer.zero_grad()
+                    policy_loss.backward()
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
+                    self.optimizer.step()
+                    
+                    # Get current value predictions
+                    last_hidden_states = text_global_pool(policy_outputs.hidden_states[-1], actions)
+                    values = self.value_head(last_hidden_states.detach()).squeeze(-1)
+                    
+                    # Value loss
+                    value_loss = F.mse_loss(values, rewards)
+                    
+                    # Optimize value network
+                    self.value_optimizer.zero_grad()
+                    value_loss.backward()
+                    torch.nn.utils.clip_grad_norm_(self.value_head.parameters(), self.max_grad_norm)
+                    self.value_optimizer.step()
+                    
+                    # Record losses
+                    policy_losses.append(policy_loss.item())
+                    value_losses.append(value_loss.item())
+                    kl_divergences.append(kl.item())
+                    entropies.append(entropy.item())
+                    
+                    if self.scheduler:
+                        self.scheduler.step()
             
             # End of epoch logging
             log_data = {
@@ -681,11 +704,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Fine-tune with image similarity RL')
     parser.add_argument('--model_path', type=str, default='log/20250327/dinov2-small_224_Sideview_gpt2/results', help='Path to pretrained model')
     parser.add_argument('--dataset_path', type=str, default='data/2000_Plots_20241210_BetterQuantized', help='Path to dataset')
-    #parser.add_argument('--plot', type=str, default=[f"{i:04d}" for i in range(10)], help='Plots')
+    #parser.add_argument('--plot', type=str, default=[f"{i:04d}" for i in range(1)], help='Plots')
     parser.add_argument('--plot', type=str, default=None, help='Plots')
     parser.add_argument('--image_size', type=int, default=224, help='Image size')
     parser.add_argument('--side_view', type=str, default='True', help='Use side view')
-    parser.add_argument('--batch_size', type=int, default=2, help='Batch size')
+    parser.add_argument('--batch_size', type=int, default=1, help='Batch size')
     parser.add_argument('--rl_epochs', type=int, default=4, help='Number of RL training epochs')
     parser.add_argument('--log_dir', type=str, default='./log/sim_rl', help='Log directory')
     args = parser.parse_args()
@@ -738,7 +761,7 @@ if __name__ == "__main__":
         process_leaf=True,
         add_sos_token=False,
         plot=args.plot,
-        stages=["00"]
+        # stages=["00"]
     )
     # Split the dataset into Train, Validation, and Test sets
     train_size = int(0.8 * len(plant_architecture_dataset))  # 80% for training
@@ -807,13 +830,7 @@ if __name__ == "__main__":
     try:
         from calc_metric import calc_metric
         print("Calculating metrics after fine-tuning...")
-        metrics = calc_metric(fine_tuned_model, args.dataset_path, side_view=args.side_view)
-        
-        # 메트릭 결과 저장
-        with open(benchmark_file, "w") as f:
-            f.write(f"RL training completed at {datetime.now()}\n")
-            # 추가적인 메트릭 정보가 있다면 기록
-            if metrics:
-                f.write(f"Metrics: {json.dumps(metrics, indent=2)}\n")
+        benchmark_path = os.path.join(parent_dir, "benchmark.txt")
+        calc_metric(fine_tuned_model, args.dataset_path, log_path=benchmark_path, side_view=args.side_view)
     except ImportError:
         print("calc_metric module not found. Skipping metric calculation.")
