@@ -182,3 +182,4 @@ src/attention_output*
 .DS_Store
 *.xml
 *.jpg
+temp_render/*

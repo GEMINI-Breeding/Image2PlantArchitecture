@@ -97,18 +97,11 @@ if __name__ == "__main__":
         devices="auto",
         max_epochs=100,
         callbacks=[tqdm_cb, ckpt_cb, lr_monitor, early_stop_cb, 
-                #    FineTuneBatchSizeFinder(milestones=(5, 10)),
-                #    FineTuneLearningRateFinder(milestones=(5, 10))
                    ],
-        # callbacks=[tqdm_cb, ckpt_cb, lr_monitor],
         logger=tb_logger,
         precision="bf16-mixed",
         # strategy=DDPStrategy(find_unused_parameters=True)  # Enable detection of unused parameters
     )
-    #.env/lib/python3.8/site-packages/pytorch_lightning/utilities/model_summary/model_summary.py
-    # from pytorch_lightning.utilities.model_summary import ModelSummary
-    # model_summary = ModelSummary(module, max_depth=1)
-    # print(model_summary)
     trainer.fit(module, datamodule=datamodule)
 
     # To check the training progress,

@@ -1,7 +1,8 @@
 #!/bin/bash
 
 # Script to run multiple experiments with different configurations
-TODAY_DATE=$(date +%Y%m%d)
+#TODAY_DATE=$(date +%Y%m%d)
+TODAY_DATE="20250327"
 DATASET_PATH="data/2000_Plots_20241210_BetterQuantized"
 
 # Create main log directory for all experiments
@@ -13,7 +14,9 @@ echo "Created main log directory: $MAIN_LOG_DIR"
 IMAGE_SIZES=(224 448)
 SIDE_VIEWS=("True" "False")
 ENCODERS=("facebook/dinov2-small" "facebook/dinov2-base")
-DECODERS=("google-bert/bert-base-uncased" "google-bert/bert-large-uncased")
+#DECODERS=("google-bert/bert-base-uncased" "google-bert/bert-large-uncased")
+#DECODERS=("gpt2" "gpt2-large")
+DECODERS=("gpt2" "gpt2-medium")
 
 # Loop through all combinations (16 experiments total)
 for IMAGE_SIZE in "${IMAGE_SIZES[@]}"; do
@@ -46,10 +49,7 @@ for IMAGE_SIZE in "${IMAGE_SIZES[@]}"; do
                     --dataset_path $DATASET_PATH \
                     --today_date_str $TODAY_DATE \
                     --log_dir $MAIN_LOG_DIR \
-                    --exp_name $EXP_NAME 2>&1 | tee "${EXP_DIR}/log.txt")
-                
-                # Extract benchmark information from the log file and save to benchmark.txt
-                grep -A 20 "Calculating metrics" "${EXP_DIR}/log.txt" > "${EXP_DIR}/benchmark.txt"
+                    --exp_name $EXP_NAME 2>&1 | tee "${EXP_DIR}/log.txt")        
                 
                 echo "Experiment completed: $EXP_NAME"
                 echo "Logs saved to: ${EXP_DIR}/log.txt"

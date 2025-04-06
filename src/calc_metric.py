@@ -152,7 +152,7 @@ def compute_metrics(
     }
 
 
-def calc_metric(model: torch.nn.Module, dataset_path: str, image_size: int = 448, side_view=False) -> Dict[str, float]:
+def calc_metric(model: torch.nn.Module, dataset_path: str, log_path:str, image_size: int = 448, side_view=False) -> Dict[str, float]:
     """
     Calculate metrics for a model on a given dataset.
     
@@ -184,9 +184,13 @@ def calc_metric(model: torch.nn.Module, dataset_path: str, image_size: int = 448
     
     # Compute metrics
     metrics = compute_metrics(predictions, labels)
-    
     # Print results
     for name, value in metrics.items():
         print(f"Average {name.upper()}: {value:.4f}")
+    
+    # Save results to log file
+    with open(log_path, "w") as log_file:
+        for name, value in metrics.items():
+            log_file.write(f"Average {name.upper()}: {value:.4f}\n")
     
     return metrics

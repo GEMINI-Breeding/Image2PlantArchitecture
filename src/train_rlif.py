@@ -45,28 +45,66 @@ def text_global_pool(
 
     return pooled
 
+
+# 패치 수준 정렬을 위한 추가 손실항
+def patch_alignment_loss(original_patches, rendered_patches):
+    # 패치 단위 정규화
+    orig_norm = F.normalize(original_patches, p=2, dim=2)
+    rend_norm = F.normalize(rendered_patches, p=2, dim=2)
+    
+    # 패치 간 정렬 손실 (상호 정보 최대화)
+    sim_matrix = torch.bmm(orig_norm, rend_norm.transpose(1, 2))
+    row_softmax = F.softmax(sim_matrix / 0.1, dim=2)
+    col_softmax = F.softmax(sim_matrix / 0.1, dim=1)
+    
+    # 양방향 매칭 손실
+    if 0:
+        row_loss = -torch.log(row_softmax.diagonal(dim1=1, dim2=2)).mean()
+        col_loss = -torch.log(col_softmax.diagonal(dim1=1, dim2=2)).mean()
+    else:
+        row_loss = (row_softmax.diagonal(dim1=1, dim2=2)).mean()
+        col_loss = (col_softmax.diagonal(dim1=1, dim2=2)).mean()
+    
+    return (row_loss + col_loss) / 2
+
+# 여러 레이어의 특성을 활용하여 다중 스케일 유사도 계산
+def compute_multi_scale_similarity(original_hidden_states, rendered_hidden_states):
+    # 주요 레이어 선택 (앞쪽, 중간, 뒤쪽)
+    layer_indices = [0, len(original_hidden_states)//2, -1]
+    multi_scale_sims = []
+    
+    for idx in layer_indices:
+        orig = F.normalize(original_hidden_states[idx], p=2, dim=2)
+        rend = F.normalize(rendered_hidden_states[idx], p=2, dim=2)
+        sim = torch.bmm(orig, rend.transpose(1, 2))
+        multi_scale_sims.append(sim.max(dim=2)[0].mean(dim=1))
+    
+    # 여러 레이어의 유사도 평균
+    return torch.stack(multi_scale_sims).mean(dim=0)
+
 class ImageSimilarityRewardModel:
     """Computes rewards based on similarity between original and rendered images"""
     def __init__(
         self, 
         encoder,
         device="cuda" if torch.cuda.is_available() else "cpu",
-        image_processor=None
+        image_processor=None,
+        side_view=False,
     ):
         # Load a pretrained vision model for computing image similarity
         self.device = device
-        self.feature_extractor = encoder
+        self.encoder = encoder
         self.image_processor = image_processor
-
+        self.side_view = side_view
         # Set model to evaluation mode
-        self.feature_extractor.eval()
+        self.encoder.eval()
     
     # Renderer for converting generated sequences back to images
     # This could be a separate model or a rule-based system
     def renderer(self, generated_sequences,
                  output_path='temp', filename='rendered', 
                  program_path="src/GenerateDataset/build",
-                 side_view=False, image_size=224,
+                 image_size=224,
                  debug=False):
         """
         Render a batch of sequences to images - single-threaded version
@@ -112,7 +150,7 @@ class ImageSimilarityRewardModel:
                 image_name = batch_filename.split(".")[0]
                 os.environ["DISPLAY"] = ":11.0"
                 command = f"cd {program_path} && ./main -h 1.0 -o {batch_output_path} -name {image_name} -tile none -f {os.path.join(batch_output_path, batch_filename)}"
-                if side_view:
+                if self.side_view:
                     command += " -r"
                 
                 try:
@@ -129,7 +167,7 @@ class ImageSimilarityRewardModel:
                     continue
                 
                 # Process image
-                if side_view:
+                if self.side_view:
                     img, _ = load_sideview_images(batch_output_path, batch_filename.replace("xml","jpeg"), image_size, True)
                 else:
                     img_path = plant_xml_file_name.replace("xml","jpeg")
@@ -161,16 +199,16 @@ class ImageSimilarityRewardModel:
                 self._render_cache[seq_key] = img
         
         # Periodic cache cleanup to prevent memory issues
-        if len(self._render_cache) > 1000:  # Adjust threshold as needed
-            # Keep the 500 most recent entries
+        if len(self._render_cache) > 2000:  # Adjust threshold as needed
+            # Keep the 1000 most recent entries
             cache_keys = list(self._render_cache.keys())
-            for key in cache_keys[:-500]:
+            for key in cache_keys[:-1000]:
                 del self._render_cache[key]
         
         # Stack all images into a single tensor
         return torch.stack(rendered_images)
     
-    def compute_reward(self, original_images, generated_sequences, side_view=False, image_size=224, debug=False):
+    def compute_reward(self, original_images, generated_sequences, debug=False):
         """
         Compute similarity reward between original image and rendered generated sequence
         
@@ -188,13 +226,12 @@ class ImageSimilarityRewardModel:
         # Delete the previous folder
         # shutil.rmtree(temp_dir)
         os.makedirs(temp_dir, exist_ok=True)
-        
+        image_size = original_images.size(-1)
         # Render the generated sequences to images
         rendered_images = self.renderer(
             generated_sequences, 
             output_path=temp_dir,
             filename="rendered",
-            side_view=side_view,
             image_size=image_size,
             debug=debug
         )
@@ -210,8 +247,8 @@ class ImageSimilarityRewardModel:
             
                     
             # Use this to get all token features:
-            original_outputs = self.feature_extractor(original_images)
-            rendered_outputs = self.feature_extractor(rendered_images)
+            original_outputs = self.encoder(original_images, output_hidden_states=True)
+            rendered_outputs = self.encoder(rendered_images, output_hidden_states=True)
 
             # Get the full sequence of embeddings (all tokens, not just CLS)
             original_embeddings = original_outputs.last_hidden_state  # Shape: [batch_size, sequence_length, hidden_size]
@@ -239,7 +276,7 @@ class ImageSimilarityRewardModel:
             mean_diagonal_similarities = diagonal_similarities.mean(dim=1)  # Shape: [batch_size]
 
             # You can use this as another reward option:
-            diagonal_rewards = (mean_diagonal_similarities + 1) / 2
+            diagonal_rewards = mean_diagonal_similarities
 
             # Compare with the original reward calculation method:
             # Option 1: Maximum similarity for each token in original image
@@ -249,6 +286,24 @@ class ImageSimilarityRewardModel:
             # Scale to 0-1 range
             rewards = (mean_max_similarity + 1) / 2
 
+            # Multi scale similarity
+            multi_scale_similarity = compute_multi_scale_similarity(original_outputs.hidden_states,
+                                                                   rendered_outputs.hidden_states)
+            patch_alignment = patch_alignment_loss(original_outputs.hidden_states[-1],
+                                                   rendered_outputs.hidden_states[-1])
+
+
+            # 전체 이미지 수준의 유사도 추가 (CLS 토큰 또는 pooled 출력 사용)
+            original_global = original_outputs.pooler_output  # [batch_size, hidden_dim]
+            rendered_global = rendered_outputs.pooler_output  # [batch_size, hidden_dim]
+
+            # L2 정규화 후 유사도 계산
+            original_global = F.normalize(original_global, p=2, dim=1)
+            rendered_global = F.normalize(rendered_global, p=2, dim=1)
+            global_similarity = torch.sum(original_global * rendered_global, dim=1)
+
+            # 0-1 범위로 조정
+            global_similarity = (global_similarity + 1) / 2
             # You could also combine both reward signals
             #combined_rewards = 0.5 * rewards + 0.5 * diagonal_rewards
             combined_rewards = diagonal_rewards
@@ -283,6 +338,31 @@ class ImageSimilarityRewardModel:
                     # Save the overlay image
                     debug_path = os.path.join(temp_dir, f"batch_{idx}/similarities_{idx}.jpeg")
                     cv2.imwrite(debug_path, overlay)
+                    
+                    # Create a visualization of all similarity metrics
+                    info_img = np.zeros((300, rendered_image_vis.shape[1], 3), dtype=np.uint8) + 255
+                    
+                    # Add text for each similarity metric
+                    metrics = [
+                        f"Diagonal Sim: {diagonal_rewards[idx]:.4f}",
+                        f"Max Token Sim: {rewards[idx]:.4f}",
+                        f"Multi-scale Sim: {multi_scale_similarity[idx]:.4f}",
+                        f"Patch Alignment: {patch_alignment:.4f}",
+                        f"Global Sim: {global_similarity[idx]:.4f}"
+                    ]
+                    
+                    for i, text in enumerate(metrics):
+                        cv2.putText(
+                            info_img, text, (10, 30 + i*40), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 1
+                        )
+                    
+                    # Combine with the previous images
+                    combined_vis = cv2.vconcat([overlay, info_img])
+                    
+                    # Save the combined visualization
+                    debug_path = os.path.join(temp_dir, f"batch_{idx}/all_metrics_{idx}.jpeg")
+                    cv2.imwrite(debug_path, combined_vis)
 
         return combined_rewards
 
@@ -420,10 +500,7 @@ class PlantRLTrainer:
                     last_hidden_states = text_global_pool(decoder_outputs.hidden_states[-1], generated_sequences)
 
                 # Compute rewards using the reward model
-                rewards = self.reward_model.compute_reward(pixel_values, generated_sequences, 
-                                                           image_size=pixel_values.size(-1),
-                                                           side_view=self.side_view,
-                                                           debug=False)
+                rewards = self.reward_model.compute_reward(pixel_values, generated_sequences, debug=False)
                 
                 # Predict values
                 predicted_values = self.value_head(last_hidden_states).squeeze(-1)
@@ -520,7 +597,7 @@ class PlantRLTrainer:
                     values = self.value_head(last_hidden_states).squeeze(-1)
                 
                 # Compute rewards for these actions
-                rewards = self.reward_model.compute_reward(pixel_values, actions, self.side_view)
+                rewards = self.reward_model.compute_reward(pixel_values, actions)
                 rewards_history.extend(rewards.cpu().numpy().tolist())
                 
                 # Create masks for padding
@@ -594,9 +671,9 @@ class PlantRLTrainer:
                     
                     # Calculate surrogate objectives
                     ratio = torch.exp(new_log_probs - old_log_probs.detach())
-                    surr1 = -advantages * ratio * masks
-                    surr2 = -advantages * torch.clamp(ratio, 1.0 - self.clip_range, 1.0 + self.clip_range) * masks
-                    pg_loss = torch.max(surr1, surr2).sum() / masks.sum().clamp(min=1e-8)
+                    surr1 = advantages * ratio * masks  # 부호 변경 (음수 제거)
+                    surr2 = advantages * torch.clamp(ratio, 1.0 - self.clip_range, 1.0 + self.clip_range) * masks  # 부호 변경
+                    pg_loss = -torch.min(surr1, surr2).sum() / masks.sum().clamp(min=1e-8)  # min 사용 및 음수화
                     
                     # Combined policy loss with KL penalty and entropy bonus
                     policy_loss = pg_loss + self.kl_coef * kl - self.entropy_coef * entropy
@@ -678,7 +755,8 @@ def run_rl_pipeline(
     # that converts plant architecture sequences back to images
     reward_model = ImageSimilarityRewardModel(
         encoder=ref_model.encoder,
-        image_processor=image_processor
+        image_processor=image_processor,
+        side_view=side_view
     )
     
     # Initialize RL trainer
@@ -699,17 +777,18 @@ def run_rl_pipeline(
 
 
 
+
 if __name__ == "__main__":
     # Parse arguments
     parser = argparse.ArgumentParser(description='Fine-tune with image similarity RL')
     parser.add_argument('--model_path', type=str, default='log/20250327/dinov2-small_224_Sideview_gpt2/results', help='Path to pretrained model')
     parser.add_argument('--dataset_path', type=str, default='data/2000_Plots_20241210_BetterQuantized', help='Path to dataset')
-    #parser.add_argument('--plot', type=str, default=[f"{i:04d}" for i in range(1)], help='Plots')
-    parser.add_argument('--plot', type=str, default=None, help='Plots')
+    parser.add_argument('--plot', type=str, default=[f"{i:04d}" for i in range(1)], help='Plots')
+    #parser.add_argument('--plot', type=str, default=None, help='Plots')
     parser.add_argument('--image_size', type=int, default=224, help='Image size')
     parser.add_argument('--side_view', type=str, default='True', help='Use side view')
     parser.add_argument('--batch_size', type=int, default=1, help='Batch size')
-    parser.add_argument('--rl_epochs', type=int, default=4, help='Number of RL training epochs')
+    parser.add_argument('--rl_epochs', type=int, default=10, help='Number of RL training epochs')
     parser.add_argument('--log_dir', type=str, default='./log/sim_rl', help='Log directory')
     args = parser.parse_args()
 
@@ -830,7 +909,7 @@ if __name__ == "__main__":
     try:
         from calc_metric import calc_metric
         print("Calculating metrics after fine-tuning...")
-        benchmark_path = os.path.join(parent_dir, "benchmark.txt")
+        benchmark_path = os.path.join(parent_dir, "RL_benchmark.txt")
         calc_metric(fine_tuned_model, args.dataset_path, log_path=benchmark_path, side_view=args.side_view)
     except ImportError:
         print("calc_metric module not found. Skipping metric calculation.")
