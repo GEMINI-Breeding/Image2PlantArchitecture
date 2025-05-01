@@ -114,7 +114,7 @@ int main(int argc, char* argv[]){
     std::cout << "Leaf count: " << leafcount << std::endl;
     float leafarea = plantarchitecture.sumPlantLeafArea(plantID);
     std::cout << "Leaf area: " << leafarea << std::endl;
-    std::vector<float> leafinclination = plantarchitecture.getPlantLeafInclinationAngleDistribution(plantID, 10, true);
+    std::vector<float> leafinclination = plantarchitecture.getPlantLeafInclinationAngleDistribution(plantID, 10);
     std::cout << "Leaf inclination: ";
     for( float angle : leafinclination ) {
         std::cout << angle << " ";

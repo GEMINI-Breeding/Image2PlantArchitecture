@@ -214,16 +214,19 @@ if __name__ == "__main__":
     parser.add_argument('--side_view', type=str, default='True', help='Use side view images')
     parser.add_argument('--preload', type=str, default='False', help='Preload dataset into memory')
     parser.add_argument('--encoder_checkpoint', type=str, default='facebook/dinov2-small', help='Encoder checkpoint to use')
-    parser.add_argument('--decoder_checkpoint', type=str, default='gpt2', help='Decoder checkpoint to use')
-    parser.add_argument('--dataset_path', type=str, default='data/2000_Plots_20241210_BetterQuantized', help='Path to the dataset')
+    parser.add_argument('--decoder_checkpoint', type=str, default='gpt2-medium', help='Decoder checkpoint to use')
+    parser.add_argument('--dataset_path', type=str, default='/home/lion397/datasets/GEMINI/plant_architecture/20250311_Sideview_40Days', help='Path to the dataset')
     parser.add_argument('--today_date_str', type=str, default=datetime.now().strftime('%Y%m%d'), help='Date string for experiment naming')
     parser.add_argument('--log_dir', type=str, help='Main log directory')
     parser.add_argument('--exp_name', type=str, help='Experiment name')
+    parser.add_argument('--curriculum', default='False', help='Use curriculum learning')
+    parser.add_argument('--epoch', type=int, default=80, help='Number of traninig epochs')
     args = parser.parse_args()
 
     # Convert string arguments to boolean
     args.side_view = args.side_view.lower() == 'true'
     args.preload = args.preload.lower() == 'true'
+    args.curriculum = args.curriculum.lower() == 'true'
 
     # Use provided experiment name if available, otherwise construct one
     if args.exp_name:
@@ -243,10 +246,10 @@ if __name__ == "__main__":
     results_dir = f"{output_base_dir}/results"
 
     # Check for benchmark.txt in the specified log directory
-    benchmark_file_path = os.path.join(output_base_dir, 'benchmark.txt')
-    if os.path.exists(benchmark_file_path) and os.path.getsize(benchmark_file_path) > 0:
-        print(f"Benchmark file exists at {benchmark_file_path}; exiting.")
-        sys.exit(0)
+    # benchmark_file_path = os.path.join(output_base_dir, 'benchmark.txt')
+    # if os.path.exists(benchmark_file_path) and os.path.getsize(benchmark_file_path) > 0:
+    #     print(f"Benchmark file exists at {benchmark_file_path}; exiting.")
+    #     sys.exit(0)
         
 
     # 1. Define decoder configuration
@@ -259,7 +262,7 @@ if __name__ == "__main__":
         decoder_config.is_decoder=True
     elif "gpt2" in decoder_checkpoint:
         decoder_config = GPT2Config.from_pretrained(decoder_checkpoint)
-        decoder_config.max_position_embeddings = 2500  # Set maximum sequence length
+        decoder_config.max_position_embeddings = 4096  # Set maximum sequence length
         decoder_config.vocab_size = VOCAB_SIZE  # Match with tokenizer's vocabulary size
         decoder_config.add_cross_attention=True
         decoder_config.is_decoder=True
@@ -314,36 +317,73 @@ if __name__ == "__main__":
     growth_stages = None # ["01"]
     dataset_path = args.dataset_path
     print("Loading Dataset...")
-    plant_architecture_dataset = PlantDataset(root_dir=dataset_path, stages=growth_stages, 
-                        process_leaf=True, image_size=image_size,
-                        side_view=args.side_view,
-                        preload=args.preload, image_processor=image_processor, add_sos_token=False)
+    train_ratio = 0.8
+    val_ratio = 0.1
+    test_ratio = 0.1
+    if 0:
+        plant_architecture_dataset = PlantDataset(root_dir=dataset_path, stages=growth_stages, 
+                            process_leaf=True, image_size=image_size,
+                            side_view=args.side_view,
+                            preload=args.preload, image_processor=image_processor, add_sos_token=False)
 
-    # Split the dataset into Train, Validation, and Test sets
-    if 1:
-        train_size = int(0.8 * len(plant_architecture_dataset))  # 80% for training
-        val_size = int(0.1 * len(plant_architecture_dataset))    # 10% for validation
-        test_size = len(plant_architecture_dataset) - train_size - val_size  # Remaining 10% for testing
+        # Split the dataset into Train, Validation, and Test sets
+        if 1:
+            train_size = int(0.8 * len(plant_architecture_dataset))  # 80% for training
+            val_size = int(0.1 * len(plant_architecture_dataset))    # 10% for validation
+            test_size = len(plant_architecture_dataset) - train_size - val_size  # Remaining 10% for testing
+        else:
+            # Debugging
+            train_size = int(0.01 * len(plant_architecture_dataset))  # 80% for training
+            val_size = int(0.01 * len(plant_architecture_dataset))    # 10% for validation
+            test_size = len(plant_architecture_dataset) - train_size - val_size  # Remaining 10% for testing
+        print(f"train_size:{train_size}, val_size:{val_size}")
+        
+        # Use random_split with the seed set above
+        train_dataset, val_dataset, test_dataset = random_split(plant_architecture_dataset, [train_size, val_size, test_size])
     else:
-        # Debugging
-        train_size = int(0.01 * len(plant_architecture_dataset))  # 80% for training
-        val_size = int(0.01 * len(plant_architecture_dataset))    # 10% for validation
-        test_size = len(plant_architecture_dataset) - train_size - val_size  # Remaining 10% for testing
-    print(f"train_size:{train_size}, val_size:{val_size}")
-    
-    # Use random_split with the seed set above
-    train_dataset, val_dataset, test_dataset = random_split(plant_architecture_dataset, [train_size, val_size, test_size])
+        # Separate by plot number
+        # Get the num plots from the last xml file
+        xml_files = os.listdir(os.path.join(dataset_path, "xml"))
+        xml_files.sort()
+        num_plots = int(xml_files[-1].split("_")[1]) + 1
 
-    # Create curriculum dataset
-    curriculum_steps = 10
-    # Configure curriculum callback
-    curriculum_callback = CurriculumLearningCallback(
-        train_dataset, 
-        curriculum_steps=curriculum_steps,
-        lr_strategy="bell",  # Decrease learning rate as complexity increases
-        initial_lr=5e-5,     # Initial high learning rate
-        final_lr=5e-6        # Final low learning rate
-    )
+        train_end = int(num_plots * train_ratio)
+        val_end = train_end + int(num_plots * val_ratio)
+        test_end = min(num_plots, val_end + int(num_plots * test_ratio)) # Ensure total sums up to num_plots
+
+        train_plots = [f"{plot:04d}" for plot in range(train_end)]
+        val_plots = [f"{plot:04d}" for plot in range(train_end, val_end)]
+        test_plots = [f"{plot:04d}" for plot in range(val_end, test_end)]
+
+        train_dataset = PlantDataset(root_dir=dataset_path, stages=growth_stages, 
+                    process_leaf=True, image_size=image_size,
+                    side_view=args.side_view,
+                    plot=train_plots,
+                    mode='train',
+                    preload=args.preload, image_processor=image_processor, add_sos_token=False)
+        train_size = len(train_dataset)
+
+        val_dataset = PlantDataset(root_dir=dataset_path, stages=growth_stages, 
+                    process_leaf=True, image_size=image_size,
+                    side_view=args.side_view,
+                    plot=val_plots,
+                    mode='val',
+                    preload=args.preload, image_processor=image_processor, add_sos_token=False)
+        val_size = len(val_dataset)
+        
+    callbacks = []
+    if args.curriculum:
+        # Create curriculum dataset
+        curriculum_steps = 10
+        # Configure curriculum callback
+        curriculum_callback = CurriculumLearningCallback(
+            train_dataset, 
+            curriculum_steps=curriculum_steps,
+            lr_strategy="bell",  # Decrease learning rate as complexity increases
+            initial_lr=5e-5,     # Initial high learning rate
+            final_lr=5e-6        # Final low learning rate
+        )
+        callbacks.append(curriculum_callback)    
 
     # Set training arguments
     today_date_str = args.today_date_str
@@ -352,7 +392,7 @@ if __name__ == "__main__":
     side_view_str = "Sideview" if args.side_view else "TopView"
 
     batch_size = 4
-    num_train_epochs = 10
+    num_train_epochs = args.epoch
     gradient_accumulation_steps = 4
     warmup_steps = int(train_size * 0.2 // batch_size // gradient_accumulation_steps * num_train_epochs)
     print(f"warmup_steps:{warmup_steps}")
@@ -360,7 +400,7 @@ if __name__ == "__main__":
         output_dir=f"{output_base_dir}/checkpoints",     # Model output directory
         num_train_epochs=num_train_epochs,               # Number of training epochs
         per_device_train_batch_size=batch_size,          # Training batch size
-        per_device_eval_batch_size=1,                    # Evaluation batch size
+        per_device_eval_batch_size=batch_size,           # Evaluation batch size
         warmup_steps=warmup_steps,                       # Number of warmup steps for learning rate scheduler (or set the warmup_ratio)
         weight_decay=0.01,                               # Weight decay
         logging_dir=f"{output_base_dir}/logs",           # Log directory
@@ -369,6 +409,9 @@ if __name__ == "__main__":
         gradient_checkpointing=True,
         eval_strategy="epoch",
         save_strategy="epoch",                           # Save at each epoch
+        load_best_model_at_end=True,
+        metric_for_best_model='loss',
+        save_total_limit=5,
         fp16=True,
     )
 
@@ -379,13 +422,13 @@ if __name__ == "__main__":
         train_dataset=train_dataset,
         eval_dataset=val_dataset,
         data_collator=custom_data_collator,
-        callbacks=[curriculum_callback]  # Add curriculum callback
+        callbacks=callbacks  # Add curriculum callback
     )
 
     model_summary(model=model, max_depth=1)
 
     # Check if model is already trained
-    if os.path.exists(results_dir) and len(os.listdir(results_dir)) > 0:
+    if os.path.exists(results_dir) and len(os.listdir(results_dir)) > 0 and False:
         print(f"Model checkpoint already exists at {results_dir}. Skipping training.")
         # Load the trained model to calculate metrics
         model = VisionEncoderDecoderModel.from_pretrained(results_dir)

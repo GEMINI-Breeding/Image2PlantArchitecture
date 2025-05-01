@@ -2,7 +2,7 @@
 
 # Script to run multiple experiments with different configurations
 #TODAY_DATE=$(date +%Y%m%d)
-TODAY_DATE="20250327"
+TODAY_DATE="20250411_Curriculum10_Fulldata10"
 DATASET_PATH="data/2000_Plots_20241210_BetterQuantized"
 
 # Create main log directory for all experiments

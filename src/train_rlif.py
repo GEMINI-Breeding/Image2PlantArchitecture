@@ -409,7 +409,11 @@ class PlantRLTrainer:
         
         # Initialize value head for reward prediction
         hidden_size = self.model.decoder.config.hidden_size
-        self.value_head = torch.nn.Linear(hidden_size, 1).to(device)
+        # Get model's dtype
+        model_dtype = next(self.model.parameters()).dtype
+
+        # Initialize value head with matching precision
+        self.value_head = torch.nn.Linear(hidden_size, 1).to(device=device, dtype=model_dtype)
         self.value_optimizer = Adam(self.value_head.parameters(), lr=1e-4)
 
         self.side_view = side_view
@@ -781,11 +785,11 @@ def run_rl_pipeline(
 if __name__ == "__main__":
     # Parse arguments
     parser = argparse.ArgumentParser(description='Fine-tune with image similarity RL')
-    parser.add_argument('--model_path', type=str, default='log/20250327/dinov2-small_224_Sideview_gpt2/results', help='Path to pretrained model')
+    parser.add_argument('--model_path', type=str, default='log/20250327/dinov2-small_448_Sideview_gpt2-medium/results', help='Path to pretrained model')
     parser.add_argument('--dataset_path', type=str, default='data/2000_Plots_20241210_BetterQuantized', help='Path to dataset')
-    parser.add_argument('--plot', type=str, default=[f"{i:04d}" for i in range(1)], help='Plots')
-    #parser.add_argument('--plot', type=str, default=None, help='Plots')
-    parser.add_argument('--image_size', type=int, default=224, help='Image size')
+    #parser.add_argument('--plot', type=str, default=[f"{i:04d}" for i in range(1)], help='Plots')
+    parser.add_argument('--plot', type=str, default=None, help='Plots')
+    parser.add_argument('--image_size', type=int, default=448, help='Image size')
     parser.add_argument('--side_view', type=str, default='True', help='Use side view')
     parser.add_argument('--batch_size', type=int, default=1, help='Batch size')
     parser.add_argument('--rl_epochs', type=int, default=10, help='Number of RL training epochs')
@@ -797,7 +801,7 @@ if __name__ == "__main__":
 
     # Load the pretrained model
     print(f"Loading pretrained model from {args.model_path}")
-    model = VisionEncoderDecoderModel.from_pretrained(args.model_path)
+    model = VisionEncoderDecoderModel.from_pretrained(args.model_path, torch_dtype=torch.float16)
     image_processor = None
     for processor_attr in ['image_processor', 'feature_extractor', 'processor']:
         if hasattr(model.encoder, processor_attr):
@@ -836,7 +840,7 @@ if __name__ == "__main__":
         image_size=args.image_size,
         side_view=args.side_view,
         image_processor=image_processor,
-        preload=False,
+        preload=True,
         process_leaf=True,
         add_sos_token=False,
         plot=args.plot,
@@ -850,6 +854,10 @@ if __name__ == "__main__":
     # Use random_split with the seed set above
     train_dataset, val_dataset, test_dataset = random_split(plant_architecture_dataset, [train_size, val_size, test_size])
 
+    # Random 10% with fixed seed for reproducibility
+    torch.manual_seed(42)  # Set seed for reproducibility
+    indices = torch.randperm(len(train_dataset))[:len(train_dataset) // 10]
+    RL_dataset = torch.utils.data.Subset(train_dataset, indices)
 
     # Make sure pixel_values are properly processed
     def custom_collator(features):
@@ -871,7 +879,7 @@ if __name__ == "__main__":
         }
 
     dataloader = DataLoader(
-        plant_architecture_dataset,
+        RL_dataset,
         batch_size=args.batch_size,
         shuffle=True,
         collate_fn=custom_collator

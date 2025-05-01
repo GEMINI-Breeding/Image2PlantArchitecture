@@ -19,16 +19,20 @@ import xml.etree.ElementTree as ET
 from plant_tokenizer import vec2token as vec2token
 import re
 import joblib
+from torchvision import transforms
 
 # Enable loading of truncated images
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 
-def load_sideview_images(images_dir, image_file_name, img_size, process_leaf):
+def load_sideview_images(images_dir, image_file_name, img_size, process_leaf, flip_test=False):
 
     # Load side view images and combine them into 2x2
     # angles = [0, 90, 180, 270]
-    angles = [-1, 0, 120, 240]
+    if flip_test:
+        angles = [-1, 0, 120, 240]
+    else:
+        angles = [-1, 0, 240, 120]
     image_name = image_file_name.split("/")[-1].split(".")[0]
     # Make a empty image
     total_img = np.zeros((img_size, img_size, 3), dtype=np.uint8)
@@ -41,7 +45,7 @@ def load_sideview_images(images_dir, image_file_name, img_size, process_leaf):
                 image = Image.open(os.path.join(images_dir, f"{image_name}_{angle}.jpeg"))
         except:
             print(f"Error loading {image_file_name}")
-            return None, None, None
+            return None, None
         leaf_area, plant_width, plant_height, processed_img, (x,y,w,h) = process_leaf_image(np.array(image), 
                                                                             normalize=True, debug=False, sqaure_crop=True)
         plant_info = [leaf_area, plant_width, plant_height]
@@ -50,6 +54,11 @@ def load_sideview_images(images_dir, image_file_name, img_size, process_leaf):
             leaf_img = cv2.resize(processed_img, (img_size//2, img_size//2))
         else:
             leaf_img = cv2.resize(np.array(image), (img_size//2, img_size//2))
+
+        if flip_test:
+            # Flip the image
+            # leaf_img = cv2.flip(leaf_img,0) # flip vertically
+            leaf_img = cv2.flip(leaf_img,1) # mirror
 
         # Add to the empty image
         if i == 0:
@@ -75,9 +84,10 @@ def load_sideview_images(images_dir, image_file_name, img_size, process_leaf):
 
 
 class PlantDataset(Dataset):
-    def __init__(self, root_dir, plot=None, stages=None, transform=None, 
+    def __init__(self, root_dir, plot=None, stages=None, 
                  image_size=224, load_depth=False, preload=False, side_view=False,
-                 process_leaf=True, image_processor=None, add_sos_token=False,
+                 process_leaf=True, image_processor=None, add_sos_token=False, flip_test=False,
+                 mode='',
                  sort_by='name', sort_order='ascending'):
         """
         Parameters:
@@ -97,6 +107,8 @@ class PlantDataset(Dataset):
         self.plant_xml_files = os.listdir(self.plant_xml_dir)
         # Get list of images
         self.image_files = [x.replace('.xml', '.jpeg') for x in self.plant_xml_files]
+        self.mode = mode
+        self.flip_test = flip_test
         
         # Apply custom sorting
         self._sort_files(sort_by, sort_order)
@@ -109,7 +121,7 @@ class PlantDataset(Dataset):
         self.image_files.sort()
         self.plant_xml_files.sort()
 
-        self.img_size = image_size
+        self.image_size = image_size
         self.image_processor = image_processor
         # Filter with statges
         # Regular expression to extract plot and day numbers
@@ -125,11 +137,16 @@ class PlantDataset(Dataset):
             self.plant_xml_files = [x for x in self.plant_xml_files if re.match(pattern, x).group(1) in plot]
             if self.load_depth:
                 self.depth_images = [x for x in self.depth_images if re.match(pattern, x).group(1) in plot]
-                
-        self.transform = transform
+        
+        self.side_view = side_view
+        if self.side_view:
+            self.transform_randomResizedCrop = transforms.RandomResizedCrop(self.image_size // 2, scale=(0.8, 1.0))
+        else:
+            self.transform_randomResizedCrop = transforms.RandomResizedCrop(self.image_size, scale=(0.8, 1.0))
+        self.transform_colorJitter = transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.2)
 
         self.process_leaf = process_leaf
-        self.side_view = side_view
+        
         self.plant_string_raw = ""
         self.add_sos_token = add_sos_token
         print(f"Total {len(self.image_files)} images and plant strings loaded")
@@ -143,6 +160,8 @@ class PlantDataset(Dataset):
 
             # Use different filenames based on the `side_view` option
             suffix = "_sideview" if self.side_view else ""
+            if len(self.mode) > 0:
+                suffix += f"_{self.mode}"
             images_path = os.path.join(preload_dir, f"images{suffix}.pkl")
             vec_path = os.path.join(preload_dir, f"vec{suffix}.pkl")
             plant_infos_path = os.path.join(preload_dir, f"plant_infos{suffix}.pkl")
@@ -178,7 +197,8 @@ class PlantDataset(Dataset):
     def getitem(self, idx):
         # Load image
         if self.side_view:
-            leaf_img, plant_info = load_sideview_images(self.image_dir, self.image_files[idx], self.img_size, process_leaf=self.process_leaf)
+            leaf_img, plant_info = load_sideview_images(self.image_dir, self.image_files[idx], 
+                                                        self.image_size, process_leaf=self.process_leaf,flip_test=self.flip_test)
                     
         else:
             try:
@@ -194,9 +214,14 @@ class PlantDataset(Dataset):
             plant_info = [leaf_area, plant_width, plant_height]
             if self.process_leaf:
                 # Preprocess image
-                leaf_img = cv2.resize(processed_img, (self.img_size, self.img_size))
+                leaf_img = cv2.resize(processed_img, (self.image_size, self.image_size))
             else:
-                leaf_img = cv2.resize(np.array(image), (self.img_size, self.img_size))
+                leaf_img = cv2.resize(np.array(image), (self.image_size, self.image_size))
+
+            if self.flip_test:
+                # Flip the image
+                #leaf_img = cv2.flip(leaf_img,0) # flip vertically
+                leaf_img = cv2.flip(leaf_img, 1) # mirror
 
             if self.load_depth:
                 # Convert depth to grayscale
@@ -215,7 +240,7 @@ class PlantDataset(Dataset):
                 depth = depth.astype(np.uint8)
 
                 # Resize the images
-                depth = cv2.resize(depth, (self.img_size, self.img_size))
+                depth = cv2.resize(depth, (self.image_size, self.image_size))
 
                 # Add depth channel
                 leaf_img = np.concatenate((leaf_img, depth[:, :, np.newaxis]), axis=2)
@@ -248,11 +273,49 @@ class PlantDataset(Dataset):
             image, plant_info, vec = self.getitem(idx)
             
 
-        if self.transform:
+        if self.mode == 'train':
             # Check if the image is a PIL Image
             if not isinstance(image, Image.Image):
                 image = Image.fromarray(image)
-            image = self.transform(image)
+
+            if self.side_view:
+                # Convert PIL Image to NumPy array
+                image_array = np.array(image)
+                
+                # Get dimensions
+                h, w = image.size
+                h_np, w_np = image_array.shape[0], image_array.shape[1]
+                
+                # Create a new array for the result
+                result_array = np.zeros_like(image_array)
+                
+                # Define quadrant dimensions
+                quadrants = [
+                    # (numpy slice y, numpy slice x, PIL box)
+                    (slice(0, h_np//2), slice(0, w_np//2), (0, 0, w//2, h//2)),           # top_left
+                    (slice(0, h_np//2), slice(w_np//2, w_np), (w//2, 0, w, h//2)),        # top_right  
+                    (slice(h_np//2, h_np), slice(0, w_np//2), (0, h//2, w//2, h)),        # bottom_left
+                    (slice(h_np//2, h_np), slice(w_np//2, w_np), (w//2, h//2, w, h))      # bottom_right
+                ]
+                
+                # Process all quadrants
+                for y_slice, x_slice, crop_box in quadrants:
+                    # Extract quadrant using PIL (for transform compatibility)
+                    quadrant = image.crop(crop_box)
+                    
+                    # Apply transformation
+                    transformed = self.transform_randomResizedCrop(quadrant)
+                    
+                    # Convert back to numpy and place in result array
+                    transformed_array = np.array(transformed)
+                    result_array[y_slice, x_slice] = transformed_array
+                
+                # Convert back to PIL for any further processing
+                image = Image.fromarray(result_array)
+            else:
+                image = self.transform_randomResizedCrop(image)
+
+            image = self.transform_colorJitter(image)
 
             if isinstance(image, Image.Image):
                 image = np.array(image)
