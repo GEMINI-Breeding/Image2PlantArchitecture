@@ -279,39 +279,29 @@ class PlantDataset(Dataset):
                 image = Image.fromarray(image)
 
             if self.side_view:
-                # Convert PIL Image to NumPy array
-                image_array = np.array(image)
-                
-                # Get dimensions
+                # Devide side view images
                 h, w = image.size
-                h_np, w_np = image_array.shape[0], image_array.shape[1]
+                # Process each quadrant
+                top_left = image.crop((0, 0, w//2, h//2))
+                top_left = self.transform_randomResizedCrop(top_left)
                 
-                # Create a new array for the result
-                result_array = np.zeros_like(image_array)
+                top_right = image.crop((w//2, 0, w, h//2))
+                top_right = self.transform_randomResizedCrop(top_right)
                 
-                # Define quadrant dimensions
-                quadrants = [
-                    # (numpy slice y, numpy slice x, PIL box)
-                    (slice(0, h_np//2), slice(0, w_np//2), (0, 0, w//2, h//2)),           # top_left
-                    (slice(0, h_np//2), slice(w_np//2, w_np), (w//2, 0, w, h//2)),        # top_right  
-                    (slice(h_np//2, h_np), slice(0, w_np//2), (0, h//2, w//2, h)),        # bottom_left
-                    (slice(h_np//2, h_np), slice(w_np//2, w_np), (w//2, h//2, w, h))      # bottom_right
-                ]
+                bottom_left = image.crop((0, h//2, w//2, h))
+                bottom_left = self.transform_randomResizedCrop(bottom_left)
                 
-                # Process all quadrants
-                for y_slice, x_slice, crop_box in quadrants:
-                    # Extract quadrant using PIL (for transform compatibility)
-                    quadrant = image.crop(crop_box)
-                    
-                    # Apply transformation
-                    transformed = self.transform_randomResizedCrop(quadrant)
-                    
-                    # Convert back to numpy and place in result array
-                    transformed_array = np.array(transformed)
-                    result_array[y_slice, x_slice] = transformed_array
+                bottom_right = image.crop((w//2, h//2, w, h))
+                bottom_right = self.transform_randomResizedCrop(bottom_right)
                 
-                # Convert back to PIL for any further processing
-                image = Image.fromarray(result_array)
+                # Create new image and paste all quadrants
+                new_image = Image.new('RGB', (w, h))
+                new_image.paste(top_left, (0, 0))
+                new_image.paste(top_right, (w//2, 0))
+                new_image.paste(bottom_left, (0, h//2))
+                new_image.paste(bottom_right, (w//2, h//2))
+                
+                image = new_image
             else:
                 image = self.transform_randomResizedCrop(image)
 
