@@ -43,12 +43,18 @@ def load_sideview_images(images_dir, image_file_name, img_size, process_leaf, fl
                 image = Image.open(os.path.join(images_dir, f"{image_name}.jpeg"))
             else:
                 image = Image.open(os.path.join(images_dir, f"{image_name}_{angle}.jpeg"))
+            leaf_area, plant_width, plant_height, processed_img, (x,y,w,h) = process_leaf_image(np.array(image), 
+                                                                                normalize=True, debug=False, sqaure_crop=True)
+            plant_info = [leaf_area, plant_width, plant_height]
         except:
-            print(f"Error loading {image_file_name}")
-            return None, None
-        leaf_area, plant_width, plant_height, processed_img, (x,y,w,h) = process_leaf_image(np.array(image), 
-                                                                            normalize=True, debug=False, sqaure_crop=True)
-        plant_info = [leaf_area, plant_width, plant_height]
+            print(f"Error loading {image_file_name}...load empty image")
+            print(f"Let's just think it's just another way of data augumentation")
+            if process_leaf:
+                processed_img = np.zeros((img_size//2, img_size//2,3))
+            else:
+                image = Image.new('RGB', (img_size//2, img_size//2))
+            # return None, None
+
         if process_leaf:
             # Preprocess image
             leaf_img = cv2.resize(processed_img, (img_size//2, img_size//2))
@@ -87,7 +93,7 @@ class PlantDataset(Dataset):
     def __init__(self, root_dir, plot=None, stages=None, 
                  image_size=224, load_depth=False, preload=False, side_view=False,
                  process_leaf=True, image_processor=None, add_sos_token=False, flip_test=False,
-                 mode='',
+                 mode='', color_jitter=False, random_crop=False, random_erase=False,
                  sort_by='name', sort_order='ascending'):
         """
         Parameters:
@@ -109,7 +115,10 @@ class PlantDataset(Dataset):
         self.image_files = [x.replace('.xml', '.jpeg') for x in self.plant_xml_files]
         self.mode = mode
         self.flip_test = flip_test
-        
+        self.random_crop = random_crop
+        self.color_jitter = color_jitter
+        self.random_erase = random_erase
+
         # Apply custom sorting
         self._sort_files(sort_by, sort_order)
         
@@ -139,12 +148,14 @@ class PlantDataset(Dataset):
                 self.depth_images = [x for x in self.depth_images if re.match(pattern, x).group(1) in plot]
         
         self.side_view = side_view
+
         if self.side_view:
             self.transform_randomResizedCrop = transforms.RandomResizedCrop(self.image_size // 2, scale=(0.8, 1.0))
         else:
             self.transform_randomResizedCrop = transforms.RandomResizedCrop(self.image_size, scale=(0.8, 1.0))
+        
         self.transform_colorJitter = transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.2)
-
+        self.transform_random_erase = transforms.RandomErasing(p=0.5, scale=(0.02, 0.33), ratio=(0.3, 3.3), value=0, inplace=False)
         self.process_leaf = process_leaf
         
         self.plant_string_raw = ""
@@ -206,8 +217,8 @@ class PlantDataset(Dataset):
                 # Convert to numpy array
                 image = np.array(image)
             except:
-                    print(f"Error loading {self.image_files[idx]}")
-                    return None, None, None
+                print(f"Error loading {self.image_files[idx]}")
+                return None, None, None
             
             leaf_area, plant_width, plant_height, processed_img, (x,y,w,h) = process_leaf_image(np.array(image), 
                                                                                 normalize=True, debug=False, sqaure_crop=True)
@@ -282,35 +293,53 @@ class PlantDataset(Dataset):
                 # Devide side view images
                 h, w = image.size
                 # Process each quadrant
-                top_left = image.crop((0, 0, w//2, h//2))
-                top_left = self.transform_randomResizedCrop(top_left)
-                
-                top_right = image.crop((w//2, 0, w, h//2))
-                top_right = self.transform_randomResizedCrop(top_right)
-                
-                bottom_left = image.crop((0, h//2, w//2, h))
-                bottom_left = self.transform_randomResizedCrop(bottom_left)
-                
-                bottom_right = image.crop((w//2, h//2, w, h))
-                bottom_right = self.transform_randomResizedCrop(bottom_right)
-                
-                # Create new image and paste all quadrants
-                new_image = Image.new('RGB', (w, h))
-                new_image.paste(top_left, (0, 0))
-                new_image.paste(top_right, (w//2, 0))
-                new_image.paste(bottom_left, (0, h//2))
-                new_image.paste(bottom_right, (w//2, h//2))
-                
-                image = new_image
-            else:
-                image = self.transform_randomResizedCrop(image)
+                images = []
 
-            image = self.transform_colorJitter(image)
+                images.append(image.crop((0, 0, w//2, h//2))) # top_left
+                images.append(image.crop((w//2, 0, w, h//2))) # top_right
+                images.append(image.crop((0, h//2, w//2, h))) # bottom_left
+                images.append(image.crop((w//2, h//2, w, h))) # bottom_right
+                
+                if self.random_crop:
+                    for i in range(len(images)):
+                        images[i] = self.transform_randomResizedCrop(images[i])
+
+                if self.random_erase:
+                    # Reset one of the image to zeros, with p = 0.5
+                    p = torch.rand(1)
+                    if p > 0.5:
+                        randi = torch.randint(0, 4, (1,))
+                        # Reset image
+                        images[randi] = Image.new('RGB', (w//2, h//2))
+                    
+
+                    # Create new image and paste all quadrants
+                    new_image = Image.new('RGB', (w, h))
+                    new_image.paste(images[0], (0, 0))
+                    new_image.paste(images[1], (w//2, 0))
+                    new_image.paste(images[2], (0, h//2))
+                    new_image.paste(images[3], (w//2, h//2))
+                    
+                    image = new_image
+            else:
+                if self.random_crop:
+                    image = self.transform_randomResizedCrop(image)
+                else:
+                    pass
+            if self.color_jitter:
+                image = self.transform_colorJitter(image)
 
             if isinstance(image, Image.Image):
                 image = np.array(image)
+        # Convert to tensor
+        image = torch.tensor(image)
+        # Permute the image tensor
+        image = image.permute(2, 0, 1)     
 
-
+        if self.mode == 'train' and self.random_erase:
+            # Add random erasing
+            image = self.transform_random_erase(image)
+            
         # Tokenize the plant structure
         out = vec2token(vec)
 
@@ -334,10 +363,7 @@ class PlantDataset(Dataset):
         out = np.concatenate((plant_info_token, out)) 
         out = np.concatenate((out, [EOS_TOKEN]))
 
-        # Convert to tensor
-        image = torch.tensor(image)
-        # Permute the image tensor
-        image = image.permute(2, 0, 1)     
+
 
         if self.image_processor:
             image = self.image_processor(image, return_tensors="pt").pixel_values[0]

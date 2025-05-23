@@ -220,24 +220,31 @@ if __name__ == "__main__":
     parser.add_argument('--log_dir', type=str, help='Main log directory')
     parser.add_argument('--exp_name', type=str, help='Experiment name')
     parser.add_argument('--curriculum', default='False', help='Use curriculum learning')
-    parser.add_argument('--epoch', type=int, default=80, help='Number of traninig epochs')
+    parser.add_argument('--epoch', type=int, default=20, help='Number of traninig epochs')
+    parser.add_argument('--color_jitter', type=str, default='False', help='Number of traninig epochs')
+    parser.add_argument('--rnd_crop', type=str, default='False', help='Number of traninig epochs')
+    parser.add_argument('--rnd_erase', type=str, default='False', help='Number of traninig epochs')
+
     args = parser.parse_args()
 
     # Convert string arguments to boolean
     args.side_view = args.side_view.lower() == 'true'
     args.preload = args.preload.lower() == 'true'
     args.curriculum = args.curriculum.lower() == 'true'
+    args.color_jitter = args.color_jitter.lower() == 'true'
+    args.rnd_crop = args.rnd_crop.lower() == 'true'
+    args.rnd_erase = args.rnd_erase.lower() == 'true'
+
 
     # Use provided experiment name if available, otherwise construct one
     if args.exp_name:
         exp_name = args.exp_name
     else:
-        #exp_name = f"{today_date_str}_{encoder_name}_{args.image_size}_{side_view_str}_{decoder_name}"
         exp_name = "debug"
 
     # Determine output directory
-    if args.log_dir:
-        output_base_dir = f"{args.log_dir}/{exp_name}"
+    if args.today_date_str:
+        output_base_dir = f"./log/{args.today_date_str}/{exp_name}"
     else:
         output_base_dir = f"./log/{exp_name}"
 
@@ -262,7 +269,7 @@ if __name__ == "__main__":
         decoder_config.is_decoder=True
     elif "gpt2" in decoder_checkpoint:
         decoder_config = GPT2Config.from_pretrained(decoder_checkpoint)
-        decoder_config.max_position_embeddings = 4096  # Set maximum sequence length
+        decoder_config.max_position_embeddings = 4096*2 # Set maximum sequence length
         decoder_config.vocab_size = VOCAB_SIZE  # Match with tokenizer's vocabulary size
         decoder_config.add_cross_attention=True
         decoder_config.is_decoder=True
@@ -324,20 +331,15 @@ if __name__ == "__main__":
         plant_architecture_dataset = PlantDataset(root_dir=dataset_path, stages=growth_stages, 
                             process_leaf=True, image_size=image_size,
                             side_view=args.side_view,
-                            preload=args.preload, image_processor=image_processor, add_sos_token=False)
+                            preload=args.preload, image_processor=image_processor, add_sos_token=False,
+                            random_erase=args.rnd_erase)
 
         # Split the dataset into Train, Validation, and Test sets
-        if 1:
-            train_size = int(0.8 * len(plant_architecture_dataset))  # 80% for training
-            val_size = int(0.1 * len(plant_architecture_dataset))    # 10% for validation
-            test_size = len(plant_architecture_dataset) - train_size - val_size  # Remaining 10% for testing
-        else:
-            # Debugging
-            train_size = int(0.01 * len(plant_architecture_dataset))  # 80% for training
-            val_size = int(0.01 * len(plant_architecture_dataset))    # 10% for validation
-            test_size = len(plant_architecture_dataset) - train_size - val_size  # Remaining 10% for testing
+
+        train_size = int(0.8 * len(plant_architecture_dataset))  # 80% for training
+        val_size = int(0.1 * len(plant_architecture_dataset))    # 10% for validation
+        test_size = len(plant_architecture_dataset) - train_size - val_size  # Remaining 10% for testing
         print(f"train_size:{train_size}, val_size:{val_size}")
-        
         # Use random_split with the seed set above
         train_dataset, val_dataset, test_dataset = random_split(plant_architecture_dataset, [train_size, val_size, test_size])
     else:
@@ -360,7 +362,10 @@ if __name__ == "__main__":
                     side_view=args.side_view,
                     plot=train_plots,
                     mode='train',
-                    preload=args.preload, image_processor=image_processor, add_sos_token=False)
+                    preload=args.preload, image_processor=image_processor, add_sos_token=False,
+                    color_jitter = args.color_jitter,
+                    random_crop = args.rnd_crop,
+                    random_erase=args.rnd_erase)
         train_size = len(train_dataset)
 
         val_dataset = PlantDataset(root_dir=dataset_path, stages=growth_stages, 
@@ -407,8 +412,10 @@ if __name__ == "__main__":
         logging_steps=10,
         gradient_accumulation_steps=gradient_accumulation_steps,
         gradient_checkpointing=True,
-        eval_strategy="epoch",
-        save_strategy="epoch",                           # Save at each epoch
+        eval_strategy="steps",
+        eval_steps=0.1,
+        save_strategy="steps",                           # Save at each epoch
+        save_steps=0.1,
         load_best_model_at_end=True,
         metric_for_best_model='loss',
         save_total_limit=5,
