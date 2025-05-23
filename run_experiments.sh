@@ -2,8 +2,9 @@
 
 # Script to run multiple experiments with different configurations
 #TODAY_DATE=$(date +%Y%m%d)
-TODAY_DATE="20250411_Curriculum10_Fulldata10"
-DATASET_PATH="data/2000_Plots_20241210_BetterQuantized"
+TODAY_DATE="20250523_TrainOnFarm"
+# DATASET_PATH="data/2000_Plots_20241210_BetterQuantized"
+
 
 # Create main log directory for all experiments
 MAIN_LOG_DIR="log/${TODAY_DATE}"
@@ -12,6 +13,7 @@ echo "Created main log directory: $MAIN_LOG_DIR"
 
 # Arrays of parameters
 IMAGE_SIZES=(224 448)
+EPOCH=8
 SIDE_VIEWS=("True" "False")
 ENCODERS=("facebook/dinov2-small" "facebook/dinov2-base")
 #DECODERS=("google-bert/bert-base-uncased" "google-bert/bert-large-uncased")
@@ -43,12 +45,12 @@ for IMAGE_SIZE in "${IMAGE_SIZES[@]}"; do
                 (python src/train_hf.py \
                     --image_size $IMAGE_SIZE \
                     --side_view $SIDE_VIEW \
-                    --preload True \
+                    --preload False \
                     --encoder_checkpoint $ENCODER \
                     --decoder_checkpoint $DECODER \
                     --dataset_path $DATASET_PATH \
                     --today_date_str $TODAY_DATE \
-                    --log_dir $MAIN_LOG_DIR \
+                    --epoch $EPOCH \
                     --exp_name $EXP_NAME 2>&1 | tee "${EXP_DIR}/log.txt")        
                 
                 echo "Experiment completed: $EXP_NAME"
