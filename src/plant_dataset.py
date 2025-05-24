@@ -5,6 +5,7 @@ import cv2
 import numpy as np
 
 from PIL import Image, ImageFile
+import concurrent.futures
 from tqdm import tqdm
 
 # Add . as a directory to import from
@@ -184,21 +185,35 @@ class PlantDataset(Dataset):
                 self.vec = joblib.load(vec_path)
                 self.plant_infos = joblib.load(plant_infos_path)
             else:
-                # Pre-load data
+                # Pre-load data with parallel processing
                 self.images = []
                 self.vec = []
                 self.plant_infos = []
                 print(f"Pre-loading data (side_view={self.side_view})...")
-                for i in tqdm(range(len(self.image_files))):
-                    image, plant_info, vec = self.getitem(i)
-                    if image is not None:
-                        self.images.append(image)
-                        self.vec.append(vec)
-                        self.plant_infos.append(plant_info)
+                
+                # Before the parallel processing
+                valid_indices = []
+                
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    # Submit all tasks
+                    futures = [executor.submit(self.getitem, i) for i in range(len(self.image_files))]
+                    
+                    # Process results as they complete
+                    for idx, future in enumerate(tqdm(concurrent.futures.as_completed(futures), total=len(futures))):
+                        try:
+                            image, plant_info, vec = future.result()
+                            if image is not None:
+                                self.images.append(image)
+                                self.vec.append(vec)
+                                self.plant_infos.append(plant_info)
+                                # After processing is complete
+                                valid_indices.append(idx)
+                        except Exception as e:
+                            print(f"Error processing item: {e}")
 
                 # Save preloaded data for future use
                 print(f"Saving preloaded data (side_view={self.side_view})...")
-                joblib.dump(self.images, images_path)
+                joblib.dump(self.images, images_path, compress=('zlib', 3))
                 joblib.dump(self.vec, vec_path)
                 joblib.dump(self.plant_infos, plant_infos_path)
 
