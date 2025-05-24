@@ -8,7 +8,7 @@
 #SBATCH --gpus-per-node=1
 #SBATCH --time=240:00:00 # Change the time accordingly, ex: 36:00:00
 #SBATCH --error=code.err
-#SBATCH --cpus-per-task=16
+#SBATCH --cpus-per-task=12
 
 source /home/lion397/.bashrc
 conda activate /home/lion397/codes/Image2PlantArchitecture/.env

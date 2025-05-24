@@ -12,7 +12,8 @@ mkdir -p $MAIN_LOG_DIR
 echo "Created main log directory: $MAIN_LOG_DIR"
 
 # Arrays of parameters
-PRELOAD="True"
+# PRELOAD="True"
+PRELOAD="False"
 IMAGE_SIZES=(224 448)
 EPOCH=4
 BATCH_SIZE=12   # Default is 4

@@ -397,7 +397,7 @@ if __name__ == "__main__":
     decoder_name = args.decoder_checkpoint.split('/')[-1]
     side_view_str = "Sideview" if args.side_view else "TopView"
 
-    batch_size = 4
+    batch_size = args.batch_size
     num_train_epochs = args.epoch
     gradient_accumulation_steps = 4
     warmup_steps = int(train_size * 0.2 // batch_size // gradient_accumulation_steps * num_train_epochs)
@@ -420,6 +420,9 @@ if __name__ == "__main__":
         load_best_model_at_end=True,
         metric_for_best_model='loss',
         save_total_limit=5,
+        learning_rate=1e-4,
+        dataloader_pin_memory=True,
+        dataloader_num_workers=batch_size,
         fp16=True,
     )
 
