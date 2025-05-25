@@ -6,7 +6,7 @@ from transformers import AutoImageProcessor
 from torch.utils.data import random_split, DataLoader
 from plant_dataset import PlantDataset
 from typing import Dict, Any, Optional, Tuple, List
-
+import os
 
 def prepare_dataset(
     dataset_path: str,
@@ -16,6 +16,7 @@ def prepare_dataset(
     growth_stages: Optional[List[str]] = None,
     test_split: float = 0.1,
     val_split: float = 0.1,
+    preload: bool = False,
     seed: int = 42
 ) -> Tuple[Any, Any, Any]:
     """
@@ -38,26 +39,27 @@ def prepare_dataset(
     image_processor.crop_size['height'] = image_size
     image_processor.size['shortest_edge'] = image_size
     
-    # Create dataset
-    dataset = PlantDataset(
-        root_dir=dataset_path, 
-        stages=growth_stages,
-        process_leaf=True, 
-        image_size=image_size,
-        side_view=side_view,
-        preload=False, 
-        image_processor=image_processor, 
-        add_sos_token=False
-    )
-    
-    # Split dataset
-    torch.manual_seed(seed)
-    train_size = int((1.0 - test_split - val_split) * len(dataset))
-    val_size = int(val_split * len(dataset))
-    test_size = len(dataset) - train_size - val_size
-    
-    return random_split(dataset, [train_size, val_size, test_size])
+    xml_files = os.listdir(os.path.join(dataset_path, "xml"))
+    xml_files.sort()
+    num_plots = int(xml_files[-1].split("_")[1]) + 1
 
+    train_end = int(num_plots * (1-val_split-test_split))
+    val_end = train_end + int(num_plots * val_split)
+    test_end = min(num_plots, val_end + int(num_plots * test_split)) # Ensure total sums up to num_plots
+    
+    train_plots = [f"{plot:04d}" for plot in range(train_end)]
+    val_plots = [f"{plot:04d}" for plot in range(train_end, val_end)]
+    test_plots = [f"{plot:04d}" for plot in range(val_end, test_end)]
+
+
+    test_dataset = PlantDataset(root_dir=dataset_path, stages=growth_stages, 
+                process_leaf=True, image_size=image_size,
+                side_view=side_view,
+                plot=test_plots,
+                mode='val',
+                preload=preload, image_processor=image_processor, add_sos_token=False)
+
+    return test_dataset
 
 def evaluate_model(
     model: torch.nn.Module,
@@ -152,7 +154,7 @@ def compute_metrics(
     }
 
 
-def calc_metric(model: torch.nn.Module, dataset_path: str, log_path:str, image_size: int = 448, side_view=False) -> Dict[str, float]:
+def calc_metric(model: torch.nn.Module, test_dataset: PlantDataset, log_path:str) -> Dict[str, float]:
     """
     Calculate metrics for a model on a given dataset.
     
@@ -166,19 +168,7 @@ def calc_metric(model: torch.nn.Module, dataset_path: str, log_path:str, image_s
     """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
-    
-    # Get image processor
-    encoder_name = model.encoder.config._name_or_path
-    image_processor = AutoImageProcessor.from_pretrained(encoder_name)
-    
-    # Prepare dataset
-    _, _, test_dataset = prepare_dataset(
-        dataset_path=dataset_path,
-        image_processor=image_processor,
-        image_size=image_size,
-        side_view=side_view
-    )
-    
+        
     # Evaluate model
     predictions, labels = evaluate_model(model, test_dataset, device)
     

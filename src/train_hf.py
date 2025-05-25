@@ -328,54 +328,47 @@ if __name__ == "__main__":
     train_ratio = 0.8
     val_ratio = 0.1
     test_ratio = 0.1
-    if 0:
-        plant_architecture_dataset = PlantDataset(root_dir=dataset_path, stages=growth_stages, 
-                            process_leaf=True, image_size=image_size,
-                            side_view=args.side_view,
-                            preload=args.preload, image_processor=image_processor, add_sos_token=False,
-                            random_erase=args.rnd_erase)
 
-        # Split the dataset into Train, Validation, and Test sets
+    # Separate by plot number
+    # Get the num plots from the last xml file
+    xml_files = os.listdir(os.path.join(dataset_path, "xml"))
+    xml_files.sort()
+    num_plots = int(xml_files[-1].split("_")[1]) + 1
 
-        train_size = int(0.8 * len(plant_architecture_dataset))  # 80% for training
-        val_size = int(0.1 * len(plant_architecture_dataset))    # 10% for validation
-        test_size = len(plant_architecture_dataset) - train_size - val_size  # Remaining 10% for testing
-        print(f"train_size:{train_size}, val_size:{val_size}")
-        # Use random_split with the seed set above
-        train_dataset, val_dataset, test_dataset = random_split(plant_architecture_dataset, [train_size, val_size, test_size])
-    else:
-        # Separate by plot number
-        # Get the num plots from the last xml file
-        xml_files = os.listdir(os.path.join(dataset_path, "xml"))
-        xml_files.sort()
-        num_plots = int(xml_files[-1].split("_")[1]) + 1
+    train_end = int(num_plots * train_ratio)
+    val_end = train_end + int(num_plots * val_ratio)
+    test_end = min(num_plots, val_end + int(num_plots * test_ratio)) # Ensure total sums up to num_plots
 
-        train_end = int(num_plots * train_ratio)
-        val_end = train_end + int(num_plots * val_ratio)
-        test_end = min(num_plots, val_end + int(num_plots * test_ratio)) # Ensure total sums up to num_plots
+    train_plots = [f"{plot:04d}" for plot in range(train_end)]
+    val_plots = [f"{plot:04d}" for plot in range(train_end, val_end)]
+    test_plots = [f"{plot:04d}" for plot in range(val_end, test_end)]
 
-        train_plots = [f"{plot:04d}" for plot in range(train_end)]
-        val_plots = [f"{plot:04d}" for plot in range(train_end, val_end)]
-        test_plots = [f"{plot:04d}" for plot in range(val_end, test_end)]
+    train_dataset = PlantDataset(root_dir=dataset_path, stages=growth_stages, 
+                process_leaf=True, image_size=image_size,
+                side_view=args.side_view,
+                plot=train_plots,
+                mode='train',
+                preload=args.preload, image_processor=image_processor, add_sos_token=False,
+                color_jitter = args.color_jitter,
+                random_crop = args.rnd_crop,
+                random_erase=args.rnd_erase)
+    train_size = len(train_dataset)
 
-        train_dataset = PlantDataset(root_dir=dataset_path, stages=growth_stages, 
-                    process_leaf=True, image_size=image_size,
-                    side_view=args.side_view,
-                    plot=train_plots,
-                    mode='train',
-                    preload=args.preload, image_processor=image_processor, add_sos_token=False,
-                    color_jitter = args.color_jitter,
-                    random_crop = args.rnd_crop,
-                    random_erase=args.rnd_erase)
-        train_size = len(train_dataset)
+    val_dataset = PlantDataset(root_dir=dataset_path, stages=growth_stages, 
+                process_leaf=True, image_size=image_size,
+                side_view=args.side_view,
+                plot=val_plots,
+                mode='val',
+                preload=args.preload, image_processor=image_processor, add_sos_token=False)
+    val_size = len(val_dataset)
 
-        val_dataset = PlantDataset(root_dir=dataset_path, stages=growth_stages, 
-                    process_leaf=True, image_size=image_size,
-                    side_view=args.side_view,
-                    plot=val_plots,
-                    mode='val',
-                    preload=args.preload, image_processor=image_processor, add_sos_token=False)
-        val_size = len(val_dataset)
+    test_dataset = PlantDataset(root_dir=dataset_path, stages=growth_stages, 
+                process_leaf=True, image_size=image_size,
+                side_view=args.side_view,
+                plot=test_plots,
+                mode='test',
+                preload=args.preload, image_processor=image_processor, add_sos_token=False)
+    test_size = len(test_dataset)
         
     callbacks = []
     if args.curriculum:
@@ -458,4 +451,4 @@ if __name__ == "__main__":
     print("Calculating metrics...")
     from calc_metric import calc_metric
     benchmark_path = os.path.join(output_base_dir, "benchmark.txt")
-    calc_metric(model, dataset_path, log_path=benchmark_path, side_view=args.side_view)
+    calc_metric(model, test_dataset, log_path=benchmark_path)

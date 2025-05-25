@@ -14,14 +14,14 @@ echo "Created main log directory: $MAIN_LOG_DIR"
 # Arrays of parameters
 # PRELOAD="True"
 PRELOAD="False"
-IMAGE_SIZES=(224 448)
+IMAGE_SIZES=(448 224)
 EPOCH=4
-BATCH_SIZE=12   # Default is 4
+BATCH_SIZE=16   # Default is 4
 SIDE_VIEWS=("True" "False")
-ENCODERS=("facebook/dinov2-small" "facebook/dinov2-base")
+ENCODERS=("facebook/dinov2-base" "facebook/dinov2-small")
 #DECODERS=("google-bert/bert-base-uncased" "google-bert/bert-large-uncased")
 #DECODERS=("gpt2" "gpt2-large")
-DECODERS=("gpt2" "gpt2-medium")
+DECODERS=("gpt2-medium" "gpt2")
 
 # Loop through all combinations (16 experiments total)
 for IMAGE_SIZE in "${IMAGE_SIZES[@]}"; do
