@@ -64,15 +64,19 @@ def prepare_dataset(
 def evaluate_model(
     model: torch.nn.Module,
     test_dataset: Any,
-    device: torch.device
+    device: torch.device,
+    batch_size: int = 16,
+    num_workers: int = 4
 ) -> Tuple[List[np.ndarray], List[np.ndarray]]:
     """
-    Run model inference on test dataset.
+    Run model inference on test dataset with batch processing.
     
     Args:
         model: The model to evaluate
         test_dataset: Dataset containing test samples
         device: Device to run inference on
+        batch_size: Batch size for DataLoader
+        num_workers: Number of worker processes for DataLoader
         
     Returns:
         Tuple of (all_predictions, all_labels)
@@ -81,11 +85,20 @@ def evaluate_model(
     all_predictions = []
     all_labels = []
     
+    # Create DataLoader for batch processing
+    dataloader = DataLoader(
+        test_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=True
+    )
+    
     with torch.no_grad():
-        for batch in tqdm(test_dataset, desc="Evaluating"):
+        for batch in tqdm(dataloader, desc="Evaluating"):
             # Prepare inputs
-            pixel_values = batch["pixel_values"].unsqueeze(0).to(device)
-            labels = torch.tensor(batch["labels"]).unsqueeze(0).to(device)
+            pixel_values = batch["pixel_values"].to(device)
+            labels = batch["labels"].to(device)
             
             # Forward pass
             outputs = model(pixel_values=pixel_values, labels=labels)
@@ -94,13 +107,10 @@ def evaluate_model(
             # Get predictions
             predictions = torch.argmax(logits, dim=-1)
             
-            # Store results
-            all_predictions.append(predictions.squeeze().cpu().numpy())
-            all_labels.append(labels.squeeze().cpu().numpy())
-
-            # # Dry run
-            # if len(all_labels) > 10:
-            #     break
+            # Store results - handle full batches
+            for pred, label in zip(predictions, labels):
+                all_predictions.append(pred.cpu().numpy())
+                all_labels.append(label.cpu().numpy())
     
     return all_predictions, all_labels
 
@@ -154,14 +164,22 @@ def compute_metrics(
     }
 
 
-def calc_metric(model: torch.nn.Module, test_dataset: PlantDataset, log_path:str) -> Dict[str, float]:
+def calc_metric(
+    model: torch.nn.Module, 
+    test_dataset: PlantDataset, 
+    log_path: str,
+    batch_size: int = 16,
+    num_workers: int = 4
+) -> Dict[str, float]:
     """
     Calculate metrics for a model on a given dataset.
     
     Args:
         model: The model to evaluate
-        dataset_path: Path to the dataset
-        image_size: Size of images
+        test_dataset: The dataset to evaluate on
+        log_path: Path to save log results
+        batch_size: Batch size for evaluation
+        num_workers: Number of worker processes for DataLoader
         
     Returns:
         Dictionary of metrics
@@ -169,8 +187,14 @@ def calc_metric(model: torch.nn.Module, test_dataset: PlantDataset, log_path:str
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
         
-    # Evaluate model
-    predictions, labels = evaluate_model(model, test_dataset, device)
+    # Evaluate model with batch processing
+    predictions, labels = evaluate_model(
+        model, 
+        test_dataset, 
+        device, 
+        batch_size=batch_size, 
+        num_workers=num_workers
+    )
     
     # Compute metrics
     metrics = compute_metrics(predictions, labels)
