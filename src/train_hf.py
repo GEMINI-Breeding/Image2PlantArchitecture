@@ -217,7 +217,6 @@ if __name__ == "__main__":
     parser.add_argument('--decoder_checkpoint', type=str, default='gpt2-medium', help='Decoder checkpoint to use')
     parser.add_argument('--dataset_path', type=str, default='/home/lion397/datasets/GEMINI/plant_architecture/20250311_Sideview_40Days', help='Path to the dataset')
     parser.add_argument('--today_date_str', type=str, default=datetime.now().strftime('%Y%m%d'), help='Date string for experiment naming')
-    parser.add_argument('--log_dir', type=str, help='Main log directory')
     parser.add_argument('--exp_name', type=str, help='Experiment name')
     parser.add_argument('--curriculum', default='False', help='Use curriculum learning')
     parser.add_argument('--epoch', type=int, default=20, help='Number of traninig epochs')
