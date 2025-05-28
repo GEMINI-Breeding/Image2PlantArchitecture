@@ -450,4 +450,4 @@ if __name__ == "__main__":
     print("Calculating metrics...")
     from calc_metric import calc_metric
     benchmark_path = os.path.join(output_base_dir, "benchmark.txt")
-    calc_metric(model, test_dataset, log_path=benchmark_path)
+    calc_metric(model, test_dataset, batch_size=batch_size, log_path=benchmark_path)

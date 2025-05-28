@@ -16,5 +16,4 @@ dependencies:
   - notebook
   - pytorch-lightning
   - pip:
-    - opencv-python-headless #opencv-python==4.10.0.82
-    - tensorboard
+    - -r requirements.txt
