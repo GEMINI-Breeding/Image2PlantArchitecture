@@ -1,0 +1,227 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<helios>
+	<plant_instance ID="0">
+		<base_position> 0 0 0 </base_position>
+		<plant_age> 100 </plant_age>
+		<shoot ID="0">
+			<shoot_type_label> unifoliate </shoot_type_label>
+			<parent_shoot_ID> -1 </parent_shoot_ID>
+			<parent_node_index> 0 </parent_node_index>
+			<parent_petiole_index> 0 </parent_petiole_index>
+			<base_rotation> 0 0 90 </base_rotation>
+			<phytomer>
+				<internode>
+					<internode_length>0.0020</internode_length>
+					<internode_radius>0.0001</internode_radius>
+					<internode_pitch>0</internode_pitch>
+					<internode_phyllotactic_angle>151.438</internode_phyllotactic_angle>
+					<petiole>
+						<petiole_length>0.00026</petiole_length>
+						<petiole_radius>0.000104</petiole_radius>
+						<petiole_pitch>73.0784</petiole_pitch>
+						<petiole_curvature>-137.6</petiole_curvature>
+						<leaflet_scale>1</leaflet_scale>
+						<leaf>
+							<leaf_scale>0.0026</leaf_scale>
+							<leaf_pitch>4.02381</leaf_pitch>
+							<leaf_yaw>0</leaf_yaw>
+							<leaf_roll>-15</leaf_roll>
+						</leaf>
+					</petiole>
+					<petiole>
+						<petiole_length>0.00026</petiole_length>
+						<petiole_radius>0.000104</petiole_radius>
+						<petiole_pitch>73.0784</petiole_pitch>
+						<petiole_curvature>-137.6</petiole_curvature>
+						<leaflet_scale>1</leaflet_scale>
+						<leaf>
+							<leaf_scale>0.0026</leaf_scale>
+							<leaf_pitch>-5.05922</leaf_pitch>
+							<leaf_yaw>0</leaf_yaw>
+							<leaf_roll>-15</leaf_roll>
+						</leaf>
+					</petiole>
+				</internode>
+			</phytomer>
+		</shoot>
+		<shoot ID="1">
+			<shoot_type_label> trifoliate </shoot_type_label>
+			<parent_shoot_ID> 0 </parent_shoot_ID>
+			<parent_node_index> 0 </parent_node_index>
+			<parent_petiole_index> 0 </parent_petiole_index>
+			<base_rotation> 0 0 0 </base_rotation>
+			<phytomer>
+				<internode>
+					<internode_length>0.001</internode_length>
+					<internode_radius>0.0001</internode_radius>
+					<internode_pitch>5</internode_pitch>
+					<internode_phyllotactic_angle>150.088</internode_phyllotactic_angle>
+					<petiole>
+						<petiole_length>0.00277791</petiole_length>
+						<petiole_radius>4.26521e-05</petiole_radius>
+						<petiole_pitch>70.4745</petiole_pitch>
+						<petiole_curvature>-100</petiole_curvature>
+						<leaflet_scale>0.9</leaflet_scale>
+						<leaf>
+							<leaf_scale>0.00242547</leaf_scale>
+							<leaf_pitch>-3.6003</leaf_pitch>
+							<leaf_yaw>10</leaf_yaw>
+							<leaf_roll>-15</leaf_roll>
+						</leaf>
+						<leaf>
+							<leaf_scale>0.00269497</leaf_scale>
+							<leaf_pitch>7.42458</leaf_pitch>
+							<leaf_yaw>0</leaf_yaw>
+							<leaf_roll>-15</leaf_roll>
+						</leaf>
+						<leaf>
+							<leaf_scale>0.00242547</leaf_scale>
+							<leaf_pitch>3.96681</leaf_pitch>
+							<leaf_yaw>-10</leaf_yaw>
+							<leaf_roll>-15</leaf_roll>
+						</leaf>
+					</petiole>
+				</internode>
+			</phytomer>		
+		</shoot>
+		<shoot ID="2">
+			<shoot_type_label> trifoliate </shoot_type_label>
+			<parent_shoot_ID> 1 </parent_shoot_ID>
+			<parent_node_index> 0 </parent_node_index>
+			<parent_petiole_index> 0 </parent_petiole_index>
+			<base_rotation> 0 180 0 </base_rotation>
+			<phytomer>
+				<internode>
+					<internode_length>0.001</internode_length>
+					<internode_radius>0.0001</internode_radius>
+					<internode_pitch>0</internode_pitch>
+					<internode_phyllotactic_angle>180</internode_phyllotactic_angle>
+					<petiole>
+						<petiole_length>0.00277791</petiole_length>
+						<petiole_radius>4.26521e-05</petiole_radius>
+						<petiole_pitch>45</petiole_pitch>
+						<petiole_curvature>-100</petiole_curvature>
+						<leaflet_scale>0.9</leaflet_scale>
+						<leaf>
+							<leaf_scale>0.00242547</leaf_scale>
+							<leaf_pitch>-3.6003</leaf_pitch>
+							<leaf_yaw>10</leaf_yaw>
+							<leaf_roll>-15</leaf_roll>
+						</leaf>
+						<leaf>
+							<leaf_scale>0.00269497</leaf_scale>
+							<leaf_pitch>7.42458</leaf_pitch>
+							<leaf_yaw>0</leaf_yaw>
+							<leaf_roll>-15</leaf_roll>
+						</leaf>
+						<leaf>
+							<leaf_scale>0.00242547</leaf_scale>
+							<leaf_pitch>3.96681</leaf_pitch>
+							<leaf_yaw>-10</leaf_yaw>
+							<leaf_roll>-15</leaf_roll>
+						</leaf>
+					</petiole>
+				</internode>
+			</phytomer>
+			<phytomer>
+				<internode>
+					<internode_length>0.001</internode_length>
+					<internode_radius>0.0001</internode_radius>
+					<internode_pitch>-10</internode_pitch>
+					<internode_phyllotactic_angle>180</internode_phyllotactic_angle>
+					<petiole>
+						<petiole_length>0.00277791</petiole_length>
+						<petiole_radius>4.26521e-05</petiole_radius>
+						<petiole_pitch>54.4745</petiole_pitch>
+						<petiole_curvature>-100</petiole_curvature>
+						<leaflet_scale>0.9</leaflet_scale>
+						<leaf>
+							<leaf_scale>0.00242547</leaf_scale>
+							<leaf_pitch>-3.6003</leaf_pitch>
+							<leaf_yaw>10</leaf_yaw>
+							<leaf_roll>-15</leaf_roll>
+						</leaf>
+						<leaf>
+							<leaf_scale>0.00269497</leaf_scale>
+							<leaf_pitch>7.42458</leaf_pitch>
+							<leaf_yaw>0</leaf_yaw>
+							<leaf_roll>-15</leaf_roll>
+						</leaf>
+						<leaf>
+							<leaf_scale>0.00242547</leaf_scale>
+							<leaf_pitch>3.96681</leaf_pitch>
+							<leaf_yaw>-10</leaf_yaw>
+							<leaf_roll>-15</leaf_roll>
+						</leaf>
+					</petiole>
+				</internode>
+			</phytomer>
+			<phytomer>
+				<internode>
+					<internode_length>0.001</internode_length>
+					<internode_radius>0.0001</internode_radius>
+					<internode_pitch>0</internode_pitch>
+					<internode_phyllotactic_angle>180</internode_phyllotactic_angle>
+					<petiole>
+						<petiole_length>0.00277791</petiole_length>
+						<petiole_radius>4.26521e-05</petiole_radius>
+						<petiole_pitch>54.4745</petiole_pitch>
+						<petiole_curvature>-100</petiole_curvature>
+						<leaflet_scale>0.9</leaflet_scale>
+						<leaf>
+							<leaf_scale>0.00242547</leaf_scale>
+							<leaf_pitch>-3.6003</leaf_pitch>
+							<leaf_yaw>10</leaf_yaw>
+							<leaf_roll>-15</leaf_roll>
+						</leaf>
+						<leaf>
+							<leaf_scale>0.00269497</leaf_scale>
+							<leaf_pitch>7.42458</leaf_pitch>
+							<leaf_yaw>0</leaf_yaw>
+							<leaf_roll>-15</leaf_roll>
+						</leaf>
+						<leaf>
+							<leaf_scale>0.00242547</leaf_scale>
+							<leaf_pitch>3.96681</leaf_pitch>
+							<leaf_yaw>-10</leaf_yaw>
+							<leaf_roll>-15</leaf_roll>
+						</leaf>
+					</petiole>
+				</internode>
+			</phytomer>
+			<phytomer>
+				<internode>
+					<internode_length>0.0005</internode_length>
+					<internode_radius>0.0001</internode_radius>
+					<internode_pitch>10</internode_pitch>
+					<internode_phyllotactic_angle>-90</internode_phyllotactic_angle>
+					<petiole>
+						<petiole_length>0.0001</petiole_length>
+						<petiole_radius>4.26521e-05</petiole_radius>
+						<petiole_pitch>54.4745</petiole_pitch>
+						<petiole_curvature>-100</petiole_curvature>
+						<leaflet_scale>0.9</leaflet_scale>
+						<leaf>
+							<leaf_scale>0.001</leaf_scale>
+							<leaf_pitch>-3.6003</leaf_pitch>
+							<leaf_yaw>10</leaf_yaw>
+							<leaf_roll>-15</leaf_roll>
+						</leaf>
+						<leaf>
+							<leaf_scale>0.001</leaf_scale>
+							<leaf_pitch>7.42458</leaf_pitch>
+							<leaf_yaw>0</leaf_yaw>
+							<leaf_roll>-15</leaf_roll>
+						</leaf>
+						<leaf>
+							<leaf_scale>0.001</leaf_scale>
+							<leaf_pitch>3.96681</leaf_pitch>
+							<leaf_yaw>-10</leaf_yaw>
+							<leaf_roll>-15</leaf_roll>
+						</leaf>
+					</petiole>
+				</internode>
+			</phytomer>	
+		</shoot>	
+	</plant_instance>
+</helios>
