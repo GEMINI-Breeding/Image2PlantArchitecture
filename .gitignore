@@ -183,3 +183,5 @@ src/attention_output*
 *.xml
 *.jpg
 temp_render/*
+copilot_generated/*
+archived/
