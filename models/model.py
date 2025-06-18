@@ -3,6 +3,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 from transformers import ViTModel, ViTConfig
 from transformers import AutoImageProcessor, AutoModel
+from transformers import VisionEncoderDecoderModel, AutoModelForDepthEstimation
+from transformers import AutoImageProcessor, AutoModel
+from transformers import VisionEncoderDecoderModel, BertConfig, BertModel, ViTModel, AutoConfig, GPT2Config, GPT2LMHeadModel
+from transformers import VisionEncoderDecoderConfig, AutoModelForCausalLM
+from transformers import PreTrainedModel, PretrainedConfig
+
 from torchvision.models import efficientnet_b0
 import math
 
@@ -739,3 +745,193 @@ class PlantArchitectureTransformer(TextTransformer):
             return pooled, tokens
 
         return pooled
+    
+
+class PlantArchitectureConfig(PretrainedConfig):
+    model_type = "plant_architecture"
+    
+    def __init__(self, encoder_checkpoint=None, decoder_checkpoint=None, 
+                 encoder_config=None, decoder_config=None,
+                 use_depth=True, **kwargs):
+        super().__init__(**kwargs)
+        self.encoder_checkpoint = encoder_checkpoint
+        self.decoder_checkpoint = decoder_checkpoint
+        self.encoder_config = encoder_config
+        self.decoder_config = decoder_config
+        self.use_depth = use_depth
+
+class PlantArchitectureModel(PreTrainedModel):
+    config_class = PlantArchitectureConfig
+    
+    def __init__(self, config, image_processor=None):
+        super().__init__(config)
+        
+        self.config = config
+        self.image_processor = image_processor
+        
+        # Create the VisionEncoderDecoderModel
+        self.model = self._create_vision_enc_dec_model()
+        
+        # Freeze the encoder parameters
+        self.model.encoder.eval()
+        for param in self.model.encoder.parameters():
+            param.requires_grad = False
+
+        # Update model configuration
+        self.model.config.decoder_start_token_id = SOS_TOKEN
+        self.model.config.bos_token_id = SOS_TOKEN
+        self.model.config.pad_token_id = PAD_TOKEN
+        self.model.config.eos_token_id = EOS_TOKEN
+
+        # Initialize depth estimation if needed
+        if self.config.use_depth:
+            self._initialize_depth_estimation()
+
+    def gradient_checkpointing_enable(self, gradient_checkpointing_kwargs=None):
+        """Enable gradient checkpointing for the model."""
+        if hasattr(self.model, 'gradient_checkpointing_enable'):
+            self.model.gradient_checkpointing_enable(gradient_checkpointing_kwargs)
+        else:
+            # Fallback: manually enable gradient checkpointing
+            if hasattr(self.model, 'encoder') and hasattr(self.model.encoder, 'gradient_checkpointing'):
+                self.model.encoder.gradient_checkpointing = True
+            if hasattr(self.model, 'decoder') and hasattr(self.model.decoder, 'gradient_checkpointing'):
+                self.model.decoder.gradient_checkpointing = True
+
+    def gradient_checkpointing_disable(self):
+        """Disable gradient checkpointing for the model."""
+        if hasattr(self.model, 'gradient_checkpointing_disable'):
+            self.model.gradient_checkpointing_disable()
+        else:
+            # Fallback: manually disable gradient checkpointing
+            if hasattr(self.model, 'encoder') and hasattr(self.model.encoder, 'gradient_checkpointing'):
+                self.model.encoder.gradient_checkpointing = False
+            if hasattr(self.model, 'decoder') and hasattr(self.model.decoder, 'gradient_checkpointing'):
+                self.model.decoder.gradient_checkpointing = False
+
+    def is_gradient_checkpointing(self):
+        """Check if gradient checkpointing is enabled."""
+        if hasattr(self.model, 'is_gradient_checkpointing'):
+            return self.model.is_gradient_checkpointing()
+        
+        # Check encoder and decoder separately
+        encoder_gc = getattr(self.model.encoder, 'gradient_checkpointing', False) if hasattr(self.model, 'encoder') else False
+        decoder_gc = getattr(self.model.decoder, 'gradient_checkpointing', False) if hasattr(self.model, 'decoder') else False
+        
+        return encoder_gc or decoder_gc
+
+    def _create_vision_enc_dec_model(self):
+        """Create VisionEncoderDecoderModel from encoder and decoder"""
+        if self.config.encoder_checkpoint and self.config.decoder_checkpoint:
+            # Method 1: Use from_encoder_decoder_pretrained (commented out in original)
+            if False:  # keeping original logic
+                model = VisionEncoderDecoderModel.from_encoder_decoder_pretrained(
+                    self.config.encoder_checkpoint, self.config.decoder_checkpoint, 
+                    decoder_config=self.config.decoder_config, 
+                    encoder_config=self.config.encoder_config,
+                    decoder_ignore_mismatched_sizes=True,
+                    torch_dtype=torch.float16, 
+                )
+            else:
+                # Method 2: Create encoder and decoder separately
+                encoder = AutoModel.from_pretrained(
+                    self.config.encoder_checkpoint, 
+                    config=self.config.encoder_config
+                )
+                decoder = AutoModelForCausalLM.from_pretrained(
+                    self.config.decoder_checkpoint, 
+                    config=self.config.decoder_config, 
+                    ignore_mismatched_sizes=True
+                )
+                
+                enc_dec_config = VisionEncoderDecoderConfig.from_encoder_decoder_configs(
+                    encoder.config, 
+                    decoder.config,
+                )
+                
+                model = VisionEncoderDecoderModel(
+                    config=enc_dec_config, 
+                    encoder=encoder, 
+                    decoder=decoder
+                )
+        else:
+            raise ValueError("encoder_checkpoint and decoder_checkpoint must be provided")
+        
+        return model
+
+    def _initialize_depth_estimation(self):
+        """Initialize depth estimation model"""
+        self.depth_est_img_proc = AutoImageProcessor.from_pretrained(
+            "depth-anything/Depth-Anything-V2-Small-hf"
+        )
+        self.depth_est_model = AutoModelForDepthEstimation.from_pretrained(
+            "depth-anything/Depth-Anything-V2-Small-hf"
+        )
+        
+        # Freeze depth estimation model parameters
+        for param in self.depth_est_model.parameters():
+            param.requires_grad = False
+
+    def forward(self, pixel_values=None, labels=None, **kwargs):
+        """Forward pass - compatible with Trainer"""
+        if self.config.use_depth and pixel_values is not None:
+            pixel_values = self.estimate_depth(pixel_values)
+        
+        if self.image_processor is not None and pixel_values is not None:
+            # If image_processor expects PIL images, skip this step
+            # pixel_values = self.image_processor(pixel_values)
+            pass
+        
+        return self.model(pixel_values=pixel_values, labels=labels, **kwargs)
+
+    def estimate_depth(self, image, add_background=True):
+        """Estimate depth and concatenate with RGB image"""
+        depth_input = image
+
+        with torch.no_grad():
+            inputs = self.depth_est_img_proc(images=depth_input, return_tensors="pt").to(image.device)
+            outputs = self.depth_est_model(**inputs)
+            predicted_depth = outputs.predicted_depth
+
+        # Interpolate to original size
+        depth = torch.nn.functional.interpolate(
+            predicted_depth.unsqueeze(1),
+            size=image.shape[-2:],
+            mode="bicubic",
+            align_corners=False,
+        )
+        
+        # Normalize to 0-1
+        depth = (depth - depth.min()) / (depth.max() - depth.min())
+        self.predicted_depth = depth
+        
+        # Rescale to 0-255
+        depth = depth * 255
+        
+        # Concatenate depth to image
+        if 0:
+            image = torch.cat((image, depth), dim=1)
+        else:
+            image = torch.cat((depth, depth, depth), dim=1)
+
+
+        return image
+    
+    def generate(self, **kwargs):
+        """Generate sequences using the model"""
+        return self.model.generate(**kwargs)
+
+    @classmethod
+    def from_pretrained_components(cls, encoder_checkpoint, decoder_checkpoint, 
+                                 image_processor, decoder_config=None, 
+                                 encoder_config=None, use_depth=True, **kwargs):
+        """Class method to create model from components (for backward compatibility)"""
+        config = PlantArchitectureConfig(
+            encoder_checkpoint=encoder_checkpoint,
+            decoder_checkpoint=decoder_checkpoint,
+            encoder_config=encoder_config,
+            decoder_config=decoder_config,
+            use_depth=use_depth,
+            **kwargs
+        )
+        return cls(config, image_processor)

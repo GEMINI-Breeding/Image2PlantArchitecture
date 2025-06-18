@@ -6,8 +6,16 @@ class LitModel(pl.LightningModule):
         super().__init__()
         #self.model = model
         # self.example_input_array = torch.zeros(3, 224,224)  # optional
+
+        if hasattr(model, "depth_est_model"):
+            self.depth_est_model = model.depth_est_model
+
+        if hasattr(model, "model"):
+            model = model.model
+            
         self.encoder = model.encoder
         self.decoder = model.decoder
+
     # def forward(self, x):
     #     return self.model(x)
 

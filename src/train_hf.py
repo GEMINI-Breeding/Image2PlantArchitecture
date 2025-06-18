@@ -21,6 +21,7 @@ sys.path.append(script_dir)
 from plant_tokenizer import SOS_TOKEN, EOS_TOKEN, PAD_TOKEN, VOCAB_SIZE, META_TOKEN
 from plant_dataset import PlantDataset
 from utils import model_summary
+from models.model import PlantArchitectureModel, PlantArchitectureConfig
 
 def custom_data_collator(features):
     # features is a list of samples returned from the dataset
@@ -215,7 +216,8 @@ if __name__ == "__main__":
     parser.add_argument('--preload', type=str, default='False', help='Preload dataset into memory')
     parser.add_argument('--encoder_checkpoint', type=str, default='facebook/dinov2-small', help='Encoder checkpoint to use')
     parser.add_argument('--decoder_checkpoint', type=str, default='gpt2-medium', help='Decoder checkpoint to use')
-    parser.add_argument('--dataset_path', type=str, default='/home/lion397/datasets/GEMINI/plant_architecture/20250311_Sideview_40Days', help='Path to the dataset')
+    #parser.add_argument('--dataset_path', type=str, default='/home/lion397/datasets/GEMINI/plant_architecture/20250311_Sideview_40Days', help='Path to the dataset')
+    parser.add_argument('--dataset_path', type=str, default='/home/lion397/datasets/GEMINI/plant_architecture/2000_Plots_20241210_BetterQuantized', help='Path to the dataset')
     parser.add_argument('--today_date_str', type=str, default=datetime.now().strftime('%Y%m%d'), help='Date string for experiment naming')
     parser.add_argument('--exp_name', type=str, help='Experiment name')
     parser.add_argument('--curriculum', default='False', help='Use curriculum learning')
@@ -224,6 +226,8 @@ if __name__ == "__main__":
     parser.add_argument('--color_jitter', type=str, default='False', help='Number of traninig epochs')
     parser.add_argument('--rnd_crop', type=str, default='False', help='Number of traninig epochs')
     parser.add_argument('--rnd_erase', type=str, default='False', help='Number of traninig epochs')
+    parser.add_argument('--use_depth', type=str, default='True', help='Use Depth instead of RGB')
+
 
     args = parser.parse_args()
 
@@ -234,6 +238,7 @@ if __name__ == "__main__":
     args.color_jitter = args.color_jitter.lower() == 'true'
     args.rnd_crop = args.rnd_crop.lower() == 'true'
     args.rnd_erase = args.rnd_erase.lower() == 'true'
+    args.use_depth = args.use_depth.lower() == 'true'
 
 
     # Use provided experiment name if available, otherwise construct one
@@ -252,12 +257,6 @@ if __name__ == "__main__":
     os.makedirs(output_base_dir, exist_ok=True)
     results_dir = f"{output_base_dir}/results"
 
-    # Check for benchmark.txt in the specified log directory
-    # benchmark_file_path = os.path.join(output_base_dir, 'benchmark.txt')
-    # if os.path.exists(benchmark_file_path) and os.path.getsize(benchmark_file_path) > 0:
-    #     print(f"Benchmark file exists at {benchmark_file_path}; exiting.")
-    #     sys.exit(0)
-        
 
     # 1. Define decoder configuration
     decoder_checkpoint = args.decoder_checkpoint
@@ -282,38 +281,43 @@ if __name__ == "__main__":
         decoder_config.attention_type='original_full'
 
     encoder_checkpoint = args.encoder_checkpoint
-    if "facebook/dinov2" in encoder_checkpoint:
-        image_size = args.image_size
-        encoder_config = AutoConfig.from_pretrained(encoder_checkpoint)
-        image_processor = AutoImageProcessor.from_pretrained(encoder_checkpoint)
-        image_processor.crop_size['width'] = image_size
-        image_processor.crop_size['height'] = image_size
-        image_processor.size['shortest_edge'] = image_size
-    elif 'google/vit' in encoder_checkpoint:
-        image_size = args.image_size
-        encoder_config = AutoConfig.from_pretrained(encoder_checkpoint)
-        image_processor = AutoImageProcessor.from_pretrained(encoder_checkpoint)
-        image_processor.size['width'] = image_size
-        image_processor.size['height'] = image_size
+    image_size = args.image_size
+    encoder_config = AutoConfig.from_pretrained(encoder_checkpoint)
+    image_processor = AutoImageProcessor.from_pretrained(encoder_checkpoint)
+    image_processor.crop_size['width'] = image_size
+    image_processor.crop_size['height'] = image_size
+    image_processor.size['shortest_edge'] = image_size
 
-    model = VisionEncoderDecoderModel.from_encoder_decoder_pretrained(
-        encoder_checkpoint, decoder_checkpoint, 
-        decoder_config=decoder_config, 
-        encoder_config=encoder_config,
-        decoder_ignore_mismatched_sizes=True,
-        torch_dtype=torch.float16, 
-    )
 
-    # Freeze the encoder parameters
-    model.encoder.eval()
-    for param in model.encoder.parameters():
-        param.requires_grad = False
+    if 0:
+        model = VisionEncoderDecoderModel.from_encoder_decoder_pretrained(
+            encoder_checkpoint, decoder_checkpoint, 
+            decoder_config=decoder_config, 
+            encoder_config=encoder_config,
+            decoder_ignore_mismatched_sizes=True,
+            torch_dtype=torch.float16, 
+        )
+        # Freeze the encoder parameters
+        model.encoder.eval()
+        for param in model.encoder.parameters():
+            param.requires_grad = False
 
-    # 5. Update model configuration
-    model.config.decoder_start_token_id = SOS_TOKEN  # Decoder start token
-    model.config.bos_token_id = SOS_TOKEN  # Beginning of sequence token
-    model.config.pad_token_id = PAD_TOKEN  # Padding token
-    model.config.eos_token_id = EOS_TOKEN  # End of sequence token
+        # 5. Update model configuration
+        model.config.decoder_start_token_id = SOS_TOKEN  # Decoder start token
+        model.config.bos_token_id = SOS_TOKEN  # Beginning of sequence token
+        model.config.pad_token_id = PAD_TOKEN  # Padding token
+        model.config.eos_token_id = EOS_TOKEN  # End of sequence token
+
+    else:
+        config = PlantArchitectureConfig(
+            encoder_checkpoint=encoder_checkpoint,
+            decoder_checkpoint=decoder_checkpoint,
+            encoder_config=encoder_config,
+            decoder_config=decoder_config,
+            use_depth=True
+        )
+        model = PlantArchitectureModel(config, image_processor)
+
 
 
     # Set a random seed for reproducibility
@@ -347,7 +351,7 @@ if __name__ == "__main__":
                 side_view=args.side_view,
                 plot=train_plots,
                 mode='train',
-                preload=args.preload, image_processor=image_processor, add_sos_token=False,
+                preload=args.preload, add_sos_token=False,
                 color_jitter = args.color_jitter,
                 random_crop = args.rnd_crop,
                 random_erase=args.rnd_erase)
@@ -358,7 +362,7 @@ if __name__ == "__main__":
                 side_view=args.side_view,
                 plot=val_plots,
                 mode='val',
-                preload=args.preload, image_processor=image_processor, add_sos_token=False)
+                preload=args.preload, add_sos_token=False)
     val_size = len(val_dataset)
 
     test_dataset = PlantDataset(root_dir=dataset_path, stages=growth_stages, 
@@ -366,7 +370,7 @@ if __name__ == "__main__":
                 side_view=args.side_view,
                 plot=test_plots,
                 mode='test',
-                preload=args.preload, image_processor=image_processor, add_sos_token=False)
+                preload=args.preload, add_sos_token=False)
     test_size = len(test_dataset)
         
     callbacks = []
