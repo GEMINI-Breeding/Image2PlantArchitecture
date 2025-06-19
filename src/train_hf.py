@@ -22,11 +22,6 @@ from plant_tokenizer import SOS_TOKEN, EOS_TOKEN, PAD_TOKEN, VOCAB_SIZE, META_TO
 from plant_dataset import PlantDataset
 from utils import model_summary
 from models.model import PlantArchitectureModel, PlantArchitectureConfig
-from transformers import AutoConfig, AutoModel
-
-# Register your custom model
-AutoConfig.register("plant_architecture", PlantArchitectureConfig)
-AutoModel.register(PlantArchitectureConfig, PlantArchitectureModel)
 
 def custom_data_collator(features):
     # features is a list of samples returned from the dataset
@@ -221,8 +216,8 @@ if __name__ == "__main__":
     parser.add_argument('--preload', type=str, default='False', help='Preload dataset into memory')
     parser.add_argument('--encoder_checkpoint', type=str, default='facebook/dinov2-small', help='Encoder checkpoint to use')
     parser.add_argument('--decoder_checkpoint', type=str, default='gpt2-medium', help='Decoder checkpoint to use')
-    # parser.add_argument('--dataset_path', type=str, default='/home/lion397/datasets/GEMINI/plant_architecture/20250311_Sideview_40Days', help='Path to the dataset')
-    parser.add_argument('--dataset_path', type=str, default='/home/lion397/datasets/GEMINI/plant_architecture/2000_Plots_20241210_BetterQuantized', help='Path to the dataset')
+    parser.add_argument('--dataset_path', type=str, default='/home/lion397/datasets/GEMINI/plant_architecture/20250311_Sideview_40Days', help='Path to the dataset')
+    #parser.add_argument('--dataset_path', type=str, default='/home/lion397/datasets/GEMINI/plant_architecture/2000_Plots_20241210_BetterQuantized', help='Path to the dataset')
     parser.add_argument('--today_date_str', type=str, default=datetime.now().strftime('%Y%m%d'), help='Date string for experiment naming')
     parser.add_argument('--exp_name', type=str, help='Experiment name')
     parser.add_argument('--curriculum', default='False', help='Use curriculum learning')
@@ -262,16 +257,46 @@ if __name__ == "__main__":
     os.makedirs(output_base_dir, exist_ok=True)
     results_dir = f"{output_base_dir}/results"
 
-    image_size = args.image_size
+
+    # 1. Define decoder configuration
+    decoder_checkpoint = args.decoder_checkpoint
+    if "google-bert/bert" in decoder_checkpoint:
+        decoder_config = AutoConfig.from_pretrained(decoder_checkpoint)
+        decoder_config.max_position_embeddings = 2500  # Set maximum sequence length
+        decoder_config.vocab_size = VOCAB_SIZE  # Match with tokenizer's vocabulary size
+        decoder_config.add_cross_attention=True
+        decoder_config.is_decoder=True
+    elif "gpt2" in decoder_checkpoint:
+        decoder_config = GPT2Config.from_pretrained(decoder_checkpoint)
+        decoder_config.max_position_embeddings = 4096*2 # Set maximum sequence length
+        decoder_config.vocab_size = VOCAB_SIZE  # Match with tokenizer's vocabulary size
+        decoder_config.add_cross_attention=True
+        decoder_config.is_decoder=True
+    elif "google/bigbird-roberta" in decoder_checkpoint:
+        decoder_config = AutoConfig.from_pretrained(decoder_checkpoint)
+        decoder_config.max_position_embeddings = 4096*2  # Set maximum sequence length
+        decoder_config.vocab_size = VOCAB_SIZE  # Match with tokenizer's vocabulary size
+        decoder_config.add_cross_attention=True
+        decoder_config.is_decoder=True
+        decoder_config.attention_type='original_full'
 
     encoder_checkpoint = args.encoder_checkpoint
-    decoder_checkpoint = args.decoder_checkpoint
-    if 0:
-        model = VisionEncoderDecoderModel.from_encoder_decoder_pretrained(
+    image_size = args.image_size
+    encoder_config = AutoConfig.from_pretrained(encoder_checkpoint)
+    image_processor = AutoImageProcessor.from_pretrained(encoder_checkpoint)
+    image_processor.crop_size['width'] = image_size
+    image_processor.crop_size['height'] = image_size
+    image_processor.size['shortest_edge'] = image_size
+
+
+    if 1:
+        #model = VisionEncoderDecoderModel.from_encoder_decoder_pretrained(
+        model = PlantArchitectureModel.from_encoder_decoder_pretrained(
             encoder_checkpoint, decoder_checkpoint, 
             decoder_config=decoder_config, 
             encoder_config=encoder_config,
             decoder_ignore_mismatched_sizes=True,
+            use_depth=True,
             torch_dtype=torch.float16, 
         )
         # Freeze the encoder parameters
@@ -289,10 +314,11 @@ if __name__ == "__main__":
         config = PlantArchitectureConfig(
             encoder_checkpoint=encoder_checkpoint,
             decoder_checkpoint=decoder_checkpoint,
-            image_size=image_size,
-            use_depth=args.use_depth
+            encoder_config=encoder_config,
+            decoder_config=decoder_config,
+            use_depth=True
         )
-        model = PlantArchitectureModel(config)
+        model = PlantArchitectureModel(config, image_processor)
 
 
 
@@ -372,6 +398,7 @@ if __name__ == "__main__":
     batch_size = args.batch_size
     num_train_epochs = args.epoch
     gradient_accumulation_steps = 4
+    eval_save_steps = 1000 # or 0.1
     warmup_steps = int(train_size * 0.2 // batch_size // gradient_accumulation_steps * num_train_epochs)
     print(f"warmup_steps:{warmup_steps}")
     training_args = TrainingArguments(
@@ -386,9 +413,9 @@ if __name__ == "__main__":
         gradient_accumulation_steps=gradient_accumulation_steps,
         gradient_checkpointing=True,
         eval_strategy="steps",
-        eval_steps=0.1,
+        eval_steps=eval_save_steps,
         save_strategy="steps",                           # Save at each epoch
-        save_steps=0.1,
+        save_steps=eval_save_steps,
         load_best_model_at_end=True,
         metric_for_best_model='loss',
         save_total_limit=5,

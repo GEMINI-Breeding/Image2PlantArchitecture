@@ -8,7 +8,7 @@ from transformers import AutoImageProcessor, AutoModel
 from transformers import VisionEncoderDecoderModel, BertConfig, BertModel, ViTModel, AutoConfig, GPT2Config, GPT2LMHeadModel
 from transformers import VisionEncoderDecoderConfig, AutoModelForCausalLM
 from transformers import PreTrainedModel, PretrainedConfig
-
+from transformers.utils import logging
 from torchvision.models import efficientnet_b0
 import math
 
@@ -802,7 +802,7 @@ class PlantArchitectureConfig(PretrainedConfig):
         self.is_encoder_decoder = True
         # self.tie_word_embeddings = True
 
-class PlantArchitectureModel(PreTrainedModel):
+class PlantArchitectureModel_old(PreTrainedModel):
     config_class = PlantArchitectureConfig
     
     def __init__(self, config, image_processor=None):
@@ -996,3 +996,93 @@ class PlantArchitectureModel(PreTrainedModel):
                 input_ids, past_key_values=past_key_values, **kwargs
             )
         return {"input_ids": input_ids, "past_key_values": past_key_values}
+    
+logger = logging.get_logger(__name__)
+class PlantArchitectureModel(VisionEncoderDecoderModel):
+    config_class = VisionEncoderDecoderConfig
+    base_model_prefix = "vision_encoder_decoder"
+    main_input_name = "pixel_values"
+    supports_gradient_checkpointing = True
+    _supports_param_buffer_assignment = False
+
+    def __init__(
+        self,
+        config: Optional[PretrainedConfig] = None,
+        encoder: Optional[PreTrainedModel] = None,
+        decoder: Optional[PreTrainedModel] = None,
+    ):
+        super().__init__(config, encoder, decoder)
+        if config.use_depth:
+            self._initialize_depth_estimation()
+        
+    def _initialize_depth_estimation(self):
+        """Initialize depth estimation model"""
+        self.depth_est_img_proc = AutoImageProcessor.from_pretrained(
+            "depth-anything/Depth-Anything-V2-Small-hf"
+        )
+        self.depth_est_model = AutoModelForDepthEstimation.from_pretrained(
+            "depth-anything/Depth-Anything-V2-Small-hf"
+        )
+        
+        # Freeze depth estimation model parameters
+        for param in self.depth_est_model.parameters():
+            param.requires_grad = False
+    
+    def estimate_depth(self, image, add_background=True):
+        """Estimate depth and concatenate with RGB image"""
+        depth_input = image
+
+        with torch.no_grad():
+            inputs = self.depth_est_img_proc(images=depth_input, return_tensors="pt").to(image.device)
+            outputs = self.depth_est_model(**inputs)
+            predicted_depth = outputs.predicted_depth
+
+        # Interpolate to original size
+        depth = torch.nn.functional.interpolate(
+            predicted_depth.unsqueeze(1),
+            size=image.shape[-2:],
+            mode="bicubic",
+            align_corners=False,
+        )
+        
+        # Normalize to 0-1
+        depth = (depth - depth.min()) / (depth.max() - depth.min())
+        self.predicted_depth = depth
+        
+        # Rescale to 0-255
+        depth = depth * 255
+        
+        # Concatenate depth to image
+        if 0:
+            image = torch.cat((image, depth), dim=1)
+        else:
+            image = torch.cat((depth, depth, depth), dim=1)
+
+        return image
+    
+    def forward(self, pixel_values=None, labels=None, **kwargs):
+        """Forward pass - compatible with Trainer"""
+        if self.config.use_depth and pixel_values is not None:
+            pixel_values = self.estimate_depth(pixel_values)
+        
+        return super().forward(pixel_values=pixel_values, labels=labels, **kwargs)
+
+
+    def generate(self, pixel_values=None, decoder_input_ids=None, **kwargs):
+        """Generate sequences using the model"""
+        # Depth estimation if needed
+        if self.config.use_depth and pixel_values is not None:
+            pixel_values = self.estimate_depth(pixel_values)
+        
+        # Prepare generation kwargs
+        generation_kwargs = {
+            'pixel_values': pixel_values,
+            **kwargs
+        }
+        
+        # Add decoder_input_ids if provided
+        if decoder_input_ids is not None:
+            generation_kwargs['decoder_input_ids'] = decoder_input_ids
+        
+        # Forward to the underlying model's generate method
+        return super().generate(**generation_kwargs)
