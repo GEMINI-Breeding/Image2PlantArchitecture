@@ -26,8 +26,7 @@ import os, sys
 script_file_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.join(script_file_dir,"../"))
 
-from src.plant_tokenizer import SOS_TOKEN, PAD_TOKEN, EOS_TOKEN
-
+from src.plant_tokenizer import SOS_TOKEN, PAD_TOKEN, EOS_TOKEN,VOCAB_SIZE, META_TOKEN
 
 
 class MinMaxScalerTorch(nn.Module):
@@ -509,7 +508,7 @@ class SequenceDecoderModel(nn.Module):
             tgt = tgt.permute(1,0,2)
             features = features.permute(1,0,2)
             decoded = self.transformer(tgt, tgt, 
-                                       # src_mask=tgt_mask, # src_mask is optiional
+                                       # src_mask=tgt_mask, # src_mask is optional
                                        src_key_padding_mask=tgt_key_padding_mask,
                                        tgt_mask=tgt_mask, tgt_key_padding_mask=tgt_key_padding_mask, 
                                        tgt_is_causal=True)
@@ -752,13 +751,56 @@ class PlantArchitectureConfig(PretrainedConfig):
     
     def __init__(self, encoder_checkpoint=None, decoder_checkpoint=None, 
                  encoder_config=None, decoder_config=None,
-                 use_depth=True, **kwargs):
+                 use_depth=True, image_size=448,
+                 decoder_start_token_id=None,
+                 bos_token_id=None,
+                 pad_token_id=None,
+                 eos_token_id=None,
+                 **kwargs):
         super().__init__(**kwargs)
         self.encoder_checkpoint = encoder_checkpoint
         self.decoder_checkpoint = decoder_checkpoint
+        self.image_size = image_size
+
+        # 1. Define decoder configuration
+        if decoder_checkpoint:
+            if "google-bert/bert" in decoder_checkpoint:
+                decoder_config = AutoConfig.from_pretrained(decoder_checkpoint)
+                decoder_config.max_position_embeddings = 2500  # Set maximum sequence length
+                decoder_config.vocab_size = VOCAB_SIZE  # Match with tokenizer's vocabulary size
+                decoder_config.add_cross_attention=True
+                decoder_config.is_decoder=True
+            elif "gpt2" in decoder_checkpoint:
+                decoder_config = GPT2Config.from_pretrained(decoder_checkpoint)
+                decoder_config.max_position_embeddings = 4096*2 # Set maximum sequence length
+                decoder_config.vocab_size = VOCAB_SIZE  # Match with tokenizer's vocabulary size
+                decoder_config.add_cross_attention=True
+                decoder_config.is_decoder=True
+            elif "google/bigbird-roberta" in decoder_checkpoint:
+                decoder_config = AutoConfig.from_pretrained(decoder_checkpoint)
+                decoder_config.max_position_embeddings = 4096*2  # Set maximum sequence length
+                decoder_config.vocab_size = VOCAB_SIZE  # Match with tokenizer's vocabulary size
+                decoder_config.add_cross_attention=True
+                decoder_config.is_decoder=True
+                decoder_config.attention_type='original_full'
+
+            decoder_config.bos_token_id = bos_token_id if bos_token_id is not None else SOS_TOKEN
+            decoder_config.pad_token_id = pad_token_id if pad_token_id is not None else PAD_TOKEN
+            decoder_config.eos_token_id = eos_token_id if eos_token_id is not None else EOS_TOKEN
+
         self.encoder_config = encoder_config
         self.decoder_config = decoder_config
         self.use_depth = use_depth
+
+        # Token default settings
+        self.decoder_start_token_id = decoder_start_token_id if decoder_start_token_id is not None else SOS_TOKEN
+        self.bos_token_id = bos_token_id if bos_token_id is not None else SOS_TOKEN
+        self.pad_token_id = pad_token_id if pad_token_id is not None else PAD_TOKEN
+        self.eos_token_id = eos_token_id if eos_token_id is not None else EOS_TOKEN
+
+        # VisionEncoderDecoderModel essential options
+        self.is_encoder_decoder = True
+        # self.tie_word_embeddings = True
 
 class PlantArchitectureModel(PreTrainedModel):
     config_class = PlantArchitectureConfig
@@ -767,21 +809,32 @@ class PlantArchitectureModel(PreTrainedModel):
         super().__init__(config)
         
         self.config = config
+
+        if image_processor:
+            self.image_processor = image_processor
+        else:
+            image_size = self.config.image_size
+            encoder_config = AutoConfig.from_pretrained(self.config.encoder_checkpoint)
+            image_processor = AutoImageProcessor.from_pretrained(self.config.encoder_checkpoint)
+            image_processor.crop_size['width'] = image_size
+            image_processor.crop_size['height'] = image_size
+            image_processor.size['shortest_edge'] = image_size
+
         self.image_processor = image_processor
         
         # Create the VisionEncoderDecoderModel
-        self.model = self._create_vision_enc_dec_model()
+        self.model = self._create_vision_enc_dec_model(self.config)
         
         # Freeze the encoder parameters
         self.model.encoder.eval()
         for param in self.model.encoder.parameters():
             param.requires_grad = False
 
-        # Update model configuration
-        self.model.config.decoder_start_token_id = SOS_TOKEN
-        self.model.config.bos_token_id = SOS_TOKEN
-        self.model.config.pad_token_id = PAD_TOKEN
-        self.model.config.eos_token_id = EOS_TOKEN
+        # Config에서 토큰 설정 적용
+        self.model.config.decoder_start_token_id = self.config.decoder_start_token_id
+        self.model.config.bos_token_id = self.config.bos_token_id
+        self.model.config.pad_token_id = self.config.pad_token_id
+        self.model.config.eos_token_id = self.config.eos_token_id
 
         # Initialize depth estimation if needed
         if self.config.use_depth:
@@ -820,9 +873,9 @@ class PlantArchitectureModel(PreTrainedModel):
         
         return encoder_gc or decoder_gc
 
-    def _create_vision_enc_dec_model(self):
+    def _create_vision_enc_dec_model(self, config):
         """Create VisionEncoderDecoderModel from encoder and decoder"""
-        if self.config.encoder_checkpoint and self.config.decoder_checkpoint:
+        if config.encoder_checkpoint and config.decoder_checkpoint:
             # Method 1: Use from_encoder_decoder_pretrained (commented out in original)
             if False:  # keeping original logic
                 model = VisionEncoderDecoderModel.from_encoder_decoder_pretrained(
@@ -835,12 +888,12 @@ class PlantArchitectureModel(PreTrainedModel):
             else:
                 # Method 2: Create encoder and decoder separately
                 encoder = AutoModel.from_pretrained(
-                    self.config.encoder_checkpoint, 
-                    config=self.config.encoder_config
+                    config.encoder_checkpoint, 
+                    config=config.encoder_config
                 )
                 decoder = AutoModelForCausalLM.from_pretrained(
-                    self.config.decoder_checkpoint, 
-                    config=self.config.decoder_config, 
+                    config.decoder_checkpoint, 
+                    config=config.decoder_config, 
                     ignore_mismatched_sizes=True
                 )
                 
@@ -917,21 +970,29 @@ class PlantArchitectureModel(PreTrainedModel):
 
         return image
     
-    def generate(self, **kwargs):
+    def generate(self, pixel_values=None, decoder_input_ids=None, **kwargs):
         """Generate sequences using the model"""
-        return self.model.generate(**kwargs)
-
-    @classmethod
-    def from_pretrained_components(cls, encoder_checkpoint, decoder_checkpoint, 
-                                 image_processor, decoder_config=None, 
-                                 encoder_config=None, use_depth=True, **kwargs):
-        """Class method to create model from components (for backward compatibility)"""
-        config = PlantArchitectureConfig(
-            encoder_checkpoint=encoder_checkpoint,
-            decoder_checkpoint=decoder_checkpoint,
-            encoder_config=encoder_config,
-            decoder_config=decoder_config,
-            use_depth=use_depth,
+        # Depth estimation if needed
+        if self.config.use_depth and pixel_values is not None:
+            pixel_values = self.estimate_depth(pixel_values)
+        
+        # Prepare generation kwargs
+        generation_kwargs = {
+            'pixel_values': pixel_values,
             **kwargs
-        )
-        return cls(config, image_processor)
+        }
+        
+        # Add decoder_input_ids if provided
+        if decoder_input_ids is not None:
+            generation_kwargs['decoder_input_ids'] = decoder_input_ids
+        
+        # Forward to the underlying model's generate method
+        return self.model.generate(**generation_kwargs)
+    
+    def prepare_inputs_for_generation(self, input_ids, past_key_values=None, **kwargs):
+        """Prepare inputs for generation (required for some generation methods)"""
+        if hasattr(self.model, 'prepare_inputs_for_generation'):
+            return self.model.prepare_inputs_for_generation(
+                input_ids, past_key_values=past_key_values, **kwargs
+            )
+        return {"input_ids": input_ids, "past_key_values": past_key_values}

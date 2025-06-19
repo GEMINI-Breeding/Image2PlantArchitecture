@@ -22,6 +22,11 @@ from plant_tokenizer import SOS_TOKEN, EOS_TOKEN, PAD_TOKEN, VOCAB_SIZE, META_TO
 from plant_dataset import PlantDataset
 from utils import model_summary
 from models.model import PlantArchitectureModel, PlantArchitectureConfig
+from transformers import AutoConfig, AutoModel
+
+# Register your custom model
+AutoConfig.register("plant_architecture", PlantArchitectureConfig)
+AutoModel.register(PlantArchitectureConfig, PlantArchitectureModel)
 
 def custom_data_collator(features):
     # features is a list of samples returned from the dataset
@@ -216,7 +221,7 @@ if __name__ == "__main__":
     parser.add_argument('--preload', type=str, default='False', help='Preload dataset into memory')
     parser.add_argument('--encoder_checkpoint', type=str, default='facebook/dinov2-small', help='Encoder checkpoint to use')
     parser.add_argument('--decoder_checkpoint', type=str, default='gpt2-medium', help='Decoder checkpoint to use')
-    #parser.add_argument('--dataset_path', type=str, default='/home/lion397/datasets/GEMINI/plant_architecture/20250311_Sideview_40Days', help='Path to the dataset')
+    # parser.add_argument('--dataset_path', type=str, default='/home/lion397/datasets/GEMINI/plant_architecture/20250311_Sideview_40Days', help='Path to the dataset')
     parser.add_argument('--dataset_path', type=str, default='/home/lion397/datasets/GEMINI/plant_architecture/2000_Plots_20241210_BetterQuantized', help='Path to the dataset')
     parser.add_argument('--today_date_str', type=str, default=datetime.now().strftime('%Y%m%d'), help='Date string for experiment naming')
     parser.add_argument('--exp_name', type=str, help='Experiment name')
@@ -257,38 +262,10 @@ if __name__ == "__main__":
     os.makedirs(output_base_dir, exist_ok=True)
     results_dir = f"{output_base_dir}/results"
 
-
-    # 1. Define decoder configuration
-    decoder_checkpoint = args.decoder_checkpoint
-    if "google-bert/bert" in decoder_checkpoint:
-        decoder_config = AutoConfig.from_pretrained(decoder_checkpoint)
-        decoder_config.max_position_embeddings = 2500  # Set maximum sequence length
-        decoder_config.vocab_size = VOCAB_SIZE  # Match with tokenizer's vocabulary size
-        decoder_config.add_cross_attention=True
-        decoder_config.is_decoder=True
-    elif "gpt2" in decoder_checkpoint:
-        decoder_config = GPT2Config.from_pretrained(decoder_checkpoint)
-        decoder_config.max_position_embeddings = 4096*2 # Set maximum sequence length
-        decoder_config.vocab_size = VOCAB_SIZE  # Match with tokenizer's vocabulary size
-        decoder_config.add_cross_attention=True
-        decoder_config.is_decoder=True
-    elif "google/bigbird-roberta" in decoder_checkpoint:
-        decoder_config = AutoConfig.from_pretrained(decoder_checkpoint)
-        decoder_config.max_position_embeddings = 4096*2  # Set maximum sequence length
-        decoder_config.vocab_size = VOCAB_SIZE  # Match with tokenizer's vocabulary size
-        decoder_config.add_cross_attention=True
-        decoder_config.is_decoder=True
-        decoder_config.attention_type='original_full'
+    image_size = args.image_size
 
     encoder_checkpoint = args.encoder_checkpoint
-    image_size = args.image_size
-    encoder_config = AutoConfig.from_pretrained(encoder_checkpoint)
-    image_processor = AutoImageProcessor.from_pretrained(encoder_checkpoint)
-    image_processor.crop_size['width'] = image_size
-    image_processor.crop_size['height'] = image_size
-    image_processor.size['shortest_edge'] = image_size
-
-
+    decoder_checkpoint = args.decoder_checkpoint
     if 0:
         model = VisionEncoderDecoderModel.from_encoder_decoder_pretrained(
             encoder_checkpoint, decoder_checkpoint, 
@@ -312,11 +289,10 @@ if __name__ == "__main__":
         config = PlantArchitectureConfig(
             encoder_checkpoint=encoder_checkpoint,
             decoder_checkpoint=decoder_checkpoint,
-            encoder_config=encoder_config,
-            decoder_config=decoder_config,
-            use_depth=True
+            image_size=image_size,
+            use_depth=args.use_depth
         )
-        model = PlantArchitectureModel(config, image_processor)
+        model = PlantArchitectureModel(config)
 
 
 
@@ -440,6 +416,8 @@ if __name__ == "__main__":
         # Load the trained model to calculate metrics
         model = VisionEncoderDecoderModel.from_pretrained(results_dir)
     else:
+        print("Test model saving...")
+        trainer.save_model(results_dir) # Save model
         print("Model training...")
         # Check for existing checkpoints and resume training if they exist
         checkpoints_dir = os.path.join(output_base_dir, "checkpoints")
