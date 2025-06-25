@@ -63,20 +63,16 @@ def prepare_dataset(
 
 def evaluate_model(
     model: torch.nn.Module,
-    test_dataset: Any,
+    dataloader: Any,
     device: torch.device,
-    batch_size: int = 16,
-    num_workers: int = 4
 ) -> Tuple[List[np.ndarray], List[np.ndarray]]:
     """
     Run model inference on test dataset with batch processing.
     
     Args:
         model: The model to evaluate
-        test_dataset: Dataset containing test samples
+        dataloader: DataLoader containing test samples
         device: Device to run inference on
-        batch_size: Batch size for DataLoader
-        num_workers: Number of worker processes for DataLoader
         
     Returns:
         Tuple of (all_predictions, all_labels)
@@ -84,15 +80,6 @@ def evaluate_model(
     model.eval()
     all_predictions = []
     all_labels = []
-    
-    # Create DataLoader for batch processing
-    dataloader = DataLoader(
-        test_dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=num_workers,
-        pin_memory=True
-    )
     
     with torch.no_grad():
         for batch in tqdm(dataloader, desc="Evaluating"):
@@ -168,8 +155,9 @@ def calc_metric(
     model: torch.nn.Module, 
     test_dataset: PlantDataset, 
     log_path: str,
+    collate_fn: Any,
     batch_size: int = 16,
-    num_workers: int = 4
+    num_workers: int = 4,
 ) -> Dict[str, float]:
     """
     Calculate metrics for a model on a given dataset.
@@ -178,6 +166,7 @@ def calc_metric(
         model: The model to evaluate
         test_dataset: The dataset to evaluate on
         log_path: Path to save log results
+        collate_fn: Custom collate function for DataLoader
         batch_size: Batch size for evaluation
         num_workers: Number of worker processes for DataLoader
         
@@ -187,13 +176,21 @@ def calc_metric(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
         
-    # Evaluate model with batch processing
+    # Create DataLoader for batch processing
+    dataloader = DataLoader(
+        test_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        collate_fn=collate_fn,
+        pin_memory=True
+    )
+
+    # Evaluate model with batch processing - remove extra parameters
     predictions, labels = evaluate_model(
         model, 
-        test_dataset, 
-        device, 
-        batch_size=batch_size, 
-        num_workers=num_workers
+        dataloader, 
+        device
     )
     
     # Compute metrics

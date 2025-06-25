@@ -14,6 +14,7 @@ from tqdm import tqdm
 # Add . as a directory to import from
 import sys
 import re
+from calc_metric import calc_metric
 
 # Get the parent directory of the current file
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -217,7 +218,6 @@ if __name__ == "__main__":
     parser.add_argument('--encoder_checkpoint', type=str, default='facebook/dinov2-small', help='Encoder checkpoint to use')
     parser.add_argument('--decoder_checkpoint', type=str, default='gpt2-medium', help='Decoder checkpoint to use')
     parser.add_argument('--dataset_path', type=str, default='/home/lion397/datasets/GEMINI/plant_architecture/20250311_Sideview_40Days', help='Path to the dataset')
-    #parser.add_argument('--dataset_path', type=str, default='/home/lion397/datasets/GEMINI/plant_architecture/2000_Plots_20241210_BetterQuantized', help='Path to the dataset')
     parser.add_argument('--today_date_str', type=str, default=datetime.now().strftime('%Y%m%d'), help='Date string for experiment naming')
     parser.add_argument('--exp_name', type=str, help='Experiment name')
     parser.add_argument('--curriculum', default='False', help='Use curriculum learning')
@@ -443,8 +443,8 @@ if __name__ == "__main__":
         # Load the trained model to calculate metrics
         model = VisionEncoderDecoderModel.from_pretrained(results_dir)
     else:
-        print("Test model saving...")
-        trainer.save_model(results_dir) # Save model
+        # print("Test model saving...")
+        # trainer.save_model(results_dir) # Save model
         print("Model training...")
         # Check for existing checkpoints and resume training if they exist
         checkpoints_dir = os.path.join(output_base_dir, "checkpoints")
@@ -457,6 +457,8 @@ if __name__ == "__main__":
         trainer.save_model(results_dir) # Save model
 
     print("Calculating metrics...")
-    from calc_metric import calc_metric
     benchmark_path = os.path.join(output_base_dir, "benchmark.txt")
-    calc_metric(model, test_dataset, batch_size=batch_size, log_path=benchmark_path)
+    # Use your custom data collator to handle variable-length sequences
+    calc_metric(model=model, test_dataset=test_dataset, 
+                log_path=benchmark_path, collate_fn=custom_data_collator, 
+                batch_size=batch_size)
