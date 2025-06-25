@@ -222,6 +222,7 @@ if __name__ == "__main__":
     parser.add_argument('--exp_name', type=str, help='Experiment name')
     parser.add_argument('--curriculum', default='False', help='Use curriculum learning')
     parser.add_argument('--epoch', type=int, default=20, help='Number of traninig epochs')
+    parser.add_argument('--grad_acc', type=int, default=4, help='gradient_accumulation_steps')
     parser.add_argument('--batch_size', type=int, default=4, help='Number of traninig batch_size')
     parser.add_argument('--color_jitter', type=str, default='False', help='Number of traninig epochs')
     parser.add_argument('--rnd_crop', type=str, default='False', help='Number of traninig epochs')
@@ -405,7 +406,7 @@ if __name__ == "__main__":
         output_dir=f"{output_base_dir}/checkpoints",     # Model output directory
         num_train_epochs=num_train_epochs,               # Number of training epochs
         per_device_train_batch_size=batch_size,          # Training batch size
-        per_device_eval_batch_size=batch_size,           # Evaluation batch size
+        per_device_eval_batch_size=batch_size*2,           # Evaluation batch size
         warmup_steps=warmup_steps,                       # Number of warmup steps for learning rate scheduler (or set the warmup_ratio)
         weight_decay=0.01,                               # Weight decay
         logging_dir=f"{output_base_dir}/logs",           # Log directory

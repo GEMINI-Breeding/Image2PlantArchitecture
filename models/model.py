@@ -1030,10 +1030,9 @@ class PlantArchitectureModel(VisionEncoderDecoderModel):
     
     def estimate_depth(self, image, add_background=True):
         """Estimate depth and concatenate with RGB image"""
-        depth_input = image
 
         with torch.no_grad():
-            inputs = self.depth_est_img_proc(images=depth_input, return_tensors="pt").to(image.device)
+            inputs = self.depth_est_img_proc(images=image, return_tensors="pt").to(image.device)
             outputs = self.depth_est_model(**inputs)
             predicted_depth = outputs.predicted_depth
 
@@ -1052,10 +1051,11 @@ class PlantArchitectureModel(VisionEncoderDecoderModel):
         # Rescale to 0-255
         depth = depth * 255
         
-        # Concatenate depth to image
         if 0:
+            # Concatenate depth to image
             image = torch.cat((image, depth), dim=1)
         else:
+            # Gray scale image
             image = torch.cat((depth, depth, depth), dim=1)
 
         return image
