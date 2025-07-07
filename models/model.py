@@ -998,6 +998,7 @@ class PlantArchitectureModel_old(PreTrainedModel):
         return {"input_ids": input_ids, "past_key_values": past_key_values}
     
 logger = logging.get_logger(__name__)
+
 class PlantArchitectureModel(VisionEncoderDecoderModel):
     config_class = VisionEncoderDecoderConfig
     base_model_prefix = "vision_encoder_decoder"
@@ -1014,6 +1015,18 @@ class PlantArchitectureModel(VisionEncoderDecoderModel):
         super().__init__(config, encoder, decoder)
         if config.use_depth:
             self._initialize_depth_estimation()
+
+        # if image_processor:
+        #     self.image_processor = image_processor
+        # else:
+        #     image_size = self.config.image_size
+        #     encoder_config = AutoConfig.from_pretrained(self.config.encoder_checkpoint)
+        #     image_processor = AutoImageProcessor.from_pretrained(self.config.encoder_checkpoint)
+        #     image_processor.crop_size['width'] = image_size
+        #     image_processor.crop_size['height'] = image_size
+        #     image_processor.size['shortest_edge'] = image_size
+
+        # self.image_processor = image_processor
         
     def _initialize_depth_estimation(self):
         """Initialize depth estimation model"""

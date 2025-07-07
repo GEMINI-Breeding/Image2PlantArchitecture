@@ -291,8 +291,8 @@ if __name__ == "__main__":
 
 
     if 1:
-        #model = VisionEncoderDecoderModel.from_encoder_decoder_pretrained(
-        model = PlantArchitectureModel.from_encoder_decoder_pretrained(
+        model = VisionEncoderDecoderModel.from_encoder_decoder_pretrained(
+        #model = PlantArchitectureModel.from_encoder_decoder_pretrained(
             encoder_checkpoint, decoder_checkpoint, 
             decoder_config=decoder_config, 
             encoder_config=encoder_config,
