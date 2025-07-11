@@ -9,6 +9,7 @@ from plant_tokenizer import token2vec, token_ids_to_base64_like, PAD_TOKEN
 from typing import Dict, Any, Optional, Tuple, List
 import os
 from string_to_xml_to_vec import vec2xml, pretty_print_xml, recursive_to_linked
+from accelerate import Accelerator, DistributedDataParallelKwargs
 
 
 def collate_fn(features):
@@ -95,60 +96,69 @@ def prepare_dataset(
     return test_dataset
 
 
-def evaluate_model(
+def evaluate_model_with_accelerator(
     model: torch.nn.Module,
     dataloader: Any,
-    device: torch.device,
+    accelerator: Accelerator,
     debug: bool,
 ) -> Tuple[List[np.ndarray], List[np.ndarray], List[np.ndarray]]:
-    """Run model inference on test dataset with batch processing using generation."""
+    """Run model inference on test dataset with batch processing using generation with accelerator."""
     from plant_tokenizer import SOS_TOKEN, EOS_TOKEN, PAD_TOKEN
+    
+    print(f"Using accelerate with {accelerator.num_processes} processes")
     
     model.eval()
     all_predictions = []
     all_labels = []
     gt_plant_vecs = []
     
-
-    
     with torch.no_grad():
-        for batch in tqdm(dataloader, desc="Evaluating with Generation"):
+        for batch in tqdm(dataloader, desc="Evaluating with Generation", disable=not accelerator.is_local_main_process):
             if debug and len(all_predictions) > 10:
                 break
 
             # Prepare inputs
-            pixel_values = batch["pixel_values"].to(device)
-            labels = batch["labels"].to(device)
+            pixel_values = batch["pixel_values"]
+            labels = batch["labels"]
             plant_vecs = batch["plant_vec"]
             
             batch_size = pixel_values.shape[0]
             
             # Extract plant_info from labels (first 5 tokens after SOS)
-            plant_info_batch = labels[:, 0:5]  # Extract plant info (5 tokens after SOS)
+            plant_info_batch = labels[:, 0:5]
             
-            # Set dynamically the max length from the labels
-            max_length = len(labels[0]) * 2
+            # Set a more reasonable max_length
+            max_length = min(512, max(len(label) for label in labels) + 50)
+            
             try:
                 # Generate predictions for the entire batch at once
-                generated_ids = model.generate(
-                    pixel_values,
-                    decoder_start_token_id=SOS_TOKEN,
-                    decoder_input_ids=plant_info_batch,
-                    eos_token_id=EOS_TOKEN,
-                    pad_token_id=PAD_TOKEN,
-                    max_length=max_length,
-                    use_cache=True,
-                    do_sample=False,  # Use greedy decoding for reproducible results
-                    num_beams=1       # Greedy search
-                )
-                
-                # Process each sample in the batch
+                with torch.cuda.amp.autocast():
+                    # Use the underlying model for generation (unwrap from accelerator)
+                    unwrapped_model = accelerator.unwrap_model(model)
+                    generated_ids = unwrapped_model.generate(
+                        pixel_values,
+                        decoder_start_token_id=SOS_TOKEN,
+                        decoder_input_ids=plant_info_batch,
+                        eos_token_id=EOS_TOKEN,
+                        pad_token_id=PAD_TOKEN,
+                        max_length=max_length,
+                        min_length=6,
+                        use_cache=True,
+                        do_sample=False,
+                        num_beams=1,
+                        return_dict_in_generate=False,
+                        output_attentions=False,
+                        output_hidden_states=False,
+                        repetition_penalty=1.1,
+                    )
+                    
+                # Process locally without gathering to avoid deadlock
                 for i in range(batch_size):
                     try:
                         # Extract individual prediction from batch results
                         single_generated = generated_ids[i].cpu().numpy()
                         single_label = labels[i].cpu().numpy()
-                        single_plant_vec = plant_vecs[i]
+                        single_plant_vec = plant_vecs[i] if i < len(plant_vecs) else []
                         
                         # Remove the input plant_info part (first 6 tokens: SOS + plant_info)
                         if len(single_generated) > 6:
@@ -156,55 +166,68 @@ def evaluate_model(
                         else:
                             prediction = np.array([])
                         
+                        # Remove EOS token if present at the end
+                        if len(prediction) > 0 and prediction[-1] == EOS_TOKEN:
+                            prediction = prediction[:-1]
+                        
                         # Store results
                         all_predictions.append(prediction)
                         all_labels.append(single_label)
                         gt_plant_vecs.append(single_plant_vec)
                         
                     except Exception as e:
-                        print(f"Error processing sample {i} in batch: {e}")
+                        print(f"Error processing sample {i}: {e}")
                         # Fallback to empty prediction
                         all_predictions.append(np.array([]))
-                        all_labels.append(labels[i].cpu().numpy())
-                        gt_plant_vecs.append(plant_vecs[i])
+                        all_labels.append(labels[i].cpu().numpy() if i < len(labels) else np.array([]))
+                        gt_plant_vecs.append(plant_vecs[i] if i < len(plant_vecs) else [])
                         
             except Exception as e:
                 print(f"Error generating batch: {e}")
-                # Fallback: process each sample individually if batch generation fails
+                # In case of failure, add empty results for this batch
                 for i in range(batch_size):
-                    try:
-                        single_pixel_values = pixel_values[i:i+1]
-                        single_plant_info = plant_info_batch[i:i+1]
-                        
-                        generated_ids = model.generate(
-                            single_pixel_values,
-                            decoder_start_token_id=SOS_TOKEN,
-                            decoder_input_ids=single_plant_info,
-                            eos_token_id=EOS_TOKEN,
-                            pad_token_id=PAD_TOKEN,
-                            max_length=max_length,
-                            use_cache=True,
-                            do_sample=False,
-                            num_beams=1
-                        )
-                        
-                        generated_sequence = generated_ids.squeeze().cpu().numpy()
-                        if len(generated_sequence.shape) > 0 and len(generated_sequence) > 6:
-                            prediction = generated_sequence[6:]
-                        else:
-                            prediction = np.array([])
-                            
-                        all_predictions.append(prediction)
-                        all_labels.append(labels[i].cpu().numpy())
-                        gt_plant_vecs.append(plant_vecs[i])
-                        
-                    except Exception as inner_e:
-                        print(f"Error generating for individual sample {i}: {inner_e}")
-                        all_predictions.append(np.array([]))
-                        all_labels.append(labels[i].cpu().numpy())
-                        gt_plant_vecs.append(plant_vecs[i])
+                    all_predictions.append(np.array([]))
+                    all_labels.append(labels[i].cpu().numpy())
+                    gt_plant_vecs.append(plant_vecs[i] if i < len(plant_vecs) else [])
     
-    return all_predictions, all_labels, gt_plant_vecs
+    # Wait for all processes to complete
+    accelerator.wait_for_everyone()
+    
+    # Gather results from all processes at the end
+    if accelerator.num_processes > 1:
+        # Convert to tensors for gathering
+        all_predictions_gathered = []
+        all_labels_gathered = []
+        gt_plant_vecs_gathered = []
+        
+        # Gather predictions
+        for pred in all_predictions:
+            if len(pred) > 0:
+                pred_tensor = torch.from_numpy(pred).to(accelerator.device)
+                gathered_pred = accelerator.gather(pred_tensor)
+                if accelerator.is_main_process:
+                    all_predictions_gathered.extend([p.cpu().numpy() for p in gathered_pred])
+            elif accelerator.is_main_process:
+                all_predictions_gathered.append(np.array([]))
+        
+        # Gather labels 
+        for label in all_labels:
+            label_tensor = torch.from_numpy(label).to(accelerator.device)
+            gathered_label = accelerator.gather(label_tensor)
+            if accelerator.is_main_process:
+                all_labels_gathered.extend([l.cpu().numpy() for l in gathered_label])
+        
+        # For plant_vecs, just collect from main process for now
+        if accelerator.is_main_process:
+            gt_plant_vecs_gathered = gt_plant_vecs
+        
+        if accelerator.is_main_process:
+            return all_predictions_gathered, all_labels_gathered, gt_plant_vecs_gathered
+        else:
+            return [], [], []
+    else:
+        return all_predictions, all_labels, gt_plant_vecs
+
 
 def compute_metrics(
     predictions: List[np.ndarray],
@@ -274,16 +297,22 @@ def calc_metric(
     benchmark_folder: str = "benchmark",
 ) -> Dict[str, float]:
     """Calculate metrics for a model on a given dataset."""
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = model.to(device)
     
-    # Create benchmark folders
-    pred_folder = os.path.join(benchmark_folder, "pred")
-    gt_folder = os.path.join(benchmark_folder, "gt")
-    os.makedirs(pred_folder, exist_ok=True)
-    os.makedirs(gt_folder, exist_ok=True)
+    # Accelerator를 한 번만 생성
+    ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
+    accelerator = Accelerator(kwargs_handlers=[ddp_kwargs])
     
-    # Create DataLoader for batch processing
+    # 메인 프로세스에서만 폴더 생성
+    if accelerator.is_main_process:
+        pred_folder = os.path.join(benchmark_folder, "pred")
+        gt_folder = os.path.join(benchmark_folder, "gt")
+        os.makedirs(pred_folder, exist_ok=True)
+        os.makedirs(gt_folder, exist_ok=True)
+    
+    # 모든 프로세스가 폴더 생성 완료까지 대기
+    accelerator.wait_for_everyone()
+    
+    # DataLoader 생성
     dataloader = DataLoader(
         test_dataset,
         batch_size=batch_size,
@@ -292,76 +321,83 @@ def calc_metric(
         collate_fn=collate_fn,
         pin_memory=True
     )
-
-    # Evaluate model with batch processing
-    predictions, labels, gt_plant_vecs = evaluate_model(
+    
+    # 모델과 데이터로더 준비
+    model, dataloader = accelerator.prepare(model, dataloader)
+    
+    # 추론 실행 (accelerator를 파라미터로 전달)
+    predictions, labels, gt_plant_vecs = evaluate_model_with_accelerator(
         model, 
         dataloader, 
-        device,
+        accelerator,  # 동일한 accelerator 사용
         debug,
     )
     
-    # Process predictions and save XMLs
-    print("Converting predictions to plant vectors and saving XMLs...")
-    for idx, (pred, label, gt_plant_vec) in enumerate(tqdm(zip(predictions, labels, gt_plant_vecs), 
-                                                            desc="Saving XMLs", 
-                                                            total=len(predictions))):
-        try:
-            # Save predicted XML - convert predicted tokens to plant vector
-            pred_tokens = pred
-            est_plant_vec = token2vec(pred_tokens)
-            
-            if est_plant_vec:
-                pred_xml = vec2xml(est_plant_vec, plant_id=idx)
-                pred_xml = recursive_to_linked(pred_xml)
-                pred_xml_str = pretty_print_xml(pred_xml)
+    # 메인 프로세스에서만 후처리
+    if accelerator.is_main_process:
+        print("Converting predictions to plant vectors and saving XMLs...")
+        for idx, (pred, label, gt_plant_vec) in enumerate(tqdm(zip(predictions, labels, gt_plant_vecs), 
+                                                                desc="Saving XMLs", 
+                                                                total=len(predictions))):
+            try:
+                # Save predicted XML - convert predicted tokens to plant vector
+                pred_tokens = pred
+                est_plant_vec = token2vec(pred_tokens)
                 
-                pred_xml_path = os.path.join(pred_folder, f"plant_{idx:04d}.xml")
-                with open(pred_xml_path, "w") as f:
-                    f.write(pred_xml_str)
-            
-            # Save ground truth XML - convert ground truth tokens to plant vector
-            gt_tokens = label[5:] if len(label) > 5 else label  # Skip SOS + plant_info
-            gt_tokens = gt_tokens[gt_tokens != PAD_TOKEN]  # Remove PAD tokens
-            gt_plant_vec_from_tokens = token2vec(gt_tokens)
-            
-            if gt_plant_vec_from_tokens:
-                gt_xml = vec2xml(gt_plant_vec_from_tokens, plant_id=idx)
-                gt_xml = recursive_to_linked(gt_xml)
-                gt_xml_str = pretty_print_xml(gt_xml)
+                if est_plant_vec:
+                    pred_xml = vec2xml(est_plant_vec, plant_id=idx)
+                    pred_xml = recursive_to_linked(pred_xml)
+                    pred_xml_str = pretty_print_xml(pred_xml)
+                    
+                    pred_xml_path = os.path.join(pred_folder, f"plant_{idx:04d}.xml")
+                    with open(pred_xml_path, "w") as f:
+                        f.write(pred_xml_str)
                 
-                gt_xml_path = os.path.join(gt_folder, f"plant_{idx:04d}.xml")
-                with open(gt_xml_path, "w") as f:
-                    f.write(gt_xml_str)
-            
-        except Exception as e:
-            print(f"Error processing sample {idx}: {e}")
-            continue
-    
-    # Compute metrics
-    metrics = compute_metrics(predictions, labels)
-    
-    # Print results
-    print("\n" + "="*50)
-    print("EVALUATION RESULTS")
-    print("="*50)
-    for name, value in metrics.items():
-        print(f"{name.upper()}: {value:.4f}")
-    
-    print(f"\nXML files saved to:")
-    print(f"  Predictions: {os.path.abspath(pred_folder)}")
-    print(f"  Ground Truth: {os.path.abspath(gt_folder)}")
-    
-    # Save results to log file
-    with open(log_path, "w") as log_file:
-        log_file.write("EVALUATION RESULTS\n")
-        log_file.write("="*50 + "\n")
-        for name, value in metrics.items():
-            log_file.write(f"{name.upper()}: {value:.4f}\n")
+                # Save ground truth XML - convert ground truth tokens to plant vector
+                gt_tokens = label[5:] if len(label) > 5 else label  # Skip SOS + plant_info
+                gt_tokens = gt_tokens[gt_tokens != PAD_TOKEN]  # Remove PAD tokens
+                gt_plant_vec_from_tokens = token2vec(gt_tokens)
+                
+                if gt_plant_vec_from_tokens:
+                    gt_xml = vec2xml(gt_plant_vec_from_tokens, plant_id=idx)
+                    gt_xml = recursive_to_linked(gt_xml)
+                    gt_xml_str = pretty_print_xml(gt_xml)
+                    
+                    gt_xml_path = os.path.join(gt_folder, f"plant_{idx:04d}.xml")
+                    with open(gt_xml_path, "w") as f:
+                        f.write(gt_xml_str)
+                
+            except Exception as e:
+                print(f"Error processing sample {idx}: {e}")
+                continue
         
-        log_file.write(f"\nXML files saved to:\n")
-        log_file.write(f"  Predictions: {os.path.abspath(pred_folder)}\n")
-        log_file.write(f"  Ground Truth: {os.path.abspath(gt_folder)}\n")
-        log_file.write(f"  Total samples processed: {len(predictions)}\n")
-    
-    return metrics
+        # Compute metrics
+        metrics = compute_metrics(predictions, labels)
+        
+        # Print results
+        print("\n" + "="*50)
+        print("EVALUATION RESULTS")
+        print("="*50)
+        for name, value in metrics.items():
+            print(f"{name.upper()}: {value:.4f}")
+        
+        print(f"\nXML files saved to:")
+        print(f"  Predictions: {os.path.abspath(pred_folder)}")
+        print(f"  Ground Truth: {os.path.abspath(gt_folder)}")
+        
+        # Save results to log file
+        with open(log_path, "w") as log_file:
+            log_file.write("EVALUATION RESULTS\n")
+            log_file.write("="*50 + "\n")
+            for name, value in metrics.items():
+                log_file.write(f"{name.upper()}: {value:.4f}\n")
+            
+            log_file.write(f"\nXML files saved to:\n")
+            log_file.write(f"  Predictions: {os.path.abspath(pred_folder)}\n")
+            log_file.write(f"  Ground Truth: {os.path.abspath(gt_folder)}\n")
+            log_file.write(f"  Total samples processed: {len(predictions)}\n")
+        
+        return metrics
+    else:
+        # Return empty metrics for non-main processes
+        return {}

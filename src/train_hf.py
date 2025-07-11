@@ -373,6 +373,7 @@ if __name__ == "__main__":
     parser.add_argument('--epoch', type=int, default=1, help='Number of traninig epochs')
     parser.add_argument('--grad_acc', type=int, default=4, help='gradient_accumulation_steps')
     parser.add_argument('--batch_size', type=int, default=4, help='Number of traninig batch_size')
+    parser.add_argument('--num_workers', type=int, default=8, help='Number of workers')
     parser.add_argument('--color_jitter', type=str, default='False', help='Number of traninig epochs')
     parser.add_argument('--rnd_crop', type=str, default='False', help='Number of traninig epochs')
     parser.add_argument('--rnd_erase', type=str, default='False', help='Number of traninig epochs')
@@ -440,6 +441,29 @@ if __name__ == "__main__":
 
 
     if 1:
+        # Initialize distributed training for multi-GPU
+        n_gpu = torch.cuda.device_count()
+        print(f"Available GPUs: {n_gpu}")
+        
+        # Check if we're in a distributed environment
+        if "RANK" in os.environ:
+            # Distributed training setup
+            import torch.distributed as dist
+            rank = int(os.environ["RANK"])
+            world_size = int(os.environ["WORLD_SIZE"])
+            local_rank = int(os.environ.get("LOCAL_RANK", 0))
+            
+            # Initialize distributed backend
+            dist.init_process_group(backend='nccl', rank=rank, world_size=world_size)
+            device = torch.device(f"cuda:{local_rank}")
+            torch.cuda.set_device(local_rank)
+            print(f"Initialized distributed training: rank={rank}, world_size={world_size}, device={device}")
+        else:
+            # Single node multi-GPU or single GPU
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            rank = 0
+            print(f"Using device: {device}")
+
         model = PlantArchitectureModel.from_encoder_decoder_pretrained(
             encoder_checkpoint, decoder_checkpoint, 
             decoder_config=decoder_config, 
@@ -447,8 +471,13 @@ if __name__ == "__main__":
             decoder_ignore_mismatched_sizes=True,
             use_depth=args.use_depth,
             torch_dtype=torch.float16, 
+            tp_plan="auto"
         )
-            # Freeze the encoder parameters
+        
+        # Move model to device
+        model = model.to(device)
+        
+        # Freeze the encoder parameters
         model.encoder.eval()
         for param in model.encoder.parameters():
             param.requires_grad = False
@@ -459,6 +488,8 @@ if __name__ == "__main__":
         model.config.pad_token_id = PAD_TOKEN  # Padding token
         model.config.eos_token_id = EOS_TOKEN  # End of sequence token
 
+        # Don't wrap with DataParallel - let accelerate handle multi-GPU
+        # No DataParallel or DDP wrapping here
     else:
         config = PlantArchitectureConfig(
             encoder_checkpoint=encoder_checkpoint,
@@ -481,7 +512,7 @@ if __name__ == "__main__":
     print("Loading Dataset...")
     train_ratio = 0.8
     val_ratio = 0.1
-    test_ratio = 0.1
+    test_ratio = 0.01
 
     # Separate by plot number
     # Get the num plots from the last xml file
@@ -574,7 +605,7 @@ if __name__ == "__main__":
         save_total_limit=5,
         learning_rate=1e-4,
         dataloader_pin_memory=True,
-        dataloader_num_workers=batch_size,
+        dataloader_num_workers=args.num_workers//n_gpu,
         fp16=True,
     )
 
@@ -614,13 +645,15 @@ if __name__ == "__main__":
     print("Calculating metrics...")
     benchmark_folder = os.path.join(output_base_dir,"benchmark_results")
     benchmark_path = os.path.join(benchmark_folder, "benchmark.txt")
-    # Use your custom data collator to handle variable-length sequences
+    
+    model.eval()
+    # Pass the model directly to calc_metric - accelerate will handle multi-GPU
     metrics = calc_metric(
-        model=model,
+        model=model,  # Pass model directly, no unwrapping needed
         test_dataset=test_dataset,
         log_path=benchmark_path,
         batch_size=batch_size,
-        num_workers=4,
+        num_workers=args.num_workers//n_gpu,
         debug=False,
         benchmark_folder=benchmark_folder
     )
