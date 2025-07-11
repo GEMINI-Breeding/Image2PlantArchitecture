@@ -251,6 +251,162 @@ def generate_noise_plant_tokens(tokens, noise_level=0.1, mode='train'):
         noise_token.requires_grad = True
     return noise_token
 
+def token_ids_to_base64_like(token_ids: np.ndarray) -> str:
+    """
+    Convert token IDs to a custom base64-like encoding for BLEU calculation.
+    Maps tokens to meaningful characters based on their semantic roles.
+    
+    Args:
+        token_ids: Array of token IDs
+        
+    Returns:
+        String representing the token sequence with semantic character mapping
+    """
+    # Build custom alphabet based on token semantics
+    # Plant Architecture tokens (0-23): Use structured symbols
+    pa_chars = "ABCDEFGHIJKLMNOPQRSTUVWX"  # 24 chars for PA tokens (depth * organ combinations)
+    
+    # Parameter tokens (24-222): Use alphanumeric + symbols
+    param_chars = (
+        "abcdefghijklmnopqrstuvwxyz"  # 26 lowercase
+        "0123456789"                  # 10 digits  
+        "!@#$%^&*()_+-=[]{}|;:,.<>?/~`"  # 30 symbols
+        "ÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖØÙÚÛÜÝÞßàáâãäåæçèéêëìíîïðñòóôõöøùúûüýþÿ"  # 70 extended
+        "ĀāĂăĄąĆćĈĉĊċČčĎďĐđĒēĔĕĖėĘęĚěĜĝĞğĠġĢģĤĥĦħĨĩĪīĬĭĮįİıĲĳĴĵĶķĸĹĺĻļĽľĿŀŁł"  # 72 more
+    )  # Total: 208+ chars
+    
+    # Special tokens: Use distinct markers
+    special_chars = {
+        SOS_TOKEN: '▲',   # Start marker
+        META_TOKEN: '◆',  # Meta marker  
+        PAD_TOKEN: '░',   # Padding
+        EOS_TOKEN: '▼'    # End marker
+    }
+    
+    # Build complete alphabet
+    alphabet = pa_chars + param_chars
+    
+    # Extend if needed to reach vocab size 226
+    while len(alphabet) < VOCAB_SIZE - 4:  # -4 for special tokens
+        alphabet += chr(0x1000 + len(alphabet))  # Add Unicode chars
+    
+    chars = []
+    for token_id in token_ids:
+        token_id = int(token_id)
+        
+        # Handle special tokens first
+        if token_id in special_chars:
+            chars.append(special_chars[token_id])
+        
+        # Handle PA tokens (0-23): depth*6 + organ
+        elif token_id < NUM_PA_TOKEN:
+            depth = token_id // N_ORGAN
+            organ = token_id % N_ORGAN
+            
+            # Use meaningful mapping: depth as letter position, organ as modifier
+            base_char = ord('A') + token_id  # A-X for 0-23
+            chars.append(chr(base_char))
+        
+        # Handle parameter tokens
+        elif token_id < NUM_PA_TOKEN + len(predetermined_centers):
+            param_idx = token_id - NUM_PA_TOKEN
+            if param_idx < len(param_chars):
+                chars.append(param_chars[param_idx])
+            else:
+                # Fallback for overflow
+                chars.append(chr(0x2000 + param_idx))
+        
+        # Handle any remaining tokens
+        else:
+            if token_id < len(alphabet) + 4:
+                special_offset = token_id - NUM_PA_TOKEN - len(predetermined_centers)
+                if special_offset == 0:
+                    chars.append('▲')  # SOS
+                elif special_offset == 1:
+                    chars.append('◆')  # META
+                elif special_offset == 2:
+                    chars.append('░')  # PAD
+                elif special_offset == 3:
+                    chars.append('▼')  # EOS
+            else:
+                # Ultimate fallback
+                chars.append('?')
+    
+    return "".join(chars)
+
+
+def token_ids_to_semantic_base64(token_ids: np.ndarray) -> str:
+    """
+    Alternative semantic approach that groups similar tokens by character families.
+    
+    Args:
+        token_ids: Array of token IDs
+        
+    Returns:
+        String with semantically grouped character mapping
+    """
+    chars = []
+    
+    for token_id in token_ids:
+        token_id = int(token_id)
+        
+        # Special tokens
+        if token_id == SOS_TOKEN:
+            chars.append('▲')
+        elif token_id == EOS_TOKEN:
+            chars.append('▼')
+        elif token_id == PAD_TOKEN:
+            chars.append('░')
+        elif token_id == META_TOKEN:
+            chars.append('◆')
+        
+        # PA tokens: Use structure-aware mapping
+        elif token_id < NUM_PA_TOKEN:
+            depth = token_id // N_ORGAN
+            organ = token_id % N_ORGAN
+            
+            # Map by organ type with depth modifier
+            organ_bases = ['S', 'I', 'P', 'L', 'M', 'N']  # Shoot, Internode, Petiole, Leaf types
+            base_char = ord(organ_bases[organ]) + depth
+            chars.append(chr(base_char))
+        
+        # Parameter tokens: Group by value ranges
+        else:
+            param_idx = token_id - NUM_PA_TOKEN
+            
+            if param_idx < len(predetermined_centers):
+                param_value = predetermined_centers[param_idx][0]
+                
+                # Map parameter ranges to different character families
+                if -50 <= param_value <= 360:  # Angles
+                    # Map angles to uppercase letters A-Z, then numbers
+                    angle_normalized = int((param_value + 50) / 410 * 35)  # 0-35 range
+                    if angle_normalized < 26:
+                        chars.append(chr(ord('A') + angle_normalized))
+                    else:
+                        chars.append(str(angle_normalized - 26))
+                        
+                elif 0 <= param_value <= 1.0:  # Normalized values
+                    # Map to lowercase letters
+                    norm_idx = int(param_value * 25)  # 0-25 range
+                    chars.append(chr(ord('a') + min(norm_idx, 25)))
+                    
+                elif param_value < 0.1:  # Small lengths
+                    # Map to symbols
+                    symbols = "!@#$%^&*()_+-=[]{}|"
+                    symbol_idx = int(param_value * 1000) % len(symbols)
+                    chars.append(symbols[symbol_idx])
+                    
+                else:  # Other values
+                    # Map to remaining characters
+                    misc_chars = ".,<>?/~`"
+                    misc_idx = hash(param_value) % len(misc_chars)
+                    chars.append(misc_chars[misc_idx])
+            else:
+                chars.append('?')  # Unknown
+    
+    return "".join(chars)
+
 
 if __name__ == "__main__":
 

@@ -11,6 +11,7 @@ from transformers import PreTrainedModel, PretrainedConfig
 from transformers.utils import logging
 from torchvision.models import efficientnet_b0
 import math
+from contextlib import contextmanager
 
 from typing import Optional, Any, Union, Callable
 from torch import Tensor
@@ -745,257 +746,6 @@ class PlantArchitectureTransformer(TextTransformer):
 
         return pooled
     
-
-class PlantArchitectureConfig(PretrainedConfig):
-    model_type = "plant_architecture"
-    
-    def __init__(self, encoder_checkpoint=None, decoder_checkpoint=None, 
-                 encoder_config=None, decoder_config=None,
-                 use_depth=True, image_size=448,
-                 decoder_start_token_id=None,
-                 bos_token_id=None,
-                 pad_token_id=None,
-                 eos_token_id=None,
-                 **kwargs):
-        super().__init__(**kwargs)
-        self.encoder_checkpoint = encoder_checkpoint
-        self.decoder_checkpoint = decoder_checkpoint
-        self.image_size = image_size
-
-        # 1. Define decoder configuration
-        if decoder_checkpoint:
-            if "google-bert/bert" in decoder_checkpoint:
-                decoder_config = AutoConfig.from_pretrained(decoder_checkpoint)
-                decoder_config.max_position_embeddings = 2500  # Set maximum sequence length
-                decoder_config.vocab_size = VOCAB_SIZE  # Match with tokenizer's vocabulary size
-                decoder_config.add_cross_attention=True
-                decoder_config.is_decoder=True
-            elif "gpt2" in decoder_checkpoint:
-                decoder_config = GPT2Config.from_pretrained(decoder_checkpoint)
-                decoder_config.max_position_embeddings = 4096*2 # Set maximum sequence length
-                decoder_config.vocab_size = VOCAB_SIZE  # Match with tokenizer's vocabulary size
-                decoder_config.add_cross_attention=True
-                decoder_config.is_decoder=True
-            elif "google/bigbird-roberta" in decoder_checkpoint:
-                decoder_config = AutoConfig.from_pretrained(decoder_checkpoint)
-                decoder_config.max_position_embeddings = 4096*2  # Set maximum sequence length
-                decoder_config.vocab_size = VOCAB_SIZE  # Match with tokenizer's vocabulary size
-                decoder_config.add_cross_attention=True
-                decoder_config.is_decoder=True
-                decoder_config.attention_type='original_full'
-
-            decoder_config.bos_token_id = bos_token_id if bos_token_id is not None else SOS_TOKEN
-            decoder_config.pad_token_id = pad_token_id if pad_token_id is not None else PAD_TOKEN
-            decoder_config.eos_token_id = eos_token_id if eos_token_id is not None else EOS_TOKEN
-
-        self.encoder_config = encoder_config
-        self.decoder_config = decoder_config
-        self.use_depth = use_depth
-
-        # Token default settings
-        self.decoder_start_token_id = decoder_start_token_id if decoder_start_token_id is not None else SOS_TOKEN
-        self.bos_token_id = bos_token_id if bos_token_id is not None else SOS_TOKEN
-        self.pad_token_id = pad_token_id if pad_token_id is not None else PAD_TOKEN
-        self.eos_token_id = eos_token_id if eos_token_id is not None else EOS_TOKEN
-
-        # VisionEncoderDecoderModel essential options
-        self.is_encoder_decoder = True
-        # self.tie_word_embeddings = True
-
-class PlantArchitectureModel_old(PreTrainedModel):
-    config_class = PlantArchitectureConfig
-    
-    def __init__(self, config, image_processor=None):
-        super().__init__(config)
-        
-        self.config = config
-
-        if image_processor:
-            self.image_processor = image_processor
-        else:
-            image_size = self.config.image_size
-            encoder_config = AutoConfig.from_pretrained(self.config.encoder_checkpoint)
-            image_processor = AutoImageProcessor.from_pretrained(self.config.encoder_checkpoint)
-            image_processor.crop_size['width'] = image_size
-            image_processor.crop_size['height'] = image_size
-            image_processor.size['shortest_edge'] = image_size
-
-        self.image_processor = image_processor
-        
-        # Create the VisionEncoderDecoderModel
-        self.model = self._create_vision_enc_dec_model(self.config)
-        
-        # Freeze the encoder parameters
-        self.model.encoder.eval()
-        for param in self.model.encoder.parameters():
-            param.requires_grad = False
-
-        # Config에서 토큰 설정 적용
-        self.model.config.decoder_start_token_id = self.config.decoder_start_token_id
-        self.model.config.bos_token_id = self.config.bos_token_id
-        self.model.config.pad_token_id = self.config.pad_token_id
-        self.model.config.eos_token_id = self.config.eos_token_id
-
-        # Initialize depth estimation if needed
-        if self.config.use_depth:
-            self._initialize_depth_estimation()
-
-    def gradient_checkpointing_enable(self, gradient_checkpointing_kwargs=None):
-        """Enable gradient checkpointing for the model."""
-        if hasattr(self.model, 'gradient_checkpointing_enable'):
-            self.model.gradient_checkpointing_enable(gradient_checkpointing_kwargs)
-        else:
-            # Fallback: manually enable gradient checkpointing
-            if hasattr(self.model, 'encoder') and hasattr(self.model.encoder, 'gradient_checkpointing'):
-                self.model.encoder.gradient_checkpointing = True
-            if hasattr(self.model, 'decoder') and hasattr(self.model.decoder, 'gradient_checkpointing'):
-                self.model.decoder.gradient_checkpointing = True
-
-    def gradient_checkpointing_disable(self):
-        """Disable gradient checkpointing for the model."""
-        if hasattr(self.model, 'gradient_checkpointing_disable'):
-            self.model.gradient_checkpointing_disable()
-        else:
-            # Fallback: manually disable gradient checkpointing
-            if hasattr(self.model, 'encoder') and hasattr(self.model.encoder, 'gradient_checkpointing'):
-                self.model.encoder.gradient_checkpointing = False
-            if hasattr(self.model, 'decoder') and hasattr(self.model.decoder, 'gradient_checkpointing'):
-                self.model.decoder.gradient_checkpointing = False
-
-    def is_gradient_checkpointing(self):
-        """Check if gradient checkpointing is enabled."""
-        if hasattr(self.model, 'is_gradient_checkpointing'):
-            return self.model.is_gradient_checkpointing()
-        
-        # Check encoder and decoder separately
-        encoder_gc = getattr(self.model.encoder, 'gradient_checkpointing', False) if hasattr(self.model, 'encoder') else False
-        decoder_gc = getattr(self.model.decoder, 'gradient_checkpointing', False) if hasattr(self.model, 'decoder') else False
-        
-        return encoder_gc or decoder_gc
-
-    def _create_vision_enc_dec_model(self, config):
-        """Create VisionEncoderDecoderModel from encoder and decoder"""
-        if config.encoder_checkpoint and config.decoder_checkpoint:
-            # Method 1: Use from_encoder_decoder_pretrained (commented out in original)
-            if False:  # keeping original logic
-                model = VisionEncoderDecoderModel.from_encoder_decoder_pretrained(
-                    self.config.encoder_checkpoint, self.config.decoder_checkpoint, 
-                    decoder_config=self.config.decoder_config, 
-                    encoder_config=self.config.encoder_config,
-                    decoder_ignore_mismatched_sizes=True,
-                    torch_dtype=torch.float16, 
-                )
-            else:
-                # Method 2: Create encoder and decoder separately
-                encoder = AutoModel.from_pretrained(
-                    config.encoder_checkpoint, 
-                    config=config.encoder_config
-                )
-                decoder = AutoModelForCausalLM.from_pretrained(
-                    config.decoder_checkpoint, 
-                    config=config.decoder_config, 
-                    ignore_mismatched_sizes=True
-                )
-                
-                enc_dec_config = VisionEncoderDecoderConfig.from_encoder_decoder_configs(
-                    encoder.config, 
-                    decoder.config,
-                )
-                
-                model = VisionEncoderDecoderModel(
-                    config=enc_dec_config, 
-                    encoder=encoder, 
-                    decoder=decoder
-                )
-        else:
-            raise ValueError("encoder_checkpoint and decoder_checkpoint must be provided")
-        
-        return model
-
-    def _initialize_depth_estimation(self):
-        """Initialize depth estimation model"""
-        self.depth_est_img_proc = AutoImageProcessor.from_pretrained(
-            "depth-anything/Depth-Anything-V2-Small-hf"
-        )
-        self.depth_est_model = AutoModelForDepthEstimation.from_pretrained(
-            "depth-anything/Depth-Anything-V2-Small-hf"
-        )
-        
-        # Freeze depth estimation model parameters
-        for param in self.depth_est_model.parameters():
-            param.requires_grad = False
-
-    def forward(self, pixel_values=None, labels=None, **kwargs):
-        """Forward pass - compatible with Trainer"""
-        if self.config.use_depth and pixel_values is not None:
-            pixel_values = self.estimate_depth(pixel_values)
-        
-        if self.image_processor is not None and pixel_values is not None:
-            # If image_processor expects PIL images, skip this step
-            # pixel_values = self.image_processor(pixel_values)
-            pass
-        
-        return self.model(pixel_values=pixel_values, labels=labels, **kwargs)
-
-    def estimate_depth(self, image, add_background=True):
-        """Estimate depth and concatenate with RGB image"""
-        depth_input = image
-
-        with torch.no_grad():
-            inputs = self.depth_est_img_proc(images=depth_input, return_tensors="pt").to(image.device)
-            outputs = self.depth_est_model(**inputs)
-            predicted_depth = outputs.predicted_depth
-
-        # Interpolate to original size
-        depth = torch.nn.functional.interpolate(
-            predicted_depth.unsqueeze(1),
-            size=image.shape[-2:],
-            mode="bicubic",
-            align_corners=False,
-        )
-        
-        # Normalize to 0-1
-        depth = (depth - depth.min()) / (depth.max() - depth.min())
-        self.predicted_depth = depth
-        
-        # Rescale to 0-255
-        depth = depth * 255
-        
-        # Concatenate depth to image
-        if 0:
-            image = torch.cat((image, depth), dim=1)
-        else:
-            image = torch.cat((depth, depth, depth), dim=1)
-
-
-        return image
-    
-    def generate(self, pixel_values=None, decoder_input_ids=None, **kwargs):
-        """Generate sequences using the model"""
-        # Depth estimation if needed
-        if self.config.use_depth and pixel_values is not None:
-            pixel_values = self.estimate_depth(pixel_values)
-        
-        # Prepare generation kwargs
-        generation_kwargs = {
-            'pixel_values': pixel_values,
-            **kwargs
-        }
-        
-        # Add decoder_input_ids if provided
-        if decoder_input_ids is not None:
-            generation_kwargs['decoder_input_ids'] = decoder_input_ids
-        
-        # Forward to the underlying model's generate method
-        return self.model.generate(**generation_kwargs)
-    
-    def prepare_inputs_for_generation(self, input_ids, past_key_values=None, **kwargs):
-        """Prepare inputs for generation (required for some generation methods)"""
-        if hasattr(self.model, 'prepare_inputs_for_generation'):
-            return self.model.prepare_inputs_for_generation(
-                input_ids, past_key_values=past_key_values, **kwargs
-            )
-        return {"input_ids": input_ids, "past_key_values": past_key_values}
     
 logger = logging.get_logger(__name__)
 
@@ -1013,26 +763,20 @@ class PlantArchitectureModel(VisionEncoderDecoderModel):
         decoder: Optional[PreTrainedModel] = None,
     ):
         super().__init__(config, encoder, decoder)
-        if config.use_depth:
-            self._initialize_depth_estimation()
 
-        # if image_processor:
-        #     self.image_processor = image_processor
-        # else:
-        #     image_size = self.config.image_size
-        #     encoder_config = AutoConfig.from_pretrained(self.config.encoder_checkpoint)
-        #     image_processor = AutoImageProcessor.from_pretrained(self.config.encoder_checkpoint)
-        #     image_processor.crop_size['width'] = image_size
-        #     image_processor.crop_size['height'] = image_size
-        #     image_processor.size['shortest_edge'] = image_size
-
-        # self.image_processor = image_processor
+        if hasattr(config,"use_depth"):
+            if config.use_depth:
+                self._initialize_depth_estimation()
         
     def _initialize_depth_estimation(self):
         """Initialize depth estimation model"""
-        self.depth_est_img_proc = AutoImageProcessor.from_pretrained(
-            "depth-anything/Depth-Anything-V2-Small-hf"
-        )
+        if 0:
+            self.depth_est_img_proc = AutoImageProcessor.from_pretrained(
+                "depth-anything/Depth-Anything-V2-Small-hf"
+            )   
+        else:
+            self.depth_est_img_proc = None # The depth model will get preprocessed input
+
         self.depth_est_model = AutoModelForDepthEstimation.from_pretrained(
             "depth-anything/Depth-Anything-V2-Small-hf"
         )
@@ -1045,8 +789,9 @@ class PlantArchitectureModel(VisionEncoderDecoderModel):
         """Estimate depth and concatenate with RGB image"""
 
         with torch.no_grad():
-            inputs = self.depth_est_img_proc(images=image, return_tensors="pt").to(image.device)
-            outputs = self.depth_est_model(**inputs)
+            # inputs = self.depth_est_img_proc(images=image, return_tensors="pt").to(image.device)
+            # The depth model will get preprocessed input from outside
+            outputs = self.depth_est_model(image)
             predicted_depth = outputs.predicted_depth
 
         # Interpolate to original size
@@ -1061,8 +806,8 @@ class PlantArchitectureModel(VisionEncoderDecoderModel):
         depth = (depth - depth.min()) / (depth.max() - depth.min())
         self.predicted_depth = depth
         
-        # Rescale to 0-255
-        depth = depth * 255
+        # # Rescale to 0-255
+        # depth = depth * 255
         
         if 0:
             # Concatenate depth to image
@@ -1073,29 +818,84 @@ class PlantArchitectureModel(VisionEncoderDecoderModel):
 
         return image
     
+
+
+    @contextmanager
+    def _override_forward_for_generation(self, depth_enhanced_input):
+        """Context manager to override forward method during generation"""
+        original_forward = self.forward
+        
+        def cached_forward(pixel_values=None, labels=None, **kwargs):
+            # Generate 중에는 이미 계산된 depth input 사용
+            if hasattr(self.config, "use_depth") and self.config.use_depth:
+                pixel_values = depth_enhanced_input
+            return original_forward.__func__(self, pixel_values, labels, **kwargs)
+        
+        self.forward = cached_forward
+        try:
+            yield
+        finally:
+            self.forward = original_forward
+
     def forward(self, pixel_values=None, labels=None, **kwargs):
         """Forward pass - compatible with Trainer"""
-        if self.config.use_depth and pixel_values is not None:
-            pixel_values = self.estimate_depth(pixel_values)
+        if hasattr(self.config, "use_depth"):
+            if self.config.use_depth and pixel_values is not None:
+                pixel_values = self.estimate_depth(pixel_values)
         
         return super().forward(pixel_values=pixel_values, labels=labels, **kwargs)
+
+    # def generate(self, pixel_values=None, decoder_input_ids=None, **kwargs):
+    #     """Generate sequences using the model"""
+    #     # Depth estimation if needed
+    #     if hasattr(self.config, "use_depth") and self.config.use_depth and pixel_values is not None:
+    #         pixel_values = self.estimate_depth(pixel_values)
+        
+    #     # Prepare generation kwargs
+    #     generation_kwargs = {
+    #         'pixel_values': pixel_values,
+    #         **kwargs
+    #     }
+        
+    #     # Add decoder_input_ids if provided
+    #     if decoder_input_ids is not None:
+    #         generation_kwargs['decoder_input_ids'] = decoder_input_ids
+        
+    #     # Forward to the underlying model's generate method
+    #     return super().generate(**generation_kwargs)
 
 
     def generate(self, pixel_values=None, decoder_input_ids=None, **kwargs):
         """Generate sequences using the model"""
-        # Depth estimation if needed
-        if self.config.use_depth and pixel_values is not None:
-            pixel_values = self.estimate_depth(pixel_values)
         
-        # Prepare generation kwargs
-        generation_kwargs = {
-            'pixel_values': pixel_values,
-            **kwargs
-        }
-        
-        # Add decoder_input_ids if provided
-        if decoder_input_ids is not None:
-            generation_kwargs['decoder_input_ids'] = decoder_input_ids
-        
-        # Forward to the underlying model's generate method
-        return super().generate(**generation_kwargs)
+        # Pre-compute depth once if using depth
+        if hasattr(self.config, "use_depth") and self.config.use_depth and pixel_values is not None:
+            # Generation에서만 depth를 미리 계산
+            depth_enhanced_input = self.estimate_depth(pixel_values)
+            
+            # Context manager를 사용하여 forward 메서드 임시 교체
+            with self._override_forward_for_generation(depth_enhanced_input):
+                generation_kwargs = {
+                    'pixel_values': depth_enhanced_input,
+                    **kwargs
+                }
+                
+                # Add decoder_input_ids if provided
+                if decoder_input_ids is not None:
+                    generation_kwargs['decoder_input_ids'] = decoder_input_ids
+                
+                # Forward to the underlying model's generate method
+                return super().generate(**generation_kwargs)
+        else:
+            # No depth processing needed
+            generation_kwargs = {
+                'pixel_values': pixel_values,
+                **kwargs
+            }
+            
+            # Add decoder_input_ids if provided
+            if decoder_input_ids is not None:
+                generation_kwargs['decoder_input_ids'] = decoder_input_ids
+            
+            # Forward to the underlying model's generate method
+            return super().generate(**generation_kwargs)

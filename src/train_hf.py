@@ -10,6 +10,9 @@ from datetime import datetime
 from transformers import TrainerCallback, TrainingArguments, Trainer
 import numpy as np
 from tqdm import tqdm
+import evaluate  # Add this import
+from sklearn.metrics import accuracy_score, f1_score
+
 
 # Add . as a directory to import from
 import sys
@@ -22,7 +25,7 @@ sys.path.append(script_dir)
 from plant_tokenizer import SOS_TOKEN, EOS_TOKEN, PAD_TOKEN, VOCAB_SIZE, META_TOKEN
 from plant_dataset import PlantDataset
 from utils import model_summary
-from models.model import PlantArchitectureModel, PlantArchitectureConfig
+from models.model import PlantArchitectureModel
 
 def custom_data_collator(features):
     # features is a list of samples returned from the dataset
@@ -209,6 +212,147 @@ class CurriculumLearningCallback(TrainerCallback):
         # Proceed to final stage with all data
         self.update_curriculum(self.curriculum_steps - 1)
 
+def compute_metrics(pred):
+    labels = pred.label_ids
+    preds = pred.predictions.argmax(-1)
+    f1 = f1_score(labels, preds, average="weighted")
+    acc = accuracy_score(labels, preds)
+
+    return {"accuracy": acc, "f1":f1}
+
+
+
+def compute_metrics_for_training(eval_pred):
+    """
+    Compute F1 and accuracy metrics during training evaluation.
+    Computes both macro-averaging (per-sample then averaged) and micro-averaging (corpus-level).
+    """
+    predictions, labels = eval_pred
+    
+    # Handle tuple predictions - take the second element (processed token IDs)
+    if isinstance(predictions, tuple):
+        predictions = predictions[0]  # Take the processed token IDs, not the logits
+    
+    # Load metrics
+    f1_metric = evaluate.load('f1')
+    accuracy_metric = evaluate.load('accuracy')
+    
+    # If predictions are still logits (3D), convert to token IDs
+    if len(predictions.shape) == 3:  # (batch_size, seq_len, vocab_size)
+        predictions = np.argmax(predictions, axis=-1)
+    
+    # Initialize lists for macro averaging
+    macro_f1_scores = []
+    macro_accuracy_scores = []
+    
+    # Initialize lists for micro averaging (collect all tokens)
+    all_pred_tokens = []
+    all_label_tokens = []
+    
+    # Process each sample
+    for pred, label in zip(predictions, labels):
+        try:
+            # Remove -100 tokens (ignored labels) and PAD tokens from both predictions and labels
+            valid_mask = (label != -100) & (label != PAD_TOKEN)
+            
+            if valid_mask.sum() > 0:  # Check if there are any valid tokens
+                pred_valid = pred[valid_mask]
+                label_valid = label[valid_mask]
+                
+                # Also remove PAD tokens from predictions (in case they were predicted)
+                final_mask = pred_valid != PAD_TOKEN
+                if final_mask.sum() > 0:
+                    pred_final = pred_valid[final_mask]
+                    label_final = label_valid[final_mask]
+                    
+                    # For macro averaging: calculate per-sample metrics
+                    if len(pred_final) > 0 and len(label_final) > 0:
+                        # Ensure both sequences have the same length for fair comparison
+                        min_len = min(len(pred_final), len(label_final))
+                        pred_truncated = pred_final[:min_len]
+                        label_truncated = label_final[:min_len]
+                        
+                        # Calculate per-sample metrics for macro averaging
+                        f1_sample = f1_metric.compute(predictions=pred_truncated, references=label_truncated, average="weighted")
+                        accuracy_sample = accuracy_metric.compute(predictions=pred_truncated, references=label_truncated)
+                        
+                        macro_f1_scores.append(f1_sample['f1'])
+                        macro_accuracy_scores.append(accuracy_sample['accuracy'])
+                        
+                        # Collect tokens for micro averaging
+                        all_pred_tokens.extend(pred_truncated.tolist())
+                        all_label_tokens.extend(label_truncated.tolist())
+                    else:
+                        # Handle edge case where sequences are empty after filtering
+                        macro_f1_scores.append(0.0)
+                        macro_accuracy_scores.append(0.0)
+                else:
+                    # No valid predictions after filtering PAD tokens
+                    macro_f1_scores.append(0.0)
+                    macro_accuracy_scores.append(0.0)
+            else:
+                # No valid labels (all are -100 or PAD)
+                macro_f1_scores.append(0.0)
+                macro_accuracy_scores.append(0.0)
+                
+        except Exception as e:
+            print(f"Error computing metrics for sample during training: {e}")
+            macro_f1_scores.append(0.0)
+            macro_accuracy_scores.append(0.0)
+    
+    # Calculate macro averages (average of per-sample scores)
+    macro_f1 = sum(macro_f1_scores) / len(macro_f1_scores) if macro_f1_scores else 0.0
+    macro_accuracy = sum(macro_accuracy_scores) / len(macro_accuracy_scores) if macro_accuracy_scores else 0.0
+    
+    # Calculate micro averages (corpus-level metrics)
+    if len(all_pred_tokens) > 0 and len(all_label_tokens) > 0:
+        try:
+            micro_f1 = f1_metric.compute(predictions=all_pred_tokens, references=all_label_tokens, average="weighted")
+            micro_accuracy = accuracy_metric.compute(predictions=all_pred_tokens, references=all_label_tokens)
+            
+            micro_f1_score = micro_f1['f1']
+            micro_accuracy_score = micro_accuracy['accuracy']
+        except Exception as e:
+            print(f"Error computing micro-level metrics: {e}")
+            micro_f1_score = 0.0
+            micro_accuracy_score = 0.0
+    else:
+        micro_f1_score = 0.0
+        micro_accuracy_score = 0.0
+    
+    # Return both macro and micro metrics
+    return {
+        'macro_f1': macro_f1,
+        'macro_accuracy': macro_accuracy,
+        'micro_f1': micro_f1_score,
+        'micro_accuracy': micro_accuracy_score,
+        # Keep the original names for backward compatibility (using micro as default)
+        'f1': micro_f1_score,
+        'accuracy': micro_accuracy_score,
+    }
+
+def preprocess_logits_for_metrics(logits, labels):
+    """
+    Preprocess logits to ensure consistent shapes for metric computation.
+    """
+    if isinstance(logits, tuple):
+        logits = logits[0]
+    
+    # Convert logits to predictions (argmax)
+    predictions = torch.argmax(logits, dim=-1)
+    
+    # Pad predictions to match labels length if needed
+    if predictions.shape[1] < labels.shape[1]:
+        padding_size = labels.shape[1] - predictions.shape[1]
+        padding = torch.full((predictions.shape[0], padding_size), PAD_TOKEN, 
+                           device=predictions.device, dtype=predictions.dtype)
+        predictions = torch.cat([predictions, padding], dim=1)
+    elif predictions.shape[1] > labels.shape[1]:
+        # Truncate predictions to match labels
+        predictions = predictions[:, :labels.shape[1]]
+    
+    return predictions, labels
+
 if __name__ == "__main__":
     # Add argument parsing
     parser = argparse.ArgumentParser(description='Train the Image to Plant Architecture model')
@@ -218,16 +362,21 @@ if __name__ == "__main__":
     parser.add_argument('--encoder_checkpoint', type=str, default='facebook/dinov2-small', help='Encoder checkpoint to use')
     parser.add_argument('--decoder_checkpoint', type=str, default='gpt2-medium', help='Decoder checkpoint to use')
     parser.add_argument('--dataset_path', type=str, default='/home/lion397/datasets/GEMINI/plant_architecture/20250311_Sideview_40Days', help='Path to the dataset')
-    parser.add_argument('--today_date_str', type=str, default=datetime.now().strftime('%Y%m%d'), help='Date string for experiment naming')
-    parser.add_argument('--exp_name', type=str, help='Experiment name')
+    if 1:
+        parser.add_argument('--today_date_str', type=str, default=datetime.now().strftime('%Y%m%d'), help='Date string for experiment naming')
+        parser.add_argument('--exp_name', type=str, help='Experiment name')
+    else:
+        parser.add_argument('--today_date_str', type=str, default="20250523_TrainOnFarm", help='Date string for experiment naming')
+        parser.add_argument('--exp_name', type=str, default="dinov2-small_448_Sideview_gpt2-medium", help='Experiment name')
+
     parser.add_argument('--curriculum', default='False', help='Use curriculum learning')
-    parser.add_argument('--epoch', type=int, default=20, help='Number of traninig epochs')
+    parser.add_argument('--epoch', type=int, default=1, help='Number of traninig epochs')
     parser.add_argument('--grad_acc', type=int, default=4, help='gradient_accumulation_steps')
     parser.add_argument('--batch_size', type=int, default=4, help='Number of traninig batch_size')
     parser.add_argument('--color_jitter', type=str, default='False', help='Number of traninig epochs')
     parser.add_argument('--rnd_crop', type=str, default='False', help='Number of traninig epochs')
     parser.add_argument('--rnd_erase', type=str, default='False', help='Number of traninig epochs')
-    parser.add_argument('--use_depth', type=str, default='True', help='Use Depth instead of RGB')
+    parser.add_argument('--use_depth', type=str, default='False', help='Use Depth instead of RGB')
 
 
     args = parser.parse_args()
@@ -291,16 +440,15 @@ if __name__ == "__main__":
 
 
     if 1:
-        model = VisionEncoderDecoderModel.from_encoder_decoder_pretrained(
-        #model = PlantArchitectureModel.from_encoder_decoder_pretrained(
+        model = PlantArchitectureModel.from_encoder_decoder_pretrained(
             encoder_checkpoint, decoder_checkpoint, 
             decoder_config=decoder_config, 
             encoder_config=encoder_config,
             decoder_ignore_mismatched_sizes=True,
-            use_depth=True,
+            use_depth=args.use_depth,
             torch_dtype=torch.float16, 
         )
-        # Freeze the encoder parameters
+            # Freeze the encoder parameters
         model.encoder.eval()
         for param in model.encoder.parameters():
             param.requires_grad = False
@@ -319,7 +467,7 @@ if __name__ == "__main__":
             decoder_config=decoder_config,
             use_depth=True
         )
-        model = PlantArchitectureModel(config, image_processor)
+        model = PlantArchitectureModel(config)
 
 
 
@@ -355,6 +503,7 @@ if __name__ == "__main__":
                 plot=train_plots,
                 mode='train',
                 preload=args.preload, add_sos_token=False,
+                image_processor=image_processor,
                 color_jitter = args.color_jitter,
                 random_crop = args.rnd_crop,
                 random_erase=args.rnd_erase)
@@ -364,6 +513,7 @@ if __name__ == "__main__":
                 process_leaf=True, image_size=image_size,
                 side_view=args.side_view,
                 plot=val_plots,
+                image_processor=image_processor,
                 mode='val',
                 preload=args.preload, add_sos_token=False)
     val_size = len(val_dataset)
@@ -372,6 +522,7 @@ if __name__ == "__main__":
                 process_leaf=True, image_size=image_size,
                 side_view=args.side_view,
                 plot=test_plots,
+                image_processor=image_processor,
                 mode='test',
                 preload=args.preload, add_sos_token=False)
     test_size = len(test_dataset)
@@ -399,14 +550,14 @@ if __name__ == "__main__":
     batch_size = args.batch_size
     num_train_epochs = args.epoch
     gradient_accumulation_steps = 4
-    eval_save_steps = 1000 # or 0.1
+    eval_save_steps = 0.1 # or 1000
     warmup_steps = int(train_size * 0.2 // batch_size // gradient_accumulation_steps * num_train_epochs)
     print(f"warmup_steps:{warmup_steps}")
     training_args = TrainingArguments(
         output_dir=f"{output_base_dir}/checkpoints",     # Model output directory
         num_train_epochs=num_train_epochs,               # Number of training epochs
         per_device_train_batch_size=batch_size,          # Training batch size
-        per_device_eval_batch_size=batch_size*2,           # Evaluation batch size
+        per_device_eval_batch_size=batch_size*2,         # Evaluation batch size
         warmup_steps=warmup_steps,                       # Number of warmup steps for learning rate scheduler (or set the warmup_ratio)
         weight_decay=0.01,                               # Weight decay
         logging_dir=f"{output_base_dir}/logs",           # Log directory
@@ -418,7 +569,8 @@ if __name__ == "__main__":
         save_strategy="steps",                           # Save at each epoch
         save_steps=eval_save_steps,
         load_best_model_at_end=True,
-        metric_for_best_model='loss',
+        metric_for_best_model='f1',                      # Change from 'loss' to 'f1'
+        greater_is_better=True,                          # Add this since F1 higher is better
         save_total_limit=5,
         learning_rate=1e-4,
         dataloader_pin_memory=True,
@@ -433,6 +585,8 @@ if __name__ == "__main__":
         train_dataset=train_dataset,
         eval_dataset=val_dataset,
         data_collator=custom_data_collator,
+        compute_metrics=compute_metrics_for_training,
+        preprocess_logits_for_metrics=preprocess_logits_for_metrics,  # Add this
         callbacks=callbacks  # Add curriculum callback
     )
 
@@ -458,8 +612,15 @@ if __name__ == "__main__":
         trainer.save_model(results_dir) # Save model
 
     print("Calculating metrics...")
-    benchmark_path = os.path.join(output_base_dir, "benchmark.txt")
+    benchmark_folder = os.path.join(output_base_dir,"benchmark_results")
+    benchmark_path = os.path.join(benchmark_folder, "benchmark.txt")
     # Use your custom data collator to handle variable-length sequences
-    calc_metric(model=model, test_dataset=test_dataset, 
-                log_path=benchmark_path, collate_fn=custom_data_collator, 
-                batch_size=batch_size)
+    metrics = calc_metric(
+        model=model,
+        test_dataset=test_dataset,
+        log_path=benchmark_path,
+        batch_size=batch_size,
+        num_workers=4,
+        debug=False,
+        benchmark_folder=benchmark_folder
+    )
