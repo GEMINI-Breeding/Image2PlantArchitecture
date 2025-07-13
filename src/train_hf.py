@@ -28,20 +28,26 @@ from utils import model_summary
 from models.model import PlantArchitectureModel
 
 def custom_data_collator(features):
-    # features is a list of samples returned from the dataset
     pixel_values = torch.stack([f["pixel_values"] for f in features])
     
-    # Padding processing: adjust labels' length to match the longest sequence
     max_label_length = max(len(f["labels"]) for f in features)
     labels = torch.stack([
-        torch.cat([torch.tensor(f["labels"], dtype=torch.long), torch.full((max_label_length - len(f["labels"]),), PAD_TOKEN, dtype=torch.long)])
+        torch.cat([
+            torch.tensor(f["labels"], dtype=torch.long), 
+            # torch.full((max_label_length - len(f["labels"]),), PAD_TOKEN, dtype=torch.long)
+            torch.full((max_label_length - len(f["labels"]),), -100, dtype=torch.long) # To ignore in loss calculation
+        ])
         for f in features
     ])
+    
+    # decoder용 attention_mask 생성
+    decoder_attention_mask = (labels != -100) & (labels != PAD_TOKEN)
+    decoder_attention_mask = decoder_attention_mask.long()
 
-    # Plant info is integrated in labels, so don't need to return
     return {
         "pixel_values": pixel_values,
         "labels": labels,
+        "decoder_attention_mask": decoder_attention_mask,  
     }
 
 class CurriculumSubset(Dataset):
@@ -225,108 +231,54 @@ def compute_metrics(pred):
 def compute_metrics_for_training(eval_pred):
     """
     Compute F1 and accuracy metrics during training evaluation.
-    Computes both macro-averaging (per-sample then averaged) and micro-averaging (corpus-level).
+    Fast version using sklearn directly.
     """
     predictions, labels = eval_pred
     
-    # Handle tuple predictions - take the second element (processed token IDs)
+    # Handle tuple predictions - take the first element (processed token IDs)
     if isinstance(predictions, tuple):
-        predictions = predictions[0]  # Take the processed token IDs, not the logits
-    
-    # Load metrics
-    f1_metric = evaluate.load('f1')
-    accuracy_metric = evaluate.load('accuracy')
+        predictions = predictions[0]
     
     # If predictions are still logits (3D), convert to token IDs
     if len(predictions.shape) == 3:  # (batch_size, seq_len, vocab_size)
         predictions = np.argmax(predictions, axis=-1)
+
+    # Fast vectorized filtering
+    # Create masks for valid tokens (not -100 and not PAD)
+    valid_label_mask = (labels != -100) & (labels != PAD_TOKEN)
+    valid_pred_mask = (predictions != -100) & (predictions != PAD_TOKEN)
     
-    # Initialize lists for macro averaging
-    macro_f1_scores = []
-    macro_accuracy_scores = []
+    # Combine masks - only keep positions where both label and prediction are valid
+    combined_mask = valid_label_mask & valid_pred_mask
     
-    # Initialize lists for micro averaging (collect all tokens)
-    all_pred_tokens = []
-    all_label_tokens = []
+    # Extract all valid tokens at once
+    all_pred_tokens = predictions[combined_mask]
+    all_label_tokens = labels[combined_mask]
     
-    # Process each sample
-    for pred, label in zip(predictions, labels):
-        try:
-            # Remove -100 tokens (ignored labels) and PAD tokens from both predictions and labels
-            valid_mask = (label != -100) & (label != PAD_TOKEN)
-            
-            if valid_mask.sum() > 0:  # Check if there are any valid tokens
-                pred_valid = pred[valid_mask]
-                label_valid = label[valid_mask]
-                
-                # Also remove PAD tokens from predictions (in case they were predicted)
-                final_mask = pred_valid != PAD_TOKEN
-                if final_mask.sum() > 0:
-                    pred_final = pred_valid[final_mask]
-                    label_final = label_valid[final_mask]
-                    
-                    # For macro averaging: calculate per-sample metrics
-                    if len(pred_final) > 0 and len(label_final) > 0:
-                        # Ensure both sequences have the same length for fair comparison
-                        min_len = min(len(pred_final), len(label_final))
-                        pred_truncated = pred_final[:min_len]
-                        label_truncated = label_final[:min_len]
-                        
-                        # Calculate per-sample metrics for macro averaging
-                        f1_sample = f1_metric.compute(predictions=pred_truncated, references=label_truncated, average="weighted")
-                        accuracy_sample = accuracy_metric.compute(predictions=pred_truncated, references=label_truncated)
-                        
-                        macro_f1_scores.append(f1_sample['f1'])
-                        macro_accuracy_scores.append(accuracy_sample['accuracy'])
-                        
-                        # Collect tokens for micro averaging
-                        all_pred_tokens.extend(pred_truncated.tolist())
-                        all_label_tokens.extend(label_truncated.tolist())
-                    else:
-                        # Handle edge case where sequences are empty after filtering
-                        macro_f1_scores.append(0.0)
-                        macro_accuracy_scores.append(0.0)
-                else:
-                    # No valid predictions after filtering PAD tokens
-                    macro_f1_scores.append(0.0)
-                    macro_accuracy_scores.append(0.0)
-            else:
-                # No valid labels (all are -100 or PAD)
-                macro_f1_scores.append(0.0)
-                macro_accuracy_scores.append(0.0)
-                
-        except Exception as e:
-            print(f"Error computing metrics for sample during training: {e}")
-            macro_f1_scores.append(0.0)
-            macro_accuracy_scores.append(0.0)
-    
-    # Calculate macro averages (average of per-sample scores)
-    macro_f1 = sum(macro_f1_scores) / len(macro_f1_scores) if macro_f1_scores else 0.0
-    macro_accuracy = sum(macro_accuracy_scores) / len(macro_accuracy_scores) if macro_accuracy_scores else 0.0
-    
-    # Calculate micro averages (corpus-level metrics)
+    # Fast sklearn computation
     if len(all_pred_tokens) > 0 and len(all_label_tokens) > 0:
         try:
-            micro_f1 = f1_metric.compute(predictions=all_pred_tokens, references=all_label_tokens, average="weighted")
-            micro_accuracy = accuracy_metric.compute(predictions=all_pred_tokens, references=all_label_tokens)
+            from sklearn.metrics import f1_score, accuracy_score
             
-            micro_f1_score = micro_f1['f1']
-            micro_accuracy_score = micro_accuracy['accuracy']
+            # Convert to numpy arrays if they're tensors
+            if hasattr(all_pred_tokens, 'cpu'):
+                all_pred_tokens = all_pred_tokens.cpu().numpy()
+            if hasattr(all_label_tokens, 'cpu'):
+                all_label_tokens = all_label_tokens.cpu().numpy()
+            
+            # Calculate metrics using sklearn (much faster)
+            micro_f1_score = f1_score(all_label_tokens, all_pred_tokens, average='weighted', zero_division=0)
+            micro_accuracy_score = accuracy_score(all_label_tokens, all_pred_tokens)
+            
         except Exception as e:
-            print(f"Error computing micro-level metrics: {e}")
+            print(f"Error computing metrics: {e}")
             micro_f1_score = 0.0
             micro_accuracy_score = 0.0
     else:
         micro_f1_score = 0.0
         micro_accuracy_score = 0.0
-    
-    # Return both macro and micro metrics
+
     return {
-        'macro_f1': macro_f1,
-        'macro_accuracy': macro_accuracy,
-        'micro_f1': micro_f1_score,
-        'micro_accuracy': micro_accuracy_score,
-        # Keep the original names for backward compatibility (using micro as default)
         'f1': micro_f1_score,
         'accuracy': micro_accuracy_score,
     }
@@ -356,18 +308,18 @@ def preprocess_logits_for_metrics(logits, labels):
 if __name__ == "__main__":
     # Add argument parsing
     parser = argparse.ArgumentParser(description='Train the Image to Plant Architecture model')
-    parser.add_argument('--image_size', type=int, default=448, help='Size of input images')
+    parser.add_argument('--image_size', type=int, default=224, help='Size of input images')
     parser.add_argument('--side_view', type=str, default='True', help='Use side view images')
     parser.add_argument('--preload', type=str, default='False', help='Preload dataset into memory')
-    parser.add_argument('--encoder_checkpoint', type=str, default='facebook/dinov2-small', help='Encoder checkpoint to use')
+    parser.add_argument('--encoder_checkpoint', type=str, default='facebook/dinov2-base', help='Encoder checkpoint to use')
     parser.add_argument('--decoder_checkpoint', type=str, default='gpt2-medium', help='Decoder checkpoint to use')
     parser.add_argument('--dataset_path', type=str, default='/home/lion397/datasets/GEMINI/plant_architecture/20250311_Sideview_40Days', help='Path to the dataset')
-    if 1:
+    if 0:
         parser.add_argument('--today_date_str', type=str, default=datetime.now().strftime('%Y%m%d'), help='Date string for experiment naming')
         parser.add_argument('--exp_name', type=str, help='Experiment name')
     else:
-        parser.add_argument('--today_date_str', type=str, default="20250523_TrainOnFarm", help='Date string for experiment naming')
-        parser.add_argument('--exp_name', type=str, default="dinov2-small_448_Sideview_gpt2-medium", help='Experiment name')
+        parser.add_argument('--today_date_str', type=str, default="20250712_TrainOnFarm", help='Date string for experiment naming')
+        parser.add_argument('--exp_name', type=str, default="dinov2-base_224_RGB_Sideview_gpt2-medium", help='Experiment name')
 
     parser.add_argument('--curriculum', default='False', help='Use curriculum learning')
     parser.add_argument('--epoch', type=int, default=1, help='Number of traninig epochs')
@@ -378,6 +330,8 @@ if __name__ == "__main__":
     parser.add_argument('--rnd_crop', type=str, default='False', help='Number of traninig epochs')
     parser.add_argument('--rnd_erase', type=str, default='False', help='Number of traninig epochs')
     parser.add_argument('--use_depth', type=str, default='False', help='Use Depth instead of RGB')
+    parser.add_argument('--debug', type=str, default='False', help='Use debug mode')
+
 
 
     args = parser.parse_args()
@@ -390,6 +344,7 @@ if __name__ == "__main__":
     args.rnd_crop = args.rnd_crop.lower() == 'true'
     args.rnd_erase = args.rnd_erase.lower() == 'true'
     args.use_depth = args.use_depth.lower() == 'true'
+    args.debug = args.debug.lower() == 'true'
 
 
     # Use provided experiment name if available, otherwise construct one
@@ -430,6 +385,11 @@ if __name__ == "__main__":
         decoder_config.add_cross_attention=True
         decoder_config.is_decoder=True
         decoder_config.attention_type='original_full'
+
+    # decoder_config.decoder_start_token_id = SOS_TOKEN
+    # decoder_config.bos_token_id = SOS_TOKEN  # Beginning of sequence token
+    # decoder_config.pad_token_id = PAD_TOKEN  # Padding token
+    # decoder_config.eos_token_id = EOS_TOKEN  # End of sequence token
 
     encoder_checkpoint = args.encoder_checkpoint
     image_size = args.image_size
@@ -488,6 +448,8 @@ if __name__ == "__main__":
         model.config.pad_token_id = PAD_TOKEN  # Padding token
         model.config.eos_token_id = EOS_TOKEN  # End of sequence token
 
+        # Resize token embeddings to match custom vocab size
+        model.decoder.resize_token_embeddings(VOCAB_SIZE)
         # Don't wrap with DataParallel - let accelerate handle multi-GPU
         # No DataParallel or DDP wrapping here
     else:
@@ -510,9 +472,14 @@ if __name__ == "__main__":
     growth_stages = None # ["01"]
     dataset_path = args.dataset_path
     print("Loading Dataset...")
-    train_ratio = 0.8
-    val_ratio = 0.1
-    test_ratio = 0.01
+    if "debug" in exp_name or args.debug:
+        train_ratio = 0.0008
+        val_ratio = 0.0001
+        test_ratio = 0.0001
+    else:
+        train_ratio = 0.8
+        val_ratio = 0.1
+        test_ratio = 0.01
 
     # Separate by plot number
     # Get the num plots from the last xml file
@@ -582,14 +549,15 @@ if __name__ == "__main__":
     num_train_epochs = args.epoch
     gradient_accumulation_steps = 4
     eval_save_steps = 0.1 # or 1000
-    warmup_steps = int(train_size * 0.2 // batch_size // gradient_accumulation_steps * num_train_epochs)
-    print(f"warmup_steps:{warmup_steps}")
+    #warmup_steps = int(train_size * 0.2 // batch_size // gradient_accumulation_steps * num_train_epochs)
+    warmup_ratio = 0.2
+    #print(f"warmup_steps:{warmup_steps}")
     training_args = TrainingArguments(
         output_dir=f"{output_base_dir}/checkpoints",     # Model output directory
         num_train_epochs=num_train_epochs,               # Number of training epochs
         per_device_train_batch_size=batch_size,          # Training batch size
         per_device_eval_batch_size=batch_size*2,         # Evaluation batch size
-        warmup_steps=warmup_steps,                       # Number of warmup steps for learning rate scheduler (or set the warmup_ratio)
+        warmup_ratio=warmup_ratio,                       # Number of warmup steps for learning rate scheduler (or set the warmup_ratio)
         weight_decay=0.01,                               # Weight decay
         logging_dir=f"{output_base_dir}/logs",           # Log directory
         logging_steps=10,
@@ -642,18 +610,21 @@ if __name__ == "__main__":
             trainer.train()
         trainer.save_model(results_dir) # Save model
 
-    print("Calculating metrics...")
     benchmark_folder = os.path.join(output_base_dir,"benchmark_results")
     benchmark_path = os.path.join(benchmark_folder, "benchmark.txt")
-    
-    model.eval()
-    # Pass the model directly to calc_metric - accelerate will handle multi-GPU
-    metrics = calc_metric(
-        model=model,  # Pass model directly, no unwrapping needed
-        test_dataset=test_dataset,
-        log_path=benchmark_path,
-        batch_size=batch_size,
-        num_workers=args.num_workers//n_gpu,
-        debug=False,
-        benchmark_folder=benchmark_folder
-    )
+    if os.path.exists(benchmark_path):
+        print("Benchmark already exists")
+    else:
+        print("Calculating metrics...")
+        
+        model.eval()
+        # Pass the model directly to calc_metric - accelerate will handle multi-GPU
+        metrics = calc_metric(
+            model=model,  # Pass model directly, no unwrapping needed
+            test_dataset=test_dataset,
+            log_path=benchmark_path,
+            batch_size=batch_size,
+            num_workers=args.num_workers//n_gpu,
+            debug=args.debug,
+            benchmark_folder=benchmark_folder
+        )
