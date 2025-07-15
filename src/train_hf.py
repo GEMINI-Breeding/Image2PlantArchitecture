@@ -31,18 +31,23 @@ def custom_data_collator(features):
     pixel_values = torch.stack([f["pixel_values"] for f in features])
     
     max_label_length = max(len(f["labels"]) for f in features)
-    labels = torch.stack([
+    
+    # Step 1: First pad tokens using PAD_TOKEN
+    padded_labels = torch.stack([
         torch.cat([
             torch.tensor(f["labels"], dtype=torch.long), 
-            # torch.full((max_label_length - len(f["labels"]),), PAD_TOKEN, dtype=torch.long)
-            torch.full((max_label_length - len(f["labels"]),), -100, dtype=torch.long) # To ignore in loss calculation
+            torch.full((max_label_length - len(f["labels"]),), PAD_TOKEN, dtype=torch.long)
         ])
         for f in features
     ])
     
-    # decoder용 attention_mask 생성
-    decoder_attention_mask = (labels != -100) & (labels != PAD_TOKEN)
-    decoder_attention_mask = decoder_attention_mask.long()
+    # Step 2: Create pad mask to create the decoder attention mask
+    # True for actual tokens, False for padded tokens
+    decoder_attention_mask = (padded_labels != PAD_TOKEN).long()
+    
+    # Step 3: Replace padded token values to -100 to ignore from loss calculation
+    labels = padded_labels.clone()
+    labels[padded_labels == PAD_TOKEN] = -100
 
     return {
         "pixel_values": pixel_values,
@@ -314,7 +319,7 @@ if __name__ == "__main__":
     parser.add_argument('--encoder_checkpoint', type=str, default='facebook/dinov2-base', help='Encoder checkpoint to use')
     parser.add_argument('--decoder_checkpoint', type=str, default='gpt2-medium', help='Decoder checkpoint to use')
     parser.add_argument('--dataset_path', type=str, default='/home/lion397/datasets/GEMINI/plant_architecture/20250311_Sideview_40Days', help='Path to the dataset')
-    if 0:
+    if 1:
         parser.add_argument('--today_date_str', type=str, default=datetime.now().strftime('%Y%m%d'), help='Date string for experiment naming')
         parser.add_argument('--exp_name', type=str, help='Experiment name')
     else:
@@ -386,10 +391,10 @@ if __name__ == "__main__":
         decoder_config.is_decoder=True
         decoder_config.attention_type='original_full'
 
-    # decoder_config.decoder_start_token_id = SOS_TOKEN
-    # decoder_config.bos_token_id = SOS_TOKEN  # Beginning of sequence token
-    # decoder_config.pad_token_id = PAD_TOKEN  # Padding token
-    # decoder_config.eos_token_id = EOS_TOKEN  # End of sequence token
+    decoder_config.decoder_start_token_id = SOS_TOKEN
+    decoder_config.bos_token_id = SOS_TOKEN  # Beginning of sequence token
+    decoder_config.pad_token_id = PAD_TOKEN  # Padding token
+    decoder_config.eos_token_id = EOS_TOKEN  # End of sequence token
 
     encoder_checkpoint = args.encoder_checkpoint
     image_size = args.image_size
@@ -612,11 +617,11 @@ if __name__ == "__main__":
 
     benchmark_folder = os.path.join(output_base_dir,"benchmark_results")
     benchmark_path = os.path.join(benchmark_folder, "benchmark.txt")
-    if os.path.exists(benchmark_path):
+    #if os.path.exists(benchmark_path) and args.debug == False:
+    if os.path.exists(benchmark_path) and False:
         print("Benchmark already exists")
     else:
         print("Calculating metrics...")
-        
         model.eval()
         # Pass the model directly to calc_metric - accelerate will handle multi-GPU
         metrics = calc_metric(

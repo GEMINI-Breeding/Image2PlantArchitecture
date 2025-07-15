@@ -53,6 +53,33 @@ def collate_fn(features):
         "decoder_attention_mask": decoder_attention_mask,  
     }
 
+# Replace SPICE with a simpler semantic metric
+def simple_semantic_score(pred_tokens, label_tokens):
+    """Simple semantic similarity based on token overlap and order"""
+    pred_set = set(pred_tokens)
+    label_set = set(label_tokens)
+    
+    # Jaccard similarity for token overlap
+    intersection = len(pred_set & label_set)
+    union = len(pred_set | label_set)
+    jaccard = intersection / union if union > 0 else 0.0
+    
+    # Order similarity using longest common subsequence
+    def lcs_length(s1, s2):
+        m, n = len(s1), len(s2)
+        dp = [[0] * (n + 1) for _ in range(m + 1)]
+        for i in range(1, m + 1):
+            for j in range(1, n + 1):
+                if s1[i-1] == s2[j-1]:
+                    dp[i][j] = dp[i-1][j-1] + 1
+                else:
+                    dp[i][j] = max(dp[i-1][j], dp[i][j-1])
+        return dp[m][n]
+    
+    lcs_score = lcs_length(pred_tokens, label_tokens) / max(len(pred_tokens), len(label_tokens)) if max(len(pred_tokens), len(label_tokens)) > 0 else 0.0
+    
+    # Combine scores
+    return (jaccard + lcs_score) / 2
 
 def prepare_dataset(
     dataset_path: str,
@@ -146,14 +173,10 @@ def evaluate_model_with_accelerator(
                         eos_token_id=EOS_TOKEN,
                         pad_token_id=PAD_TOKEN,
                         max_length=max_length,
-                        min_length=6,
                         use_cache=True,
-                        do_sample=False,
-                        num_beams=1,
-                        return_dict_in_generate=False,
-                        output_attentions=False,
-                        output_hidden_states=False,
-                        repetition_penalty=1.1,
+                        do_sample=False,      # 결정론적
+                        num_beams=5,          # 5개 beam search
+                        early_stopping=True,  # EOS에서 조기 종료
                     )
                     
                 # Process locally without gathering to avoid deadlock
@@ -261,7 +284,7 @@ def compute_metrics(
     predictions: List[np.ndarray],
     labels: List[np.ndarray],
 ) -> Dict[str, float]:
-    """Compute corpus-based BLEU and ROUGE scores for the model predictions using generation results."""
+    """Compute corpus-based BLEU, ROUGE, and SPICE scores for the model predictions using generation results."""
     
     # Collect all predictions and references for corpus-level evaluation
     all_pred_ascii = []
@@ -362,7 +385,6 @@ def compute_metrics(
     else:
         corpus_bleu_arch_score = 0.0
     
-    # Fix: Use the correct rouge_score function
     # Compute ROUGE scores (full sequence)
     if all_pred_ascii and all_label_ascii:
         try:
@@ -417,7 +439,76 @@ def compute_metrics(
     else:
         rouge1_arch_score = rouge2_arch_score = rougeL_arch_score = 0.0
     
-    # Compute averages
+    # # Compute SPICE scores (full sequence)
+    # spice_full_score = 0.0
+    # spice_arch_score = 0.0
+    
+    # if all_pred_ascii and all_label_ascii:
+    #     try:
+    #         semantic_scores = []
+    #         plant_semantic_scores = []  # Separate tracking
+            
+    #         for pred, ref in zip(all_pred_ascii, all_label_ascii):
+    #             if pred.strip() and ref.strip():
+    #                 pred_tokens = pred.split()
+    #                 ref_tokens = ref.split()
+                    
+    #                 # Use enhanced plant architecture semantic score
+    #                 score = enhanced_simple_semantic_score(pred_tokens, ref_tokens)
+    #                 semantic_scores.append(score)
+                    
+    #                 # Also compute pure plant architecture score for analysis
+    #                 plant_score = plant_architecture_semantic_score(pred_tokens, ref_tokens)
+    #                 plant_semantic_scores.append(plant_score)
+            
+    #         spice_full_score = np.mean(semantic_scores) if semantic_scores else 0.0
+    #         plant_arch_score = np.mean(plant_semantic_scores) if plant_semantic_scores else 0.0
+            
+    #         print(f"Enhanced semantic similarity (full) computed for {len(semantic_scores)} samples: {spice_full_score:.4f}")
+    #         print(f"Plant architecture semantic score (full): {plant_arch_score:.4f}")
+            
+    #     except Exception as e:
+    #         print(f"Error computing semantic scores: {e}")
+    #         spice_full_score = 0.0
+
+            
+    # # Compute Enhanced Plant Architecture Semantic Scores (architecture tokens only)
+    # if all_pred_ascii_arch_only and all_label_ascii_arch_only:
+    #     try:
+    #         # Filter non-empty architecture sequences
+    #         filtered_pred_arch = [s for s in all_pred_ascii_arch_only if s.strip()]
+    #         filtered_label_arch = [s for s in all_label_ascii_arch_only if s.strip()]
+            
+    #         if filtered_pred_arch and filtered_label_arch:
+    #             arch_semantic_scores = []
+    #             arch_plant_scores = []
+                
+    #             for pred, ref in zip(filtered_pred_arch, filtered_label_arch):
+    #                 pred_tokens = pred.split()
+    #                 ref_tokens = ref.split()
+                    
+    #                 # Enhanced score for architecture tokens
+    #                 score = enhanced_simple_semantic_score(pred_tokens, ref_tokens)
+    #                 arch_semantic_scores.append(score)
+                    
+    #                 # Pure plant architecture score
+    #                 plant_score = plant_architecture_semantic_score(pred_tokens, ref_tokens)
+    #                 arch_plant_scores.append(plant_score)
+                
+    #             spice_arch_score = np.mean(arch_semantic_scores) if arch_semantic_scores else 0.0
+    #             plant_arch_only_score = np.mean(arch_plant_scores) if arch_plant_scores else 0.0
+                
+    #             print(f"Enhanced semantic similarity (arch) computed for {len(arch_semantic_scores)} samples: {spice_arch_score:.4f}")
+    #             print(f"Plant architecture semantic score (arch only): {plant_arch_only_score:.4f}")
+    #         else:
+    #             spice_arch_score = 0.0
+    #             print("No valid architecture sequences for semantic computation")
+                
+    #     except Exception as e:
+    #         print(f"Error computing architecture semantic scores: {e}")
+    #         spice_arch_score = 0.0
+    
+    # Update metrics to include plant-specific scores
     metrics = {
         'bleu_full': corpus_bleu_score,
         'bleu_arch': corpus_bleu_arch_score,
@@ -427,9 +518,59 @@ def compute_metrics(
         'rouge1_arch': rouge1_arch_score,
         'rouge2_arch': rouge2_arch_score,
         'rougeL_arch': rougeL_arch_score,
+        # 'spice_full': spice_full_score,       # Enhanced semantic score
+        # 'spice_arch': spice_arch_score,       # Enhanced semantic score (arch only)
+        # 'plant_semantic_full': plant_arch_score if 'plant_arch_score' in locals() else 0.0,  # Pure plant score
+        # 'plant_semantic_arch': plant_arch_only_score if 'plant_arch_only_score' in locals() else 0.0,  # Pure plant score (arch)
         'bleu': corpus_bleu_score  # Keep original for compatibility
     }
 
+    # Add sentence-level analysis for debugging
+    sentence_bleu_scores = []
+    sentence_bleu_detailed = []
+    
+    for i, (pred, ref) in enumerate(zip(all_pred_ascii, all_label_ascii)):
+        if pred.strip() and ref.strip():
+            sent_score = sacrebleu.sentence_bleu(pred, [ref])
+            sentence_bleu_scores.append(sent_score.score)
+            
+            # Store detailed info for debugging
+            sentence_bleu_detailed.append({
+                'sample_id': i,
+                'score': sent_score.score,
+                'pred_length': len(pred.split()),
+                'ref_length': len(ref.split()),
+                'pred_tokens': pred.split()[:10],  # First 10 tokens
+                'ref_tokens': ref.split()[:10]
+            })
+    
+    # Compute sentence-level statistics
+    if sentence_bleu_scores:
+        sentence_bleu_mean = np.mean(sentence_bleu_scores)
+        sentence_bleu_std = np.std(sentence_bleu_scores)
+        
+        print(f"\n=== SENTENCE-LEVEL BLEU ANALYSIS ===")
+        print(f"Sentence BLEU mean: {sentence_bleu_mean:.4f} ± {sentence_bleu_std:.4f}")
+        print(f"Corpus BLEU: {corpus_bleu_score:.4f}")
+        print(f"Min sentence BLEU: {min(sentence_bleu_scores):.4f}")
+        print(f"Max sentence BLEU: {max(sentence_bleu_scores):.4f}")
+        
+        # Show worst and best performing samples
+        worst_idx = sentence_bleu_scores.index(min(sentence_bleu_scores))
+        best_idx = sentence_bleu_scores.index(max(sentence_bleu_scores))
+        
+        print(f"\nWorst sample (ID {worst_idx}, score: {sentence_bleu_scores[worst_idx]:.4f}):")
+        print(f"  Pred: {' '.join(sentence_bleu_detailed[worst_idx]['pred_tokens'])}...")
+        print(f"  Ref:  {' '.join(sentence_bleu_detailed[worst_idx]['ref_tokens'])}...")
+        
+        print(f"\nBest sample (ID {best_idx}, score: {sentence_bleu_scores[best_idx]:.4f}):")
+        print(f"  Pred: {' '.join(sentence_bleu_detailed[best_idx]['pred_tokens'])}...")
+        print(f"  Ref:  {' '.join(sentence_bleu_detailed[best_idx]['ref_tokens'])}...")
+    
+    # Add to metrics for logging
+    metrics['sentence_bleu_mean'] = sentence_bleu_mean if sentence_bleu_scores else 0.0
+    metrics['sentence_bleu_std'] = sentence_bleu_std if sentence_bleu_scores else 0.0
+    
     return metrics
 
 
@@ -545,12 +686,16 @@ def calc_metric(
         print(f"  ROUGE-1: {metrics['rouge1_full']:.4f}")
         print(f"  ROUGE-2: {metrics['rouge2_full']:.4f}")
         print(f"  ROUGE-L: {metrics['rougeL_full']:.4f}")
+        # print(f"  Enhanced Semantic: {metrics['spice_full']:.4f}")
+        # print(f"  Plant Architecture Semantic: {metrics.get('plant_semantic_full', 0.0):.4f}")
         print("\nARCHITECTURE TOKENS ONLY (0-23):")
         print(f"  BLEU: {metrics['bleu_arch']:.4f}")
         print(f"  ROUGE-1: {metrics['rouge1_arch']:.4f}")
         print(f"  ROUGE-2: {metrics['rouge2_arch']:.4f}")
         print(f"  ROUGE-L: {metrics['rougeL_arch']:.4f}")
-        
+        # print(f"  Enhanced Semantic: {metrics['spice_arch']:.4f}")
+        # print(f"  Plant Architecture Semantic: {metrics.get('plant_semantic_arch', 0.0):.4f}")
+
         print(f"\nXML files saved to:")
         print(f"  Predictions: {os.path.abspath(pred_folder)}")
         print(f"  Ground Truth: {os.path.abspath(gt_folder)}")
@@ -564,11 +709,15 @@ def calc_metric(
             log_file.write(f"  ROUGE-1: {metrics['rouge1_full']:.4f}\n")
             log_file.write(f"  ROUGE-2: {metrics['rouge2_full']:.4f}\n")
             log_file.write(f"  ROUGE-L: {metrics['rougeL_full']:.4f}\n")
+            # log_file.write(f"  Enhanced Semantic: {metrics['spice_full']:.4f}\n")
+            # log_file.write(f"  Plant Architecture Semantic: {metrics.get('plant_semantic_full', 0.0):.4f}\n")
             log_file.write("\nARCHITECTURE TOKENS ONLY (0-23):\n")
             log_file.write(f"  BLEU: {metrics['bleu_arch']:.4f}\n")
             log_file.write(f"  ROUGE-1: {metrics['rouge1_arch']:.4f}\n")
             log_file.write(f"  ROUGE-2: {metrics['rouge2_arch']:.4f}\n")
             log_file.write(f"  ROUGE-L: {metrics['rougeL_arch']:.4f}\n")
+            # log_file.write(f"  Enhanced Semantic: {metrics['spice_arch']:.4f}\n")
+            # log_file.write(f"  Plant Architecture Semantic: {metrics.get('plant_semantic_arch', 0.0):.4f}\n")
             
             log_file.write(f"\nXML files saved to:\n")
             log_file.write(f"  Predictions: {os.path.abspath(pred_folder)}\n")
@@ -579,3 +728,227 @@ def calc_metric(
     else:
         # Return empty metrics for non-main processes
         return {}
+
+def plant_architecture_semantic_score(pred_tokens, label_tokens):
+    """
+    Plant architecture specific semantic similarity score.
+    Considers hierarchical structure, branching patterns, and component relationships.
+    """
+    # Define plant architecture token categories
+    def categorize_token(token_str):
+        try:
+            token = int(token_str)
+            if 0 <= token <= 23:  # Architecture tokens
+                # Define semantic groups for plant architecture
+                if token in [4*i for i in range(4)]:     # Shoot components
+                    return "shoot"
+                elif token in [4*i+1 for i in range(4)]: # Internode
+                    return "internode" 
+                elif token in [4*i+2 for i in range(4)]: # Petiole
+                    return "petiole"
+                elif token in [4*i+3 for i in range(4)]: # Leaf
+                    return "leaf"
+                elif token in [4*i+4 for i in range(4)]: # Leaf
+                    return "leaf"
+                elif token in [4*i+5 for i in range(4)]: # Leaf
+                    return "leaf"
+                else:
+                    return "architecture"
+            elif 24 <= token <= 199:  # Parameter tokens
+                return "parameter"
+            else:
+                return "other"
+        except (ValueError, TypeError):
+            return "unknown"
+    
+    # Categorize all tokens
+    pred_categories = [categorize_token(token) for token in pred_tokens]
+    label_categories = [categorize_token(token) for token in label_tokens]
+    
+    # 1. Structural similarity (category-based)
+    pred_cat_counts = {}
+    label_cat_counts = {}
+    
+    for cat in pred_categories:
+        pred_cat_counts[cat] = pred_cat_counts.get(cat, 0) + 1
+    for cat in label_categories:
+        label_cat_counts[cat] = label_cat_counts.get(cat, 0) + 1
+    
+    all_categories = set(pred_cat_counts.keys()) | set(label_cat_counts.keys())
+    
+    structural_similarity = 0.0
+    total_weight = 0.0
+    
+    # Weight different categories by importance
+    category_weights = {
+        "shoot": 1.5,    # High importance
+        "internode": 1.3,       # High importance  
+        "petiole": 1.1,  # Medium importance
+        "leaf": 1.2,         # Medium-high importance
+        "parameter": 0.8,    # Lower importance
+        "architecture": 1.0, # Default
+        "other": 0.5,        # Low importance
+        "unknown": 0.1       # Very low importance
+    }
+    
+    for cat in all_categories:
+        pred_count = pred_cat_counts.get(cat, 0)
+        label_count = label_cat_counts.get(cat, 0)
+        weight = category_weights.get(cat, 1.0)
+        
+        # Use intersection over union for each category
+        intersection = min(pred_count, label_count)
+        union = max(pred_count, label_count)
+        
+        if union > 0:
+            cat_similarity = intersection / union
+            structural_similarity += cat_similarity * weight
+            total_weight += weight
+    
+    structural_similarity = structural_similarity / total_weight if total_weight > 0 else 0.0
+    
+    # 2. Sequential pattern similarity (for plant growth patterns)
+    def get_architecture_pattern(tokens):
+        """Extract architecture token patterns"""
+        arch_tokens = []
+        for token in tokens:
+            try:
+                t = int(token)
+                if 0 <= t <= 23:  # Only architecture tokens
+                    arch_tokens.append(t)
+            except (ValueError, TypeError):
+                continue
+        return arch_tokens
+    
+    pred_arch_pattern = get_architecture_pattern(pred_tokens)
+    label_arch_pattern = get_architecture_pattern(label_tokens)
+    
+    # Longest common subsequence for pattern matching
+    def lcs_length(s1, s2):
+        m, n = len(s1), len(s2)
+        if m == 0 or n == 0:
+            return 0
+        dp = [[0] * (n + 1) for _ in range(m + 1)]
+        for i in range(1, m + 1):
+            for j in range(1, n + 1):
+                if s1[i-1] == s2[j-1]:
+                    dp[i][j] = dp[i-1][j-1] + 1
+                else:
+                    dp[i][j] = max(dp[i-1][j], dp[i][j-1])
+        return dp[m][n]
+    
+    if len(pred_arch_pattern) > 0 and len(label_arch_pattern) > 0:
+        lcs_score = lcs_length(pred_arch_pattern, label_arch_pattern) / max(len(pred_arch_pattern), len(label_arch_pattern))
+    else:
+        lcs_score = 0.0
+    
+    # 3. Hierarchical structure similarity (branching patterns)
+    def analyze_branching_pattern(arch_tokens):
+        """Analyze branching patterns in architecture tokens"""
+        branch_components = [t for t in arch_tokens if t in [3, 4, 5, 6]]  # Branch tokens
+        connection_components = [t for t in arch_tokens if t in [14, 15, 16, 17]]  # Connection tokens
+        
+        return {
+            'branch_count': len(branch_components),
+            'connection_count': len(connection_components),
+            'branch_variety': len(set(branch_components)),
+            'connection_variety': len(set(connection_components))
+        }
+    
+    pred_branching = analyze_branching_pattern(pred_arch_pattern)
+    label_branching = analyze_branching_pattern(label_arch_pattern)
+    
+    # Compare branching patterns
+    branching_similarities = []
+    for key in pred_branching.keys():
+        pred_val = pred_branching[key]
+        label_val = label_branching[key]
+        
+        if pred_val == 0 and label_val == 0:
+            branching_similarities.append(1.0)
+        elif max(pred_val, label_val) == 0:
+            branching_similarities.append(0.0)
+        else:
+            similarity = min(pred_val, label_val) / max(pred_val, label_val)
+            branching_similarities.append(similarity)
+    
+    branching_similarity = np.mean(branching_similarities) if branching_similarities else 0.0
+    
+    # 4. Parameter coherence (how well parameters match with architecture)
+    def count_parameters(tokens):
+        """Count parameter tokens"""
+        param_count = 0
+        for token in tokens:
+            try:
+                t = int(token)
+                if 24 <= t <= 199:  # Parameter tokens
+                    param_count += 1
+            except (ValueError, TypeError):
+                continue
+        return param_count
+    
+    pred_param_count = count_parameters(pred_tokens)
+    label_param_count = count_parameters(label_tokens)
+    
+    # Parameter coherence: ratio of parameters to architecture components
+    pred_arch_count = len(pred_arch_pattern)
+    label_arch_count = len(label_arch_pattern)
+    
+    if pred_arch_count > 0 and label_arch_count > 0:
+        pred_param_ratio = pred_param_count / pred_arch_count
+        label_param_ratio = label_param_count / label_arch_count
+        
+        if max(pred_param_ratio, label_param_ratio) > 0:
+            param_coherence = min(pred_param_ratio, label_param_ratio) / max(pred_param_ratio, label_param_ratio)
+        else:
+            param_coherence = 1.0
+    else:
+        param_coherence = 0.0
+    
+    # 5. Combine all scores with weights
+    final_score = (
+        structural_similarity * 0.35 +     # Most important: overall structure
+        lcs_score * 0.25 +                 # Important: sequential patterns
+        branching_similarity * 0.25 +      # Important: branching structure
+        param_coherence * 0.15             # Less important: parameter coherence
+    )
+    
+    return final_score
+
+# Enhanced simple semantic score as fallback
+def enhanced_simple_semantic_score(pred_tokens, label_tokens):
+    """Enhanced semantic similarity with plant-specific considerations"""
+    # First try plant-specific scoring
+    plant_score = plant_architecture_semantic_score(pred_tokens, label_tokens)
+    
+    # Also compute general semantic score as baseline
+    pred_set = set(pred_tokens)
+    label_set = set(label_tokens)
+    
+    # Jaccard similarity for token overlap
+    intersection = len(pred_set & label_set)
+    union = len(pred_set | label_set)
+    jaccard = intersection / union if union > 0 else 0.0
+    
+    # Order similarity using longest common subsequence
+    def lcs_length(s1, s2):
+        m, n = len(s1), len(s2)
+        dp = [[0] * (n + 1) for _ in range(m + 1)]
+        for i in range(1, m + 1):
+            for j in range(1, n + 1):
+                if s1[i-1] == s2[j-1]:
+                    dp[i][j] = dp[i-1][j-1] + 1
+                else:
+                    dp[i][j] = max(dp[i-1][j], dp[i][j-1])
+        return dp[m][n]
+    
+    lcs_score = lcs_length(pred_tokens, label_tokens) / max(len(pred_tokens), len(label_tokens)) if max(len(pred_tokens), len(label_tokens)) > 0 else 0.0
+    
+    # General semantic score
+    general_score = (jaccard + lcs_score) / 2
+    
+    # Combine plant-specific and general scores
+    # Give more weight to plant-specific score
+    combined_score = plant_score * 0.7 + general_score * 0.3
+    
+    return combined_score
