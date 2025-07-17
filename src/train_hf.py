@@ -4,6 +4,7 @@ from transformers import Trainer, TrainingArguments, ViTImageProcessor, BertToke
 from transformers import AutoProcessor, AutoModelForCausalLM
 from transformers import AutoImageProcessor, AutoModel
 from transformers import VisionEncoderDecoderModel, BertConfig, BertModel, ViTModel, AutoConfig, GPT2Config
+from transformers import AutoModelForCausalLM, AutoTokenizer
 import os
 import argparse
 from datetime import datetime
@@ -28,31 +29,42 @@ from utils import model_summary
 from models.model import PlantArchitectureModel
 
 def custom_data_collator(features):
+    """Custom data collator that uses tokenizer for text processing"""
     pixel_values = torch.stack([f["pixel_values"] for f in features])
-    
     max_label_length = max(len(f["labels"]) for f in features)
-    
-    # Step 1: First pad tokens using PAD_TOKEN
-    padded_labels = torch.stack([
-        torch.cat([
-            torch.tensor(f["labels"], dtype=torch.long), 
-            torch.full((max_label_length - len(f["labels"]),), PAD_TOKEN, dtype=torch.long)
+    # If you have text labels that need tokenization
+    if "text_labels" in features[0]:
+        # Tokenize text labels
+        text_labels = [f["text_labels"] for f in features]
+        tokenized = tokenizer(
+            text_labels,
+            padding=True,  # Add padding
+            max_length=max_label_length,
+            return_tensors="pt"
+        )
+        labels = tokenized["input_ids"]
+        decoder_attention_mask = tokenized["attention_mask"]
+    else:
+        # Pad tokens using PAD_TOKEN
+        padded_labels = torch.stack([
+            torch.cat([
+                torch.tensor(f["labels"], dtype=torch.long), 
+                torch.full((max_label_length - len(f["labels"]),), PAD_TOKEN, dtype=torch.long)
+            ])
+            for f in features
         ])
-        for f in features
-    ])
-    
-    # Step 2: Create pad mask to create the decoder attention mask
-    # True for actual tokens, False for padded tokens
-    decoder_attention_mask = (padded_labels != PAD_TOKEN).long()
-    
-    # Step 3: Replace padded token values to -100 to ignore from loss calculation
-    labels = padded_labels.clone()
-    labels[padded_labels == PAD_TOKEN] = -100
+        
+        # Create attention mask
+        decoder_attention_mask = (padded_labels != PAD_TOKEN).long()
+        
+        # Replace padded tokens with -100 for loss calculation
+        labels = padded_labels.clone()
+        labels[padded_labels == PAD_TOKEN] = -100
 
     return {
         "pixel_values": pixel_values,
         "labels": labels,
-        "decoder_attention_mask": decoder_attention_mask,  
+        "decoder_attention_mask": decoder_attention_mask,
     }
 
 class CurriculumSubset(Dataset):
@@ -391,10 +403,13 @@ if __name__ == "__main__":
         decoder_config.is_decoder=True
         decoder_config.attention_type='original_full'
 
-    decoder_config.decoder_start_token_id = SOS_TOKEN
-    decoder_config.bos_token_id = SOS_TOKEN  # Beginning of sequence token
-    decoder_config.pad_token_id = PAD_TOKEN  # Padding token
-    decoder_config.eos_token_id = EOS_TOKEN  # End of sequence token
+    # Use default tokenizer to keep
+    tokenizer = AutoTokenizer.from_pretrained(decoder_checkpoint)
+
+    # decoder_config.decoder_start_token_id = SOS_TOKEN
+    # decoder_config.bos_token_id = SOS_TOKEN  # Beginning of sequence token
+    # decoder_config.pad_token_id = PAD_TOKEN  # Padding token
+    # decoder_config.eos_token_id = EOS_TOKEN  # End of sequence token
 
     encoder_checkpoint = args.encoder_checkpoint
     image_size = args.image_size
@@ -448,13 +463,13 @@ if __name__ == "__main__":
             param.requires_grad = False
 
         # 5. Update model configuration
-        model.config.decoder_start_token_id = SOS_TOKEN  # Decoder start token
-        model.config.bos_token_id = SOS_TOKEN  # Beginning of sequence token
-        model.config.pad_token_id = PAD_TOKEN  # Padding token
-        model.config.eos_token_id = EOS_TOKEN  # End of sequence token
+        # model.config.decoder_start_token_id = SOS_TOKEN  # Decoder start token
+        # model.config.bos_token_id = SOS_TOKEN  # Beginning of sequence token
+        # model.config.pad_token_id = PAD_TOKEN  # Padding token
+        # model.config.eos_token_id = EOS_TOKEN  # End of sequence token
 
-        # Resize token embeddings to match custom vocab size
-        model.decoder.resize_token_embeddings(VOCAB_SIZE)
+        # # Resize token embeddings to match custom vocab size
+        # model.decoder.resize_token_embeddings(VOCAB_SIZE)
         # Don't wrap with DataParallel - let accelerate handle multi-GPU
         # No DataParallel or DDP wrapping here
     else:

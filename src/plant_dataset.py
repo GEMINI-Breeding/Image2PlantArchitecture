@@ -383,7 +383,11 @@ class PlantDataset(Dataset):
         if self.image_processor:
             image = self.image_processor(image, return_tensors="pt").pixel_values[0]
             
-        return {"pixel_values": image, "labels": out, "plant_info": plant_info_token, "plant_vec": vec}
+
+        text_labels = " ".join(map(str, out))
+
+        return {"pixel_values": image, "labels": out, "text_labels":text_labels, 
+                "plant_info": plant_info_token, "plant_vec": vec}
 
     def _sort_files(self, sort_by='name', sort_order='ascending'):
         """

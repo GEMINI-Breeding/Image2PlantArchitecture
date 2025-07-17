@@ -2,3 +2,5 @@ opencv-python-headless #opencv-python==4.10.0.82
 tensorboard
 evalulate
 sacrebleu
+rouge_score
+nltk
