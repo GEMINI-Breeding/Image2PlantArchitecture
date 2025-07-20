@@ -32,38 +32,22 @@ def custom_data_collator(features):
     """Custom data collator that uses tokenizer for text processing"""
     pixel_values = torch.stack([f["pixel_values"] for f in features])
     max_label_length = max(len(f["labels"]) for f in features)
-    # If you have text labels that need tokenization
-    if "text_labels" in features[0]:
-        # Tokenize text labels
-        text_labels = [f["text_labels"] for f in features]
-        tokenized = tokenizer(
-            text_labels,
-            padding=True,  # Add padding
-            max_length=max_label_length,
-            return_tensors="pt"
-        )
-        labels = tokenized["input_ids"]
-        decoder_attention_mask = tokenized["attention_mask"]
-    else:
-        # Pad tokens using PAD_TOKEN
-        padded_labels = torch.stack([
-            torch.cat([
-                torch.tensor(f["labels"], dtype=torch.long), 
-                torch.full((max_label_length - len(f["labels"]),), PAD_TOKEN, dtype=torch.long)
-            ])
-            for f in features
-        ])
-        
-        # Create attention mask
-        decoder_attention_mask = (padded_labels != PAD_TOKEN).long()
-        
-        # Replace padded tokens with -100 for loss calculation
-        labels = padded_labels.clone()
-        labels[padded_labels == PAD_TOKEN] = -100
 
+    # Pad tokens using PAD_TOKEN
+    padded_labels = torch.stack([
+        torch.cat([
+            torch.tensor(f["labels"], dtype=torch.long), 
+            torch.full((max_label_length - len(f["labels"]),), -100, dtype=torch.long)
+        ])
+        for f in features
+    ])
+    
+    # Create attention mask
+    decoder_attention_mask = (padded_labels != -100).long()
+    
     return {
         "pixel_values": pixel_values,
-        "labels": labels,
+        "labels": padded_labels,
         "decoder_attention_mask": decoder_attention_mask,
     }
 
@@ -341,7 +325,7 @@ if __name__ == "__main__":
     parser.add_argument('--curriculum', default='False', help='Use curriculum learning')
     parser.add_argument('--epoch', type=int, default=1, help='Number of traninig epochs')
     parser.add_argument('--grad_acc', type=int, default=4, help='gradient_accumulation_steps')
-    parser.add_argument('--batch_size', type=int, default=4, help='Number of traninig batch_size')
+    parser.add_argument('--batch_size', type=int, default=1, help='Number of traninig batch_size')
     parser.add_argument('--num_workers', type=int, default=8, help='Number of workers')
     parser.add_argument('--color_jitter', type=str, default='False', help='Number of traninig epochs')
     parser.add_argument('--rnd_crop', type=str, default='False', help='Number of traninig epochs')
@@ -392,7 +376,11 @@ if __name__ == "__main__":
     elif "gpt2" in decoder_checkpoint:
         decoder_config = GPT2Config.from_pretrained(decoder_checkpoint)
         decoder_config.max_position_embeddings = 4096*2 # Set maximum sequence length
-        decoder_config.vocab_size = VOCAB_SIZE  # Match with tokenizer's vocabulary size
+        if 0:
+            decoder_config.vocab_size = VOCAB_SIZE  # Match with tokenizer's vocabulary size
+        else:
+            # It will re-use all the pretrained weights
+            pass
         decoder_config.add_cross_attention=True
         decoder_config.is_decoder=True
     elif "google/bigbird-roberta" in decoder_checkpoint:
@@ -463,10 +451,10 @@ if __name__ == "__main__":
             param.requires_grad = False
 
         # 5. Update model configuration
-        # model.config.decoder_start_token_id = SOS_TOKEN  # Decoder start token
-        # model.config.bos_token_id = SOS_TOKEN  # Beginning of sequence token
-        # model.config.pad_token_id = PAD_TOKEN  # Padding token
-        # model.config.eos_token_id = EOS_TOKEN  # End of sequence token
+        model.config.decoder_start_token_id = tokenizer.bos_token_id  # Decoder start token
+        model.config.bos_token_id = tokenizer.bos_token_id  # Beginning of sequence token
+        model.config.pad_token_id = tokenizer.eos_token_id  # Padding token
+        model.config.eos_token_id = tokenizer.eos_token_id  # End of sequence token
 
         # # Resize token embeddings to match custom vocab size
         # model.decoder.resize_token_embeddings(VOCAB_SIZE)
@@ -521,7 +509,7 @@ if __name__ == "__main__":
                 plot=train_plots,
                 mode='train',
                 preload=args.preload, add_sos_token=False,
-                image_processor=image_processor,
+                image_processor=image_processor,tokenizer=tokenizer,
                 color_jitter = args.color_jitter,
                 random_crop = args.rnd_crop,
                 random_erase=args.rnd_erase)
@@ -531,7 +519,7 @@ if __name__ == "__main__":
                 process_leaf=True, image_size=image_size,
                 side_view=args.side_view,
                 plot=val_plots,
-                image_processor=image_processor,
+                image_processor=image_processor,tokenizer=tokenizer,
                 mode='val',
                 preload=args.preload, add_sos_token=False)
     val_size = len(val_dataset)
@@ -540,7 +528,7 @@ if __name__ == "__main__":
                 process_leaf=True, image_size=image_size,
                 side_view=args.side_view,
                 plot=test_plots,
-                image_processor=image_processor,
+                image_processor=image_processor,tokenizer=tokenizer,
                 mode='test',
                 preload=args.preload, add_sos_token=False)
     test_size = len(test_dataset)
@@ -594,7 +582,8 @@ if __name__ == "__main__":
         learning_rate=1e-4,
         dataloader_pin_memory=True,
         dataloader_num_workers=args.num_workers//n_gpu,
-        fp16=True,
+        #fp16=True,
+        bf16=True,
     )
 
     # Create Trainer object

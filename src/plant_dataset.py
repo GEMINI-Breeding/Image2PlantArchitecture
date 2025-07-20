@@ -93,7 +93,7 @@ def load_sideview_images(images_dir, image_file_name, img_size, process_leaf, fl
 class PlantDataset(Dataset):
     def __init__(self, root_dir, plot=None, stages=None, 
                  image_size=224, load_depth=False, preload=False, side_view=False,
-                 process_leaf=True, image_processor=None, add_sos_token=False, flip_test=False,
+                 process_leaf=True, image_processor=None, tokenizer=None, add_sos_token=False, flip_test=False,
                  mode='', color_jitter=False, random_crop=False, random_erase=False,
                  sort_by='name', sort_order='ascending'):
         """
@@ -119,6 +119,11 @@ class PlantDataset(Dataset):
         self.random_crop = random_crop
         self.color_jitter = color_jitter
         self.random_erase = random_erase
+
+        if tokenizer:
+            self.tokenizer = tokenizer
+        else:
+            self.tokenizer = None
 
         # Apply custom sorting
         self._sort_files(sort_by, sort_order)
@@ -386,7 +391,16 @@ class PlantDataset(Dataset):
 
         text_labels = " ".join(map(str, out))
 
-        return {"pixel_values": image, "labels": out, "text_labels":text_labels, 
+        if self.tokenizer:
+            labels = self.tokenizer(
+                text_labels,
+                max_length=len(out),
+                truncation=True,
+            )['input_ids']
+        else:
+            labels = out
+
+        return {"pixel_values": image, "labels": labels, 
                 "plant_info": plant_info_token, "plant_vec": vec}
 
     def _sort_files(self, sort_by='name', sort_order='ascending'):

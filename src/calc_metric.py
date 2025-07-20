@@ -166,12 +166,21 @@ def evaluate_model_with_accelerator(
                 # Generate predictions for the entire batch at once
                 with torch.cuda.amp.autocast():
                     unwrapped_model = accelerator.unwrap_model(model)
+                    # generated_ids = unwrapped_model.generate(
+                    #     pixel_values,
+                    #     decoder_start_token_id=SOS_TOKEN,
+                    #     decoder_input_ids=plant_info_batch,
+                    #     eos_token_id=EOS_TOKEN,
+                    #     pad_token_id=PAD_TOKEN,
+                    #     max_length=max_length,
+                    #     use_cache=True,
+                    #     do_sample=False,      # 결정론적
+                    #     num_beams=5,          # 5개 beam search
+                    #     early_stopping=True,  # EOS에서 조기 종료
+                    # )
                     generated_ids = unwrapped_model.generate(
                         pixel_values,
-                        decoder_start_token_id=SOS_TOKEN,
                         decoder_input_ids=plant_info_batch,
-                        eos_token_id=EOS_TOKEN,
-                        pad_token_id=PAD_TOKEN,
                         max_length=max_length,
                         use_cache=True,
                         do_sample=False,      # 결정론적
@@ -634,6 +643,9 @@ def calc_metric(
             try:
                 # Save predicted XML - convert predicted tokens to plant vector
                 pred_tokens = pred[pred != PAD_TOKEN]  # Remove PAD tokens
+                if test_dataset.tokenizer:
+                    pred_tokens = test_dataset.tokenizer.decode(pred_tokens)
+
                 est_plant_vec = token2vec(pred_tokens)
                 
                 if est_plant_vec:
@@ -648,6 +660,8 @@ def calc_metric(
                 # Save ground truth XML - convert ground truth tokens to plant vector
                 gt_tokens = label
                 gt_tokens = gt_tokens[gt_tokens != PAD_TOKEN]  # Remove PAD tokens
+                if test_dataset.tokenizer:
+                    gt_tokens = test_dataset.tokenizer.decode(gt_tokens)
                 gt_plant_vec_from_tokens = token2vec(gt_tokens)
                 
                 if gt_plant_vec_from_tokens:
