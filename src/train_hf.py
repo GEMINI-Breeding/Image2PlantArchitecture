@@ -309,7 +309,7 @@ def preprocess_logits_for_metrics(logits, labels):
 if __name__ == "__main__":
     # Add argument parsing
     parser = argparse.ArgumentParser(description='Train the Image to Plant Architecture model')
-    parser.add_argument('--image_size', type=int, default=224, help='Size of input images')
+    parser.add_argument('--image_size', type=int, default=448, help='Size of input images')
     parser.add_argument('--side_view', type=str, default='True', help='Use side view images')
     parser.add_argument('--preload', type=str, default='False', help='Preload dataset into memory')
     parser.add_argument('--encoder_checkpoint', type=str, default='facebook/dinov2-base', help='Encoder checkpoint to use')
