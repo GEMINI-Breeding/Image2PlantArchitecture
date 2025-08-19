@@ -94,7 +94,7 @@ class PlantDataset(Dataset):
     def __init__(self, root_dir, plot=None, stages=None, 
                  image_size=224, load_depth=False, preload=False, side_view=False,
                  process_leaf=True, image_processor=None, add_sos_token=False, flip_test=False,
-                 mode='', color_jitter=False, random_crop=False, random_erase=False,
+                 mode='', color_jitter=False, random_crop=False, random_erase=False, background=None,
                  sort_by='name', sort_order='ascending'):
         """
         Parameters:
@@ -120,6 +120,8 @@ class PlantDataset(Dataset):
         self.color_jitter = color_jitter
         self.random_erase = random_erase
 
+        self.background = background
+        
         # Apply custom sorting
         self._sort_files(sort_by, sort_order)
         
@@ -286,6 +288,7 @@ class PlantDataset(Dataset):
         except Exception as e:
             print(e)
             print(xml_path)
+            plant_array = []
 
         return leaf_img, plant_info, plant_array
     
