@@ -162,8 +162,7 @@ cython_debug/
 #.idea/
 
 
-src/PlantString2Model/build*
-src/GenerateDataset/build*
+CowpeaSimulator/build*
 
 # data folder
 data
