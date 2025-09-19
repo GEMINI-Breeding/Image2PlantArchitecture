@@ -173,7 +173,7 @@ models/checkpoints
 src/output
 output
 temp
-src/temp
+src/temp*
 src/output*
 tests/lightning_logs
 *.pth
