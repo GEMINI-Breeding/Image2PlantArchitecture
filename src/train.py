@@ -313,19 +313,14 @@ def preprocess_logits_for_metrics(logits, labels):
 if __name__ == "__main__":
     # Add argument parsing
     parser = argparse.ArgumentParser(description='Train the Image to Plant Architecture model')
-    parser.add_argument('--image_size', type=int, default=224, help='Size of input images')
+    parser.add_argument('--image_size', type=int, default=448, help='Size of input images')
     parser.add_argument('--side_view', type=str, default='True', help='Use side view images')
     parser.add_argument('--preload', type=str, default='False', help='Preload dataset into memory')
-    parser.add_argument('--encoder_checkpoint', type=str, default='facebook/dinov2-base', help='Encoder checkpoint to use')
+    parser.add_argument('--encoder_checkpoint', type=str, default='facebook/dinov2-small', help='Encoder checkpoint to use')
     parser.add_argument('--decoder_checkpoint', type=str, default='gpt2-medium', help='Decoder checkpoint to use')
     parser.add_argument('--dataset_path', type=str, default='/home/lion397/datasets/GEMINI/plant_architecture/20250311_Sideview_40Days', help='Path to the dataset')
-    if 1:
-        parser.add_argument('--today_date_str', type=str, default=datetime.now().strftime('%Y%m%d'), help='Date string for experiment naming')
-        parser.add_argument('--exp_name', type=str, help='Experiment name')
-    else:
-        parser.add_argument('--today_date_str', type=str, default="20250712_TrainOnFarm", help='Date string for experiment naming')
-        parser.add_argument('--exp_name', type=str, default="dinov2-base_224_RGB_Sideview_gpt2-medium", help='Experiment name')
-
+    parser.add_argument('--today_date_str', type=str, default="20250430_TrainValTestByPlotMoreData", help='Date string for experiment naming')
+    parser.add_argument('--exp_name', type=str, default="dinov2-small_448_Sideview_gpt2-medium", help='Experiment name')
     parser.add_argument('--curriculum', default='False', help='Use curriculum learning')
     parser.add_argument('--epoch', type=int, default=1, help='Number of traninig epochs')
     parser.add_argument('--grad_acc', type=int, default=4, help='gradient_accumulation_steps')
@@ -335,6 +330,7 @@ if __name__ == "__main__":
     parser.add_argument('--rnd_crop', type=str, default='False', help='Number of traninig epochs')
     parser.add_argument('--rnd_erase', type=str, default='False', help='Number of traninig epochs')
     parser.add_argument('--use_depth', type=str, default='False', help='Use Depth instead of RGB')
+    parser.add_argument('--push_to_hub', type=str, default='True', help='Push model to huggingface hub')
     parser.add_argument('--debug', type=str, default='False', help='Use debug mode')
 
 
@@ -350,6 +346,7 @@ if __name__ == "__main__":
     args.rnd_erase = args.rnd_erase.lower() == 'true'
     args.use_depth = args.use_depth.lower() == 'true'
     args.debug = args.debug.lower() == 'true'
+    args.push_to_hub = args.push_to_hub.lower() == 'true'
 
 
     # Use provided experiment name if available, otherwise construct one
@@ -597,10 +594,10 @@ if __name__ == "__main__":
     model_summary(model=model, max_depth=1)
 
     # Check if model is already trained
-    if os.path.exists(results_dir) and len(os.listdir(results_dir)) > 0 and False:
+    if os.path.exists(results_dir) and len(os.listdir(results_dir)) > 0:
         print(f"Model checkpoint already exists at {results_dir}. Skipping training.")
         # Load the trained model to calculate metrics
-        model = VisionEncoderDecoderModel.from_pretrained(results_dir)
+        model = PlantArchitectureModel.from_pretrained(results_dir)
     else:
         # print("Test model saving...")
         # trainer.save_model(results_dir) # Save model
@@ -615,10 +612,26 @@ if __name__ == "__main__":
             trainer.train()
         trainer.save_model(results_dir) # Save model
 
+    if args.push_to_hub:
+        import subprocess
+        # Get Hugging Face username
+        try:
+            whoami_output = subprocess.check_output(["hf","auth","whoami"], text=True)
+            username = whoami_output.strip().split("\n")[-1]
+            if username.startswith("You are logged in as"):
+                username = username.split("as")[-1].strip().split()[0]
+        except Exception as e:
+            print(f"Could not determine Hugging Face username: {e}")
+            username = "your-username"
+        # Use experiment name as model name
+        model_name = exp_name if exp_name else "your-model-name"
+        repo_id = f"{username}/{model_name}"
+        print(f"Pushing model to Hugging Face Hub as {repo_id}")
+        model.push_to_hub(repo_id)
+
     benchmark_folder = os.path.join(output_base_dir,"benchmark_results")
     benchmark_path = os.path.join(benchmark_folder, "benchmark.txt")
-    #if os.path.exists(benchmark_path) and args.debug == False:
-    if os.path.exists(benchmark_path) and False:
+    if os.path.exists(benchmark_path) :
         print("Benchmark already exists")
     else:
         print("Calculating metrics...")

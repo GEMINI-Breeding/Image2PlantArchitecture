@@ -3,8 +3,8 @@
 ## Setup
 
 ```bash
-conda env create -f environment.yml -p ./env
-conda activate ./env
+conda env create -f environment.yml -p .env
+conda activate .env
 
 # Build PlantString2Model
 cd src/PlantString2Model

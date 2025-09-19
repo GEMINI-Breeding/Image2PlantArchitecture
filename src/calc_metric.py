@@ -586,8 +586,11 @@ def calc_metric(
     """Calculate metrics for a model on a given dataset."""
     
     # Accelerator를 한 번만 생성
-    ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
-    accelerator = Accelerator(kwargs_handlers=[ddp_kwargs])
+    if 0:
+        ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
+        accelerator = Accelerator(kwargs_handlers=[ddp_kwargs])
+    else:
+        accelerator = Accelerator()
     
     # 메인 프로세스에서만 폴더 생성
     if accelerator.is_main_process:

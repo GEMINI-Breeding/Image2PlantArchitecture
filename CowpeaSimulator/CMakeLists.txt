@@ -11,7 +11,7 @@ project(helios)
 #find_package(yaml-cpp REQUIRED)
 
 #provide the path to Helios base directory, either as an absolute path or a path relative to the location of this file
-set( BASE_DIRECTORY "../libs/Helios" )
+set( BASE_DIRECTORY "libs/Helios" )
 
 # Add another cmake file in libs/yaml-cpp to the project
 # add_subdirectory(libs/yaml-cpp)
@@ -21,7 +21,6 @@ set( BASE_DIRECTORY "../libs/Helios" )
 set( EXECUTABLE_NAME "main" )
 
 #provide name of source file(s) (separate multiple file names with semicolon)
-#set( SOURCE_FILES "main_cowpea_yaml_grow.cpp" )
 set( SOURCE_FILES "main.cpp" )
 
 #specify which plug-ins to use (separate plug-in names with semicolon)

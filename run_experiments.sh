@@ -4,9 +4,9 @@ nvidia-smi
 TODAY_DATE="20250713_TrainOnFarm"
 DATASET_PATH="/home/lion397/GEMINI/heesup/dataset/plant_architecture/20250311_Sideview_40Days"
 
-# 노드 정보 확인
+# Check node information
 if [ -z "$NODE_ID" ]; then
-    NODE_ID=0  # 기본값
+    NODE_ID=0  # Default
 fi
 
 echo "Running on Node ID: $NODE_ID"
@@ -29,15 +29,15 @@ PRELOAD="False"
 IMAGE_SIZES=(224 448)
 DEPTH_OPTIONS=("False")
 
-# 노드별로 다른 SIDE_VIEWS 설정
+# Distribute multi view training across nodes
 if [ "$NODE_ID" -eq 0 ]; then
-    SIDE_VIEWS=("True")    # Node 0: Side view만
+    SIDE_VIEWS=("True")    # Node 0: Side view
     echo "Node 0: Running Side view experiments only"
 elif [ "$NODE_ID" -eq 1 ]; then
-    SIDE_VIEWS=("False")   # Node 1: Top view만
+    SIDE_VIEWS=("False")   # Node 1: Top view
     echo "Node 1: Running Top view experiments only"
 else
-    SIDE_VIEWS=("True" "False")  # 기타 노드: 모든 view
+    SIDE_VIEWS=("True" "False") 
     echo "Other node: Running all view experiments"
 fi
 
@@ -79,7 +79,7 @@ for IMAGE_SIZE in "${IMAGE_SIZES[@]}"; do
                     echo "  Gradient Accumulation: $GRAD_ACC"
                     echo "  Epochs: $EPOCH"
                     
-                    # Run the experiment (각 노드에서 단일 GPU 환경으로 실행)
+                    # Run the experiment (Use one gpu per node)
                     if [ "$NUM_GPUS" -gt 1 ]; then
                         (accelerate launch --multi_gpu --num_processes=$NUM_GPUS src/train_hf.py \
                             --image_size $IMAGE_SIZE \
