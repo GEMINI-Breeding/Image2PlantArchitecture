@@ -21,6 +21,7 @@ from plant_tokenizer import vec2token as vec2token
 import re
 import joblib
 from torchvision import transforms
+import random
 
 # Enable loading of truncated images
 ImageFile.LOAD_TRUNCATED_IMAGES = True
@@ -95,6 +96,7 @@ class PlantDataset(Dataset):
                  image_size=224, load_depth=False, preload=False, side_view=False,
                  process_leaf=True, image_processor=None, add_sos_token=False, flip_test=False,
                  mode='', color_jitter=False, random_crop=False, random_erase=False, background=None,
+                 random_image_text_pair=False,
                  sort_by='name', sort_order='ascending'):
         """
         Parameters:
@@ -121,6 +123,8 @@ class PlantDataset(Dataset):
         self.random_erase = random_erase
 
         self.background = background
+        self.random_image_text_pair = random_image_text_pair
+        self.random_sample_ratio = 0.5
         
         # Apply custom sorting
         self._sort_files(sort_by, sort_order)
@@ -222,19 +226,23 @@ class PlantDataset(Dataset):
     def __len__(self):
         return len(self.image_files)
     
-    def getitem(self, idx):
+    def getitem(self, idx, img_idx_override=None):
+
+        if img_idx_override:
+            img_idx = img_idx_override
+
         # Load image
         if self.side_view:
-            leaf_img, plant_info = load_sideview_images(self.image_dir, self.image_files[idx], 
+            leaf_img, plant_info = load_sideview_images(self.image_dir, self.image_files[img_idx], 
                                                         self.image_size, process_leaf=self.process_leaf,flip_test=self.flip_test)
                     
         else:
             try:
-                image = Image.open(os.path.join(self.image_dir, self.image_files[idx]))
+                image = Image.open(os.path.join(self.image_dir, self.image_files[img_idx]))
                 # Convert to numpy array
                 image = np.array(image)
             except:
-                print(f"Error loading {self.image_files[idx]}")
+                print(f"Error loading {self.image_files[img_idx]}")
                 return None, None, None
             
             leaf_area, plant_width, plant_height, processed_img, (x,y,w,h) = process_leaf_image(np.array(image), 
@@ -294,12 +302,18 @@ class PlantDataset(Dataset):
     
     def __getitem__(self, idx):
 
+        is_randomly_sampled = random.random() < self.random_sample_ratio
+        if self.random_image_text_pair and is_randomly_sampled:
+            img_idx = random.randint(0, len(self.image_files) - 1)
+        else:
+            img_idx = idx
+
         if self.preload:
-            image = self.images[idx]
+            image = self.images[img_idx] # Assume that the preloaded data has a perfect matching
             vec = self.vec[idx]
             plant_info = self.plant_infos[idx]
         else:
-            image, plant_info, vec = self.getitem(idx)
+            image, plant_info, vec = self.getitem(idx, img_idx_override=img_idx)
             
 
         if self.mode == 'train':
@@ -377,11 +391,22 @@ class PlantDataset(Dataset):
             """
             plant_info_token = np.concatenate(([SOS_TOKEN], plant_info_token))
 
-        # Add EOS token
+        # Add plant info token to the front
         out = np.concatenate((plant_info_token, out)) 
+        if self.random_image_text_pair:
+            # Make a dummy vector for Image correspondance
+            image_to_text_corres_vec = np.concatenate(([0,0], [(1-is_randomly_sampled)]))
+            image_to_text_corres_vec_token = vec2token([image_to_text_corres_vec])
+            image_to_text_corres_vec_token = np.concatenate(([META_TOKEN], image_to_text_corres_vec_token[1:].astype('int64')))
+
+            # Override plant_info_token to be entire string -> So the transformer only predicts the image correspondance
+            plant_info_token = out
+
+            # Attach to the string
+            out = np.concatenate((out, image_to_text_corres_vec_token)) 
+        
+        # Add EOS token
         out = np.concatenate((out, [EOS_TOKEN]))
-
-
 
         if self.image_processor:
             image = self.image_processor(image, return_tensors="pt").pixel_values[0]
