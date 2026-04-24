@@ -51,9 +51,10 @@ def load_sideview_images(images_dir, image_file_name, img_size, process_leaf, fl
             print(f"Error loading {image_file_name}...load empty image")
             print(f"Let's just think it's just another way of data augumentation")
             if process_leaf:
-                processed_img = np.zeros((img_size//2, img_size//2,3))
+                processed_img = np.zeros((img_size//2, img_size//2, 3))
             else:
                 image = Image.new('RGB', (img_size//2, img_size//2))
+            plant_info = [0.0, 0.0, 0.0]
             # return None, None
 
         if process_leaf:

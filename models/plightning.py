@@ -366,20 +366,6 @@ class MainDataModule(pl.LightningDataModule):
         self.load_depth = load_depth
         self.pin_memory = False
         self.side_view = side_view
-        self.img_aug = transforms.Compose([
-                transforms.RandomResizedCrop(self.image_size, scale=(0.8, 1.0)),
-                transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.2),
-            ])
-        
-        self.train_transform = transforms.Compose([
-                self.img_aug,
-                # transforms.ToTensor(),
-               
-        ])
-        self.test_transform = transforms.Compose([
-                # transforms.ToTensor(),
-                # transforms.Lambda(lambda img: torch.from_numpy(np.array(img)).permute(2, 0, 1).float())
-        ])
 
         self.growth_stages = growth_stages
         self.partial_data = partial_data
@@ -387,7 +373,7 @@ class MainDataModule(pl.LightningDataModule):
         # Handle additional keyword arguments
         self.extra_args = kwargs
 
-    def load_or_create_dataset(self, dataset_dir, dataset_name, plot, stages, transform, load_depth, process_leaf, side_view, preload, image_size):
+    def load_or_create_dataset(self, dataset_dir, dataset_name, plot, stages, load_depth, process_leaf, side_view, preload, image_size, mode='', color_jitter=False, random_crop=False, random_erase=False):
         saved_dataset_name = os.path.join(dataset_dir, f"{dataset_name}.pkl")
         if os.path.exists(saved_dataset_name) and preload:
             print(f"Loading {dataset_name} dataset from .pkl file")
@@ -396,9 +382,10 @@ class MainDataModule(pl.LightningDataModule):
         else:
             dataset = PlantDataset(
                 dataset_dir, plot=plot, stages=stages,
-                transform=transform, load_depth=load_depth,
+                load_depth=load_depth,
                 process_leaf=process_leaf, side_view=side_view,
                 preload=preload, image_size=image_size,
+                mode=mode, color_jitter=color_jitter, random_crop=random_crop, random_erase=random_erase
             )
             if preload:
                 # Check if the dataset is already saved
@@ -430,18 +417,18 @@ class MainDataModule(pl.LightningDataModule):
 
         self.train_dataset = self.load_or_create_dataset(
             self.dataset_dir, "train_dataset", train_plots, growth_stages,
-            self.train_transform, self.load_depth, self.process_leaf, self.side_view,
-            self.preload, self.image_size
+            self.load_depth, self.process_leaf, self.side_view,
+            self.preload, self.image_size, mode='train', color_jitter=True, random_crop=True, random_erase=True
         )
         self.val_dataset = self.load_or_create_dataset(
             self.dataset_dir, "val_dataset", val_plots, growth_stages,
-            self.test_transform, self.load_depth, self.process_leaf, self.side_view,
-            self.preload, self.image_size
+            self.load_depth, self.process_leaf, self.side_view,
+            self.preload, self.image_size, mode='val'
         )
         self.test_dataset = self.load_or_create_dataset(
             self.dataset_dir, "test_dataset", test_plots, growth_stages,
-            self.test_transform, self.load_depth, self.process_leaf, self.side_view,
-            self.preload, self.image_size
+            self.load_depth, self.process_leaf, self.side_view,
+            self.preload, self.image_size, mode='test'
         )
 
         

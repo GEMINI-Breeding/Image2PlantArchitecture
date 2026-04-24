@@ -3,7 +3,8 @@ import os
 from huggingface_hub import HfApi, create_repo
 
 def upload_dataset(dataset_path, repo_id, token, private=True):
-    api = HfApi()
+    # Initialize API with token
+    api = HfApi(token=token)
     
     print(f"Creating repository {repo_id}...")
     try:
@@ -12,21 +13,16 @@ def upload_dataset(dataset_path, repo_id, token, private=True):
         print(f"Error creating repo: {e}")
         return
 
-    print(f"Uploading folder {dataset_path} to {repo_id}...")
-    # We only upload images and xml folders to keep it clean
-    for folder in ["images", "xml"]:
-        folder_path = os.path.join(dataset_path, folder)
-        if os.path.exists(folder_path):
-            print(f"Uploading {folder}...")
-            api.upload_folder(
-                folder_path=folder_path,
-                repo_id=repo_id,
-                repo_type="dataset",
-                path_in_repo=folder,
-                token=token
-            )
-        else:
-            print(f"Warning: {folder} folder not found in {dataset_path}")
+    print(f"Uploading dataset from {dataset_path} to {repo_id}...")
+    # Use upload_large_folder on the root dataset path
+    # It will upload 'images' and 'xml' folders automatically.
+    # We ignore 'preloaded_data' to keep the repo clean.
+    api.upload_large_folder(
+        repo_id=repo_id,
+        folder_path=dataset_path,
+        repo_type="dataset",
+        ignore_patterns=["preloaded_data/**"]
+    )
 
     # Create and upload README.md
     readme_content = """---
